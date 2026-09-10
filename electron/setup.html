@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Set up vibe-view</title>
+    <style>
+      :root {
+        --bg: #1a1a2e;
+        --card: #22223c;
+        --fg: #e8e8f0;
+        --muted: #9a9ab5;
+        --accent: #6c7cff;
+        --accent-hover: #8390ff;
+        /* Surfaces that carry WHITE text need their own, darker shade: white
+           on --accent is 3.52:1, below the WCAG AA 4.5:1 floor for normal
+           text. Same hue (233.5deg), darkened until it passes -- 4.98:1
+           normal, 6.09:1 hover. The hover state darkens rather than lightens
+           precisely so it cannot fall back under the floor. */
+        --accent-strong: #5664d9;
+        --accent-strong-hover: #4b58bf;
+        --code-bg: #12121f;
+        --border: #34345a;
+        --ok: #4ec98a;
+        --warn: #f0b849;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .card {
+        width: 100%;
+        max-width: 620px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 34px 38px 30px;
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 22px;
+      }
+      .brand .dot {
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+        background: linear-gradient(135deg, var(--accent), #b06cff);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 19px;
+      }
+      .brand h1 {
+        font-size: 17px;
+        font-weight: 650;
+        margin: 0;
+        letter-spacing: 0.2px;
+      }
+      h2 {
+        font-size: 21px;
+        margin: 0 0 10px;
+        font-weight: 640;
+      }
+      p { color: var(--muted); margin: 0 0 16px; }
+      p strong { color: var(--fg); font-weight: 600; }
+      .steps {
+        margin: 0 0 18px;
+        padding: 0;
+        list-style: none;
+        counter-reset: step;
+      }
+      .steps li {
+        position: relative;
+        padding: 3px 0 3px 30px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .steps li::before {
+        counter-increment: step;
+        content: counter(step);
+        position: absolute;
+        left: 0;
+        top: 3px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--accent-strong);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .steps li a { color: var(--accent-hover); }
+      .cmd {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        overflow: hidden;
+        margin: 4px 0 20px;
+      }
+      .cmd code {
+        flex: 1;
+        padding: 12px 14px;
+        font: 13.5px/1.4 "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+        color: #d7e0ff;
+        white-space: pre;
+        overflow-x: auto;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .cmd button {
+        border: 0;
+        border-left: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted);
+        padding: 0 16px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        transition: color 0.15s, background 0.15s;
+        white-space: nowrap;
+      }
+      .cmd button:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
+      .cmd button.copied { color: var(--ok); }
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 6px;
+      }
+      button.btn {
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg);
+        border-radius: 8px;
+        padding: 9px 16px;
+        font-size: 14px;
+        font-weight: 550;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      button.btn:hover { background: rgba(255, 255, 255, 0.05); }
+      button.btn.primary {
+        background: var(--accent-strong);
+        border-color: var(--accent-strong);
+        color: #fff;
+      }
+      button.btn.primary:hover {
+        background: var(--accent-strong-hover);
+        border-color: var(--accent-strong-hover);
+      }
+      button.btn.ghost { border-color: transparent; color: var(--muted); margin-left: auto; }
+      button.btn.ghost:hover { color: var(--fg); background: transparent; }
+      button.btn:disabled { opacity: 0.55; cursor: default; }
+      .status {
+        min-height: 20px;
+        margin-top: 16px;
+        font-size: 13.5px;
+        color: var(--muted);
+      }
+      .status.err { color: var(--warn); }
+      .status.busy::before {
+        content: "";
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 8px;
+        border: 2px solid var(--muted);
+        border-top-color: transparent;
+        border-radius: 50%;
+        vertical-align: -2px;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      /* The spinner is the only motion on the page, and it runs indefinitely
+         while a recheck is in flight. Respect a reduced-motion preference:
+         keep the dot as a static ring so the busy state is still visible. */
+      @media (prefers-reduced-motion: reduce) {
+        .status.busy::before { animation: none; border-top-color: var(--muted); }
+        button.btn, .cmd button { transition: none; }
+      }
+      /* Keyboard focus was relying on the UA default ring, which is easy to
+         lose against this dark card. Draw an explicit one. :focus-visible so
+         it appears for keyboard users without ringing every mouse click. */
+      button:focus-visible,
+      #cmd:focus-visible,
+      a:focus-visible {
+        outline: 2px solid var(--accent-hover);
+        outline-offset: 2px;
+        border-radius: 6px;
+      }
+      .foot {
+        margin-top: 22px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .foot code { -webkit-user-select: text; user-select: text; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="brand">
+        <div class="dot" aria-hidden="true">◈</div>
+        <h1>vibe-view</h1>
+      </div>
+
+      <h2 id="title">Finish setting up vibe-view</h2>
+      <p id="lead"></p>
+      <!-- role="list" keeps list semantics under `list-style: none`, which
+           some engines treat as a signal to drop them. -->
+      <ol class="steps" id="steps" role="list"></ol>
+
+      <div class="cmd">
+        <!-- The command can overflow horizontally, so it is a scrollable
+             region; tabindex makes it reachable by keyboard (WCAG 2.1.1). -->
+        <code
+          id="cmd"
+          tabindex="0"
+          role="region"
+          aria-label="Install command"
+        >Preparing the install command...</code>
+        <button id="copy" type="button" aria-label="Copy the install command">
+          Copy
+        </button>
+      </div>
+
+      <div class="actions">
+        <button class="btn primary" id="recheck" type="button">
+          I've installed it — recheck
+        </button>
+        <button class="btn" id="docs" type="button">Install guide</button>
+        <button class="btn ghost" id="quit" type="button">Quit</button>
+      </div>
+
+      <!-- Every recheck outcome is written here and nowhere else, so without a
+           live region a screen-reader user gets no feedback at all from the
+           button they just pressed. -->
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+
+      <div class="foot" id="foot"></div>
+    </main>
+
+    <script>
+      // State is passed in via the page URL so this file also renders standalone
+      // in a plain browser for design review:
+      //   setup.html?reason=no-viewer&python=python3.12&version=Python%203.12.4
+      const q = new URLSearchParams(location.search);
+      const reason = q.get("reason") || "no-vibeview";
+      const python = q.get("python") || "";
+      const version = q.get("version") || "";
+      const plat = q.get("plat") || "posix"; // "win32" on Windows
+      const appVersion = q.get("appVersion") || "";
+      const isWin = plat === "win32";
+      // App-managed venv path (main.js managedVenvDir); placeholder for browser.
+      const venv = q.get("venv") || (isWin
+        ? "%LOCALAPPDATA%\\vibe-view\\venv"
+        : "~/.local/share/vibe-view/venv");
+
+      // The bridge (preload.js) exists only inside Electron. When this file is
+      // opened directly in a browser, fall back to no-op / clipboard shims so
+      // the layout is still reviewable.
+      const bridge =
+        window.vibeview || {
+          recheck: async () => ({
+            ok: false,
+            reason,
+            python,
+            version,
+            _mock: true,
+          }),
+          copy: async (t) => navigator.clipboard && navigator.clipboard.writeText(t),
+          openDocs: async () => window.open("https://vibe-qc.com/docs/", "_blank"),
+          quit: () => window.close(),
+        };
+
+      // Install into a dedicated virtualenv, not the system Python: a fresh
+      // venv is never PEP 668 "externally managed", so `pip install` works even
+      // on Homebrew / Debian / Fedora Pythons that reject it. main.js
+      // (findPython) discovers this venv, so Recheck picks it up automatically.
+      const wheelUrl = appVersion
+        ? "https://vibe-qc.com/docs/_static/downloads/vibeview-" +
+          appVersion + "-py3-none-any.whl"
+        : "";
+      const viewerRequirement = wheelUrl
+        ? "vibeview[viewer] @ " + wheelUrl
+        : "vibeview[viewer]";
+      const posixQuote = (value) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+      const windowsQuote = (value) => '"' + value.replaceAll('"', '""') + '"';
+      // Use the exact compatible interpreter selected by main.js. This matters
+      // on hosts that expose only a versioned command (for example python3.12)
+      // or whose unversioned python3 is older than vibe-view supports.
+      const bootstrapPython = python || (isWin ? "py" : "python3");
+      const VENV_CMD = isWin
+        ? windowsQuote(bootstrapPython) + " -m venv " + windowsQuote(venv) +
+          "\n" + windowsQuote(venv + "\\Scripts\\pip") + " install " +
+          windowsQuote(viewerRequirement)
+        : posixQuote(bootstrapPython) + " -m venv " + posixQuote(venv) +
+          "\n" + posixQuote(venv + "/bin/pip") + " install " +
+          posixQuote(viewerRequirement);
+      const DOCS = "https://vibe-qc.com/docs/user_guide/vibe_view_desktop.html";
+
+      const COPY = {
+        "no-python": {
+          title: "vibe-view needs Python",
+          lead:
+            "The desktop app runs vibe-view's Python server in the background, " +
+            "but no <strong>Python 3.11+</strong> was found on this machine.",
+          steps: [
+            'Install Python 3.11 or newer from <a href="https://python.org/">python.org</a>.',
+            "Run the command below: it creates a dedicated virtualenv and " +
+              "installs the vibe-view viewer into it.",
+            'Come back and press <strong>"recheck"</strong>.',
+          ],
+          cmd: VENV_CMD,
+        },
+        "no-vibeview": {
+          title: "Install the vibe-view viewer",
+          lead:
+            "Python was found, but <strong>vibe-view</strong> isn't installed. " +
+            "The command below installs it into a dedicated virtualenv, then " +
+            "recheck.",
+          steps: [
+            "Run the command below in a terminal.",
+            'Press <strong>"recheck"</strong> when it finishes.',
+          ],
+          cmd: VENV_CMD,
+        },
+        "no-viewer": {
+          title: "Add the interactive viewer",
+          lead:
+            "vibe-view is installed, but the <strong>[viewer]</strong> extra " +
+            "(the interactive 3-D server: trame, uvicorn) is missing, so the " +
+            "server can't start. The command below installs it into a " +
+            "dedicated virtualenv, then recheck.",
+          steps: [
+            "Run the command below to install the full viewer stack.",
+            'Press <strong>"recheck"</strong> when it finishes.',
+          ],
+          cmd: VENV_CMD,
+        },
+        "server-error": {
+          title: "The vibe-view server didn't start",
+          lead:
+            "A vibe-view interpreter was found, but its server didn't become " +
+            "ready. Its environment is most likely missing the interactive " +
+            "viewer stack. The command below sets up a clean virtualenv with " +
+            "it, then recheck.",
+          steps: [
+            "Run the command below in a terminal.",
+            'Press <strong>"recheck"</strong> to try again.',
+          ],
+          cmd: VENV_CMD,
+        },
+      };
+
+      function render(state) {
+        const info = COPY[state.reason] || COPY["no-vibeview"];
+        document.getElementById("title").textContent = info.title;
+        document.getElementById("lead").innerHTML = info.lead;
+        document.getElementById("cmd").textContent = info.cmd;
+        const steps = document.getElementById("steps");
+        steps.innerHTML = "";
+        for (const s of info.steps) {
+          const li = document.createElement("li");
+          li.innerHTML = s;
+          steps.appendChild(li);
+        }
+        const foot = document.getElementById("foot");
+        const found =
+          state.version || state.python
+            ? "Detected interpreter: <code>" +
+              (state.version || state.python) +
+              "</code>. "
+            : "";
+        foot.innerHTML =
+          found +
+          "Using a dedicated virtualenv avoids the system-Python " +
+          "<code>externally-managed-environment</code> (PEP 668) error. " +
+          "Full instructions: <code>docs/user_guide/vibe_view_desktop.md</code>.";
+      }
+
+      const statusEl = document.getElementById("status");
+      function setStatus(text, cls) {
+        statusEl.className = "status" + (cls ? " " + cls : "");
+        statusEl.textContent = text || "";
+      }
+
+      document.getElementById("copy").addEventListener("click", async (e) => {
+        await bridge.copy(document.getElementById("cmd").textContent);
+        const b = e.currentTarget;
+        b.textContent = "Copied";
+        // aria-label overrides the visible text as the accessible name, so it
+        // has to move with it or the confirmation is announced as "Copy".
+        b.setAttribute("aria-label", "Install command copied to clipboard");
+        b.classList.add("copied");
+        setTimeout(() => {
+          b.textContent = "Copy";
+          b.setAttribute("aria-label", "Copy the install command");
+          b.classList.remove("copied");
+        }, 1600);
+      });
+
+      document.getElementById("docs").addEventListener("click", () => bridge.openDocs());
+      document.getElementById("quit").addEventListener("click", () => bridge.quit());
+
+      const recheckBtn = document.getElementById("recheck");
+      recheckBtn.addEventListener("click", async () => {
+        recheckBtn.disabled = true;
+        setStatus("Checking your Python environment…", "busy");
+        let res;
+        try {
+          res = await bridge.recheck();
+        } catch (err) {
+          res = { ok: false, reason, error: String(err) };
+        }
+        if (res && res.ok) {
+          setStatus("Found it — starting vibe-view…", "busy");
+          return; // main process closes this window and launches the app
+        }
+        recheckBtn.disabled = false;
+        render({
+          reason: (res && res.reason) || reason,
+          python: (res && res.python) || python,
+          version: (res && res.version) || version,
+        });
+        setStatus(
+          (res && res._mock
+            ? "(preview) "
+            : "") + "Still not detected. Make sure the install finished, then recheck.",
+          "err",
+        );
+      });
+
+      render({ reason, python, version });
+    </script>
+  </body>
+</html>

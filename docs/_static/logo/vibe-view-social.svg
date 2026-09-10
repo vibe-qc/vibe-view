@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="vibe-view — interactive molecular graphics">
+  <title>vibe-view — interactive molecular graphics</title>
+  <desc>A molecular orbital eye surrounded by dotted rotation paths, above the vibe-view wordmark.</desc>
+  <defs>
+    <radialGradient id="teal"><stop stop-color="#0F766E" stop-opacity="0.35"/><stop offset="1" stop-color="#0F766E" stop-opacity="0"/></radialGradient>
+    <radialGradient id="violet"><stop stop-color="#8B5CF6" stop-opacity="0.3"/><stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#FAF7F2"/>
+  <g fill="none" stroke="#6B8FD9" stroke-width="1" stroke-dasharray="3 7" opacity="0.45">
+    <ellipse cx="760" cy="275" rx="325" ry="220"/>
+    <ellipse cx="760" cy="275" rx="265" ry="170"/>
+    <ellipse cx="760" cy="275" rx="200" ry="125"/>
+  </g>
+  <ellipse cx="658" cy="275" rx="175" ry="140" fill="url(#teal)"/>
+  <ellipse cx="870" cy="275" rx="175" ry="140" fill="url(#violet)"/>
+  <path d="M 492 275 Q 760 8 1028 275 Q 760 542 492 275 Z" fill="none" stroke="#0F766E" stroke-width="2" opacity="0.65"/>
+  <g stroke="#3D4A5C" stroke-width="2">
+    <path d="M 664 275 L 760 217 L 856 275 L 760 333 Z M 760 217 V 333" fill="none"/>
+    <circle cx="664" cy="275" r="11" fill="#0F766E"/>
+    <circle cx="856" cy="275" r="11" fill="#0F766E"/>
+    <circle cx="760" cy="217" r="14" fill="#8B5CF6"/>
+    <circle cx="760" cy="333" r="14" fill="#8B5CF6"/>
+  </g>
+  <g transform="translate(70,435) scale(3)"><g transform="translate(4,8)"><rect x="3" y="3" width="26" height="26" rx="5" fill="none" stroke="#0F766E" stroke-width="2"/>
+  <path d="M 7 16 Q 16 5 25 16 Q 16 27 7 16 Z" fill="none" stroke="#0F766E" stroke-width="2" stroke-linejoin="round"/>
+  <ellipse cx="16" cy="16" rx="3" ry="4" fill="#8B5CF6"/></g>
+  <g stroke="#0F172A" fill="#0F172A" stroke-linejoin="round">
+    <line xmlns="http://www.w3.org/2000/svg" x1="44.00" y1="16" x2="50.00" y2="32" stroke-width="3.2" stroke-linecap="round" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="56.00" y1="16" x2="50.00" y2="32" stroke-width="3.2" stroke-linecap="round" />
+    <circle xmlns="http://www.w3.org/2000/svg" cx="59.20" cy="12.00" r="1.90" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="59.20" y1="16" x2="59.20" y2="32" stroke-width="3.2" stroke-linecap="round" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="65.40" y1="8" x2="65.40" y2="32" stroke-width="3.2" stroke-linecap="round" />
+    <circle xmlns="http://www.w3.org/2000/svg" cx="70.20" cy="24.00" r="4.80" fill="none" stroke-width="3.2" />
+    <path xmlns="http://www.w3.org/2000/svg" d="M 89.80 24.00 A 4.80 4.80 0 1 0 88.39 27.39" fill="none" stroke-width="3.2" stroke-linecap="round" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="80.20" y1="24.00" x2="89.80" y2="24.00" stroke-width="3.2" stroke-linecap="round" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="93.10" y1="24.00" x2="97.10" y2="24.00" stroke-width="3.2" stroke-linecap="round" />
+    <path d="M 103 16 L 109 32 L 115 16" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+    <circle cx="120" cy="12" r="1.9"/>
+    <path d="M 120 16 V 32" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M 135.8 24 A 4.8 4.8 0 1 0 134.39 27.39 M 126.2 24 H 135.8" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M 141 16 L 145 32 L 150 20 L 155 32 L 159 16" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+  </g></g>
+  <text x="84" y="595" font-family="Georgia, serif" font-size="25" font-style="italic" fill="#4B5563">Interactive molecular graphics, on your terms.</text>
+</svg>

@@ -1,0 +1,27 @@
+# Citation File Format — see https://citation-file-format.github.io/
+# GitHub and recent GitLab versions render a "Cite this repository" sidebar.
+
+cff-version: 1.2.0
+message: "If you use vibe-view in your work, please cite it as below."
+title: "vibe-view: an interactive viewer and analysis tool for QVF quantum-chemistry archives"
+abstract: >
+  vibe-view reads the Quantum Visualization Format (QVF) and renders
+  structures, orbitals, volumetric data, band structures, densities of
+  states and spectra, in a browser, a terminal, or headlessly for figure
+  capture. It is a companion to vibe-qc and is usable without it: any
+  code that writes a conformant QVF archive can be viewed with it.
+type: software
+authors:
+  - family-names: Peintinger
+    given-names: Michael F.
+    website: "https://vibe-qc.com/"
+version: 2.16.1
+date-released: 2026-09-10
+url: "https://vibe-qc.com/"
+repository-code: "https://github.com/vibe-qc/vibe-view"
+license: MPL-2.0
+keywords:
+  - quantum chemistry
+  - visualization
+  - molecular graphics
+  - QVF

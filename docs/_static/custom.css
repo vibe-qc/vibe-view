@@ -1,0 +1,44 @@
+/* vibe-view brand overrides for the Furo theme.
+ *
+ * This file is a VERBATIM COPY of vibe-qc's docs/_static/custom.css
+ * (project 34) apart from this header. The two documentation sites are
+ * published under one domain -- https://vibe-qc.com/docs/ and
+ * https://vibe-qc.com/vibe-view/docs/ -- and must read as one project, so
+ * the rules below are deliberately shared rather than re-invented.
+ *
+ * Keeping it a copy is an interim arrangement, agreed with the vibe-qc
+ * documentation chat: a shared theme package is NOT being invented here.
+ * When one lands, both sites adopt it and this file goes away. Until then,
+ * a change to either copy must be mirrored into the other in the same
+ * session -- there is no test that can catch the drift across repositories.
+ *
+ * Furo exposes its full CSS-custom-property vocabulary at
+ *   https://pradyunsg.me/furo/customisation/colors/
+ *
+ * Drop-in points, once a brand-spec sheet lands:
+ *   --color-brand-primary       -- link + accent colour
+ *   --color-brand-content       -- in-content accent colour
+ *   --color-brand-visited       -- visited links
+ *   --color-sidebar-search-background -- search box tint
+ */
+
+.codename-art {
+  margin: 1rem 0 1.25rem;
+}
+
+.codename-art img {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 0.35rem 1.2rem rgba(0, 0, 0, 0.16);
+}
+
+.codename-art-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+}
+
+.codename-art-gallery img {
+  width: 100%;
+}

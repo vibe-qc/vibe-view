@@ -1,0 +1,170 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibeview"
+version = "2.16.1"
+description = "GPU-accelerated interactive 3D viewer for quantum-chemistry structures and results"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Michael F. Peintinger", email = "mpei@vibe-qc.com" }]
+keywords = [
+    "quantum chemistry", "visualization", "3d viewer",
+    "molecular orbitals", "electron density", "band structure",
+    "qvf", "pyvista", "vtk",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+# Core = structure/result reading + headless screenshot capture (QVFReader,
+# importers, capture_*, and the CLI's capture/export/convert paths). The browser
+# (trame/uvicorn/plotly) is the separate ``[viewer]`` extra so a capture-only
+# host (docs-artifact / queue jobs, CI) installs a lean stack.
+dependencies = [
+    "click>=8.0",
+    "pydantic>=2.0",
+    "jsonschema>=4.20",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "pyvista>=0.44",
+    # plotly stays core: the bands/dos/spectra/scf_history renderer modules
+    # import it at module scope, so capture_bands/dos/... need it even though
+    # they render the PNG via matplotlib. Only the trame web-server stack is
+    # viewer-only.
+    "plotly>=5.18",
+]
+
+[project.scripts]
+vibe-view = "vibeview.cli:main"
+
+[project.optional-dependencies]
+# Interactive web viewer: `vibe-view open` / `serve` / `dashboard`. NOT
+# needed for non-interactive reading or headless screenshot capture.
+#
+# trame is bounded below 4 because trame-vtk and trame-vuetify are not there
+# yet: every release of both requires `trame-client<4`, and trame 4.0.0 pulls
+# trame-client 4.0.0. With an open bound, pip resolved trame 4.0.0 first and
+# then backtracked the other two to the last releases WITHOUT that
+# requirement -- trame-vtk 2.8.13 and trame-vuetify 2.7.2 (2026-09-09, the
+# day trame 4.0.0 appeared; pipeline 5104). Those carry the VTK 9.7
+# unhashable-array serializer and render boolean props differently, and two
+# tests went red. The floors are the first releases known good: trame-vtk
+# 2.11.4 is the first whose extract_required_fields collects into a list
+# (2.11.3 still uses a set); trame-vuetify 3.2 is the minor proven green.
+# Lift the bound when both publish trame-4 releases, in the same commit as a
+# green pipeline against them.
+viewer = [
+    "trame>=3.6,<4",
+    "trame-vtk>=2.11.4",
+    "trame-vuetify>=3.2",
+    "uvicorn>=0.30",
+]
+# Headless capture is the core install; this alias documents that a
+# capture-only host needs nothing beyond `pip install vibeview`.
+capture = []
+# Interactive terminal viewer: `vibe-view tui`. The rasterizer, the braille
+# converter and `vibe-view show` are all core (numpy only); Textual is needed
+# solely for the interactive event loop and widget layout.
+tui = ["textual>=1.0"]
+# The long tail of structure formats, per roadmap decision 4: vibe-view
+# hand-rolls the common set (xyz/cif/pdb/mol2/gro/sdf/cube/gjf) and defers
+# everything else to ase.io.read. Optional because ASE is a large dependency
+# that most users opening a common structure or QVF file never need.
+ase = ["ase>=3.22"]
+# Build a 3D structure from a SMILES string (`Build from SMILES`). RDKit is
+# BSD-3-Clause and optional: it is a large wheel that routine file viewing does
+# not need.
+smiles = ["rdkit>=2023.3"]
+povray = []
+blender = []
+jupyter = ["ipython", "ipywidgets"]
+# Queue integration: the `vq` panel in `vibe-view open` and `vibe-view fetch`
+# import vq.{listing,fetch,status,submit,overview} lazily. Optional because
+# viewing a .qvf file needs nothing from the queue -- but the imports were
+# previously undeclared, which only worked while both packages shared one
+# checkout-local venv.
+#
+# The requirement must name the DISTRIBUTION, which is `vq` (vibe-queue's own
+# pyproject.toml says `name = "vq"`, currently 0.25.7). It read `vibe-queue`
+# until 2026-09-08, which is the monorepo *directory* name and not a package
+# that exists anywhere -- so `pip install vibeview[queue]` failed to resolve
+# even with the real vibe-queue checkout already installed. If vibe-queue
+# ever publishes under a different name, rename there first and follow here;
+# the two have to agree.
+#
+# NOT included in `all`: vq is not published on any index, so a
+# `pip install vibeview[all]` that pulled it would fail to resolve. Install
+# it from a vibe-queue checkout, then `pip install vibeview[queue]` is
+# satisfied by what is already there. Add it to `all` once published.
+#
+# vq also requires Python >= 3.12, above vibe-view's own >= 3.11 floor, so
+# this extra cannot resolve on 3.11 at all. That is vq's constraint to relax,
+# not ours to work around -- but it is why the resolver error on 3.11 differs
+# from the one on 3.12.
+queue = ["vq>=0.25"]
+# Tests drive the interactive app (create_app / trame), so pull the viewer.
+# scipy: the live-opt worker's L-BFGS-B loop (normally supplied by the
+# vibe-qc install, which is absent on the vibe-view CI gate).
+test = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[jupyter]", "pytest>=8", "scipy>=1.11"]
+all = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[smiles]", "ipython", "ipywidgets", "psutil"]
+dev = ["ruff", "mypy"]
+# Release-artifact tooling. scripts/build_release_artifacts.py builds the wheel
+# and sdist twice, normalises the sdist metadata setuptools leaves host-
+# dependent, verifies byte-for-byte reproducibility and runs `twine check`.
+#
+# These were pinned only inline in .gitlab-ci.yml, so the requirement existed
+# nowhere in the package metadata and a `[test]` venv could not run the script.
+# The distribution names are kept in step with the script's own
+# RELEASE_BUILD_TOOLS by tests/test_release_artifacts.py.
+release = ["build>=1.2,<2", "twine>=6,<7"]
+
+[project.urls]
+# the archived monorepo is the pre-split monorepo, frozen as an archive since 2026-09
+# and carrying no open issues. vibe-view lives in its own repository now.
+Homepage      = "https://vibe-qc.com"
+Documentation = "https://vibe-qc.com/vibe-view/docs/"
+Repository    = "https://github.com/vibe-qc/vibe-view"
+Issues        = "https://github.com/vibe-qc/vibe-view/issues"
+Changelog     = "https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.package-data]
+vibeview = [
+    "*.json",
+    "resources/examples/*.txt",
+    "resources/examples/*.xyz",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

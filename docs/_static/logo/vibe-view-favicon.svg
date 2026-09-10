@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="vibe-view">
+  <title>vibe-view</title>
+  <desc>A teal eye in a rounded unit-cell frame, with a violet orbital pupil.</desc>
+  <rect x="3" y="3" width="26" height="26" rx="5" fill="none" stroke="#0F766E" stroke-width="2"/>
+  <path d="M 7 16 Q 16 5 25 16 Q 16 27 7 16 Z" fill="none" stroke="#0F766E" stroke-width="2" stroke-linejoin="round"/>
+  <ellipse cx="16" cy="16" rx="3" ry="4" fill="#8B5CF6"/>
+</svg>

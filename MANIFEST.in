@@ -1,0 +1,4 @@
+include README.md
+include LICENSE
+recursive-include src/vibeview *.json
+recursive-include src/vibeview *.txt *.xyz

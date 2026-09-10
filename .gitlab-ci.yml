@@ -1,0 +1,207 @@
+# Portable build and validation rules.
+stages:
+  - test
+  - build
+  - deploy
+
+
+variables:
+  # The QVF specification this viewer is checked against. Bump deliberately.
+  QVF_TAG: "v0.1.0"
+
+
+workflow:
+  auto_cancel:
+    on_new_commit: conservative
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "release"'
+    - if: '$CI_COMMIT_BRANCH =~ /^release-candidate\//'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - when: never
+
+
+test:
+  stage: test
+  image: python:3.13-slim-bookworm
+  tags:
+    - docker
+  variables:
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/.cache/pip
+    PYVISTA_OFF_SCREEN: "True"
+  cache:
+    - key: pip-vibeview
+      paths:
+        - .cache/pip/
+  before_script:
+    # PyVista/VTK need a GL + X stack even for offscreen rendering; xvfb
+    # provides a virtual display. xauth is required by xvfb-run itself.
+    - apt-get -qq update && apt-get -qq install -y --no-install-recommends
+      git libgl1 libglx-mesa0 libxrender1 libxext6 libsm6 libglib2.0-0
+      xvfb xauth
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    # A few tests read real archives from the QVF conformance corpus, which
+    # lives in the qvf repository. It covers the 2-D slab paths against a
+    # genuine producer artifact, and this lane requires it (see the script
+    # step): a missing corpus fails here rather than skipping.
+    - git clone --depth 1 --branch "$QVF_TAG"
+      "https://github.com/vibe-qc/qvf.git"
+      /tmp/qvf
+    - pip install -e '.[test,release]'
+  script:
+    # VIBEVIEW_REQUIRE_QVF_CORPUS turns "corpus missing" from a skip into a
+    # hard error. This lane clones qvf on purpose, so a corpus that is not
+    # there is a broken lane -- without this, a rename in the clone step
+    # above would retire that coverage silently in a green pipeline.
+    - QVF_CORPUS=/tmp/qvf/conformance/corpus
+      VIBEVIEW_REQUIRE_QVF_CORPUS=1
+      xvfb-run -a python -m pytest tests -q -p no:cacheprovider
+    - python scripts/build_release_artifacts.py --output-dir dist
+    # A wheel built from a clean venv must import and run with no checkout
+    # present -- this is what proves the schema files ship as real data
+    # files rather than symlinks into a sibling directory.
+    - SMOKE_ROOT="$(mktemp -d)";
+      python -m venv "$SMOKE_ROOT/venv";
+      WHEEL="$(find "$CI_PROJECT_DIR/dist" -type f
+      -name 'vibeview-*-py3-none-any.whl' -print -quit)";
+      test -n "$WHEEL";
+      "$SMOKE_ROOT/venv/bin/pip" install --quiet
+      "vibeview[viewer,tui,ase] @ file://$WHEEL";
+      "$SMOKE_ROOT/venv/bin/pip" check;
+      (cd /tmp && PYTHONNOUSERSITE=1 "$SMOKE_ROOT/venv/bin/python"
+      "$CI_PROJECT_DIR/scripts/smoke_installed_wheel.py"
+      --source-root "$CI_PROJECT_DIR/src")
+  artifacts:
+    name: vibeview-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+    expire_in: 2 weeks
+    paths:
+      - dist/*.whl
+      - dist/*.tar.gz
+      - dist/SHA256SUMS
+
+# The consumer half of the QVF contract.
+#
+# vibe-view carries its own copy of the manifest schema, and vibe-qc carries
+# another. In the monorepo the viewer's copy was a symlink into the producer's
+# tree, so they could not diverge; the guards that checked them skipped
+# silently when a sibling was missing, which after the split would mean they
+# never fail again. This job replaces that: the normative schema lives in the
+# qvf repository, and this asserts the vendored copy still matches it, then
+# proves the viewer can actually read every archive in the corpus.
+#
+# This is a BUILD-TIME check only. Nothing here is imported at runtime and
+# nothing is added to [project.dependencies]: qvf is a reference, not a
+# library vibe-view depends on. QVF_TAG is bumped by hand.
+
+qvf-conformance:
+  stage: test
+  image: python:3.13-slim-bookworm
+  tags:
+    - docker
+  before_script:
+    - apt-get -qq update && apt-get -qq install -y --no-install-recommends git
+    - git clone --depth 1 --branch "$QVF_TAG"
+      "https://github.com/vibe-qc/qvf.git"
+      /tmp/qvf
+    - pip install -e '.[ase]' jsonschema
+  script:
+    - python scripts/check_qvf_conformance.py --qvf-root /tmp/qvf
+
+# --------------------------------------------------------------------
+# Shared docs environment + dependency install.
+#
+# `extends:` and `!reference` rather than YAML anchors: extends deep-merges
+# `variables:`, so a job can add DEPLOY_* without dropping PIP_CACHE_DIR, and
+# !reference flattens into a script list, which a bare alias to a sequence
+# does not.
+#
+# The image installs Sphinx plus the four LIGHTWEIGHT runtime deps that
+# vibeview's documented modules import at module scope -- numpy, click,
+# pydantic, jsonschema. autosummary imports vibeview.{api,qvf,kinds,codenames}
+# to scan docstrings, so those have to resolve. The heavy rendering stack
+# (pyvista, vtk, trame, matplotlib, plotly) stays out and is mocked instead,
+# via autodoc_mock_imports in docs/conf.py: none of it is needed to render
+# prose and signatures, and installing VTK to build a docs page would cost
+# minutes per job for nothing.
+# --------------------------------------------------------------------
+
+.docs_env:
+  image: python:3.13-slim-bookworm
+  tags:
+    - docker
+  variables:
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/.cache/pip
+  cache:
+    - key: pip-vibeview-docs
+      paths:
+        - .cache/pip/
+
+
+.docs_deps:
+  before_script:
+    # python:3.13-slim ships no git, and scripts/build_site.sh writes a
+    # commit-stamp into public/.build-info.
+    - apt-get -qq update && apt-get -qq install -y --no-install-recommends git
+    # The checkout uid can differ from the job uid, which makes every git
+    # invocation fail with 'detected dubious ownership'.
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    - python -V
+    - pip install --quiet
+      'sphinx>=7.4'
+      'myst-parser>=4.0'
+      'linkify-it-py>=2'
+      'furo>=2024.5'
+      'sphinx-copybutton>=0.5'
+      'sphinx-design>=0.6'
+      'numpy>=1.26'
+      'click>=8.0'
+      'pydantic>=2.0'
+      'jsonschema>=4.20'
+
+# --------------------------------------------------------------------
+# docs-build -- render the Sphinx site into public/. Publishes nothing;
+# this is the proof that the documentation tree still renders.
+# --------------------------------------------------------------------
+
+docs-build:
+  stage: build
+  extends: .docs_env
+  before_script:
+    - !reference [.docs_deps, before_script]
+  script:
+    - bash scripts/build_site.sh
+    # The published build deliberately does not use -W: a warning must not
+    # block a release. So assert the site actually rendered, rather than
+    # trusting a zero exit from a build that emitted nothing.
+    - test -f public/index.html
+    - test -f public/sitemap.xml
+    - test -f public/_static/custom.css
+    - echo "rendered $(find public -name '*.html' | wc -l) HTML pages"
+  artifacts:
+    name: vibeview-docs-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+    expire_in: 2 weeks
+    paths:
+      - public/
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "release"'
+    - if: '$CI_COMMIT_BRANCH =~ /^release-candidate\//'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ".gitlab-ci.yml"
+        - "CHANGELOG.md"
+        - "CONTRIBUTING.md"
+        - "README.md"
+        - "docs/**/*"
+        - "scripts/build_site.sh"
+        - "src/vibeview/codenames.py"
+
+# --------------------------------------------------------------------
+# Shared rsync-over-SSH deploy setup -- key, pinned known_hosts, strict
+# host-key checking. Lives in exactly one place and is pulled in with
+# !reference, the same arrangement project 34 uses, so this
+# security-sensitive setup is never copy-pasted. A referencing job supplies
+# DEPLOY_HOST / DEPLOY_USER / DEPLOY_PATH in `variables`.
+# --------------------------------------------------------------------

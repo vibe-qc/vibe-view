@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 48" role="img" aria-label="vibe-view">
+  <title>vibe-view</title>
+  <desc>A teal orbital-eye mark followed by the lowercase name vibe-view in geometric outlined lettering.</desc>
+  <g transform="translate(4,8)"><rect x="3" y="3" width="26" height="26" rx="5" fill="none" stroke="#0F766E" stroke-width="2"/>
+  <path d="M 7 16 Q 16 5 25 16 Q 16 27 7 16 Z" fill="none" stroke="#0F766E" stroke-width="2" stroke-linejoin="round"/>
+  <ellipse cx="16" cy="16" rx="3" ry="4" fill="#8B5CF6"/></g>
+  <g stroke="#F1F5F9" fill="#F1F5F9" stroke-linejoin="round">
+    <line xmlns="http://www.w3.org/2000/svg" x1="44.00" y1="16" x2="50.00" y2="32" stroke-width="3.2" stroke-linecap="round" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="56.00" y1="16" x2="50.00" y2="32" stroke-width="3.2" stroke-linecap="round" />
+    <circle xmlns="http://www.w3.org/2000/svg" cx="59.20" cy="12.00" r="1.90" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="59.20" y1="16" x2="59.20" y2="32" stroke-width="3.2" stroke-linecap="round" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="65.40" y1="8" x2="65.40" y2="32" stroke-width="3.2" stroke-linecap="round" />
+    <circle xmlns="http://www.w3.org/2000/svg" cx="70.20" cy="24.00" r="4.80" fill="none" stroke-width="3.2" />
+    <path xmlns="http://www.w3.org/2000/svg" d="M 89.80 24.00 A 4.80 4.80 0 1 0 88.39 27.39" fill="none" stroke-width="3.2" stroke-linecap="round" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="80.20" y1="24.00" x2="89.80" y2="24.00" stroke-width="3.2" stroke-linecap="round" />
+    <line xmlns="http://www.w3.org/2000/svg" x1="93.10" y1="24.00" x2="97.10" y2="24.00" stroke-width="3.2" stroke-linecap="round" />
+    <path d="M 103 16 L 109 32 L 115 16" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+    <circle cx="120" cy="12" r="1.9"/>
+    <path d="M 120 16 V 32" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M 135.8 24 A 4.8 4.8 0 1 0 134.39 27.39 M 126.2 24 H 135.8" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M 141 16 L 145 32 L 150 20 L 155 32 L 159 16" fill="none" stroke-width="3.2" stroke-linecap="round"/>
+  </g>
+</svg>

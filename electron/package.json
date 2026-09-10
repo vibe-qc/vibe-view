@@ -1,0 +1,61 @@
+{
+  "name": "vibe-view",
+  "productName": "vibe-view",
+  "version": "2.16.1",
+  "description": "GPU-accelerated interactive 3D viewer for quantum-chemistry data",
+  "main": "main.js",
+  "scripts": {
+    "start": "node node_modules/electron/cli.js .",
+    "install-electron": "python3 install-electron.py",
+    "make-icon": "python3 make-icon.py"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "electron": "43.3.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.vibeqc.vibeview",
+    "productName": "vibe-view",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "preload.js", "setup.html", "icon.png"],
+    "publish": {
+      "provider": "generic",
+      "url": "https://vibe-qc.com/updates/vibe-view/"
+    },
+    "mac": {
+      "category": "public.app-category.science",
+      "icon": "icon.icns",
+      "target": ["dmg", "zip"]
+    },
+    "linux": {
+      "icon": "icon.png",
+      "category": "Science",
+      "target": ["AppImage"]
+    },
+    "win": { "icon": "icon.png", "target": ["nsis"] },
+    "fileAssociations": [
+      {
+        "ext": "qvf",
+        "name": "vibe-qc Visualization File",
+        "description": "QVF Archive"
+      },
+      {
+        "ext": "py",
+        "name": "vibe-qc Python Input",
+        "description": "vibe-qc Python Input",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["xyz", "cif", "cube", "pdb", "mol2", "sdf", "mol", "gjf", "com", "gro"],
+        "name": "Chemistry Structure File",
+        "description": "Chemistry structure and volume formats",
+        "role": "Viewer"
+      }
+    ]
+  },
+  "author": "vibe-qc",
+  "license": "MPL-2.0"
+}

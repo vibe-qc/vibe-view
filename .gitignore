@@ -1,0 +1,61 @@
+# ── Python build output ───────────────────────────────────────────────
+# scripts/build.sh does `rm -rf dist/ build/ *.egg-info/`, so anything
+# tracked in here is deleted by the repository's own build.
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+*.whl
+*.tar.gz
+
+# ── Python bytecode and caches ────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# ── Virtual environments ──────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Coverage and profiling ────────────────────────────────────────────
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.prof
+
+# ── Node / Electron (electron/ is a source-checkout companion) ────────
+node_modules/
+electron/node_modules/
+electron/dist/
+npm-debug.log*
+
+# ── vibe-view runtime droppings ───────────────────────────────────────
+# Written by `scripts/install.sh --link-bin`.
+.vibe-view-bin-links
+# Headless capture and export scratch output.
+*.qvf.tmp
+
+# ── Editor and OS ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# ── Documentation build output ────────────────────────────────────────
+# scripts/build_site.sh renders into public/; `make html` in docs/ renders
+# into docs/_build/. docs/api/ holds the autosummary stubs, which
+# autosummary_generate regenerates on every build.
+public/
+docs/_build/
+docs/api/
