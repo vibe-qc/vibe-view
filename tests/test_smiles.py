@@ -9,6 +9,7 @@ an experimental 104.5, which is precisely why the refinement step exists.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -139,11 +140,24 @@ class TestPackaging:
         assert any("smiles" in d for d in extras["all"]), "`all` should mean all"
 
 
-@pytest.mark.skipif(HAVE_RDKIT, reason="RDKit installed; the missing path cannot run")
 class TestMissingExtraIsActionable:
-    def test_error_names_the_extra(self):
+    """Forces the RDKit-absent branch instead of waiting for a venv that
+    lacks it.
+
+    This class used to carry ``skipif(HAVE_RDKIT)``, so it ran only where
+    RDKit was missing -- and a broken assertion hid inside it for the whole
+    life of the split, because the dev venv had RDKit and CI's checkout
+    directory happened to make the assertion pass. A test that runs only in
+    the environment you do not have is a test nobody reads the failures of.
+
+    Masking the module makes ``import rdkit`` raise ImportError whether or
+    not the package is installed, so this is meaningful in every venv.
+    """
+
+    def test_error_names_the_extra(self, monkeypatch):
         """Without RDKit the user must learn what to install, not just that
         building failed."""
+        monkeypatch.setitem(sys.modules, "rdkit", None)
         with pytest.raises(ValueError) as exc:
             smiles_to_qvf("CCO")
         msg = str(exc.value)
@@ -249,9 +263,11 @@ class TestBuilderController:
         assert _app(tmp_path).state.smiles_available is True
 
 
-@pytest.mark.skipif(HAVE_RDKIT, reason="RDKit installed; the missing path cannot run")
 class TestBuilderWithoutTheExtra:
-    def test_flag_is_false_and_the_error_names_the_install(self, tmp_path):
+    """Same reasoning as TestMissingExtraIsActionable: force the branch."""
+
+    def test_flag_is_false_and_the_error_names_the_install(self, tmp_path, monkeypatch):
+        monkeypatch.setitem(sys.modules, "rdkit", None)
         app = _app(tmp_path)
         assert app.state.smiles_available is False
         before = len(app.state.file_names)

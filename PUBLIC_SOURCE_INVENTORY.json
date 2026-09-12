@@ -49,7 +49,7 @@
   },
   {
     "changed": true,
-    "export_sha256": "f8d3db9934a5c28180d7a957d07ec5ed080f9152d6efbec1a614e46a61d7480d",
+    "export_sha256": "11e343148b6b4528d34f115abae1bbff9066bbbb5a74bffcc2cb26851e6dbec0",
     "mode": "100644",
     "path": "CHANGELOG.md",
     "reasons": [
@@ -58,32 +58,32 @@
       "Public comparison between selected snapshot refs",
       "Selected public release tag source; does not assume a GitHub Release exists"
     ],
-    "source_blob": "76e9b7082a42b0bb56e6ce48da3dd4a2c7e92892",
-    "source_sha256": "af1bb5bbc8beb301a5f952b234385308ccfb5764a56e6ff1419a7c5fb54c08a2"
+    "source_blob": "d9ec934283038cfa5f89f35b0a8c4604bac3f0df",
+    "source_sha256": "11c891aa04b4dba2e65f095f96b46838ceb1bc98dd70e490c82555d5ff9c6218"
   },
   {
     "changed": true,
-    "export_sha256": "fbe49e23615f9864047411b91dc0aed0783b2694f1356d488400ea0c63498ecc",
+    "export_sha256": "0a08ab1fd9bb26c5da3a91aedcb9ee98336789cf6d59dfab828c47334e9cbcff",
     "mode": "100644",
     "path": "CITATION.cff",
     "reasons": [
       "public citation repository URL",
       "public maintainer website"
     ],
-    "source_blob": "592e338a9d1f5df23429ebb2a46890e321ca15e3",
-    "source_sha256": "a681c0838617c681dccb7b4637919d54be099fec7fa0a0d9265bc5230d4f6668"
+    "source_blob": "2a9dfd9c35684c9852b62301cf9ecdb6d3bf2a6c",
+    "source_sha256": "7d9673925cdbc7eecb7114c138cadd725aaefc9ceea5832e51609c13b0a9ba2f"
   },
   {
     "changed": true,
-    "export_sha256": "d12aa073787d90918000f338fcc756c1b7dfb0027fed05f36dbbdddf6eb36df5",
+    "export_sha256": "d6531525127b21cdf76d1bf03f192191cf437c2de06c5dbba61588d8e9921eb9",
     "mode": "100644",
     "path": "CONTRIBUTING.md",
     "reasons": [
       "public repository URL",
       "public tracker landing URL; original issue IDs are private"
     ],
-    "source_blob": "6dab2612c6bb61d9b10a6904cdfbdbed8c6165ff",
-    "source_sha256": "1482b7510c03a5b78cc872667be844dfb19be71825a8e665720641bbc9adfb5e"
+    "source_blob": "21071a5121e74919dcfee3bb92c47fd47e95dd8f",
+    "source_sha256": "c0112af92e71f353a55d769f2da559a55bfced2174f8edaf6e1c9fed08316b89"
   },
   {
     "changed": false,
@@ -1089,21 +1089,21 @@
   },
   {
     "changed": false,
-    "export_sha256": "088aac6d100c9549937812b7b3d555a518ffe06c8214337f9143722d213bb51c",
+    "export_sha256": "bab6b813a81e3b5f53ac7472ca3e98846d4078fa9f120e3b550c9ce5b0ed8394",
     "mode": "100644",
     "path": "electron/package-lock.json",
     "reasons": [],
-    "source_blob": "e925edc9c8edefc85467a5f7a39dbba102cbe048",
-    "source_sha256": "088aac6d100c9549937812b7b3d555a518ffe06c8214337f9143722d213bb51c"
+    "source_blob": "66fedac242630db8ce19f0008608e3d00ef60605",
+    "source_sha256": "bab6b813a81e3b5f53ac7472ca3e98846d4078fa9f120e3b550c9ce5b0ed8394"
   },
   {
     "changed": false,
-    "export_sha256": "b26a657c627322c5b2818fcb78e2fa25f1e6743d62351602deceb6e9ffdf1598",
+    "export_sha256": "2aacb9de59bf4e2e15f980104ceb2e973d170ef8a4aba4301922ccb583d59cf9",
     "mode": "100644",
     "path": "electron/package.json",
     "reasons": [],
-    "source_blob": "4d32e7090aa0158e2f36eef995db6c652ebb8c5c",
-    "source_sha256": "b26a657c627322c5b2818fcb78e2fa25f1e6743d62351602deceb6e9ffdf1598"
+    "source_blob": "50ea366f26f418f190d32255d68765e505fcf7eb",
+    "source_sha256": "2aacb9de59bf4e2e15f980104ceb2e973d170ef8a4aba4301922ccb583d59cf9"
   },
   {
     "changed": false,
@@ -1143,7 +1143,7 @@
   },
   {
     "changed": true,
-    "export_sha256": "44555c259bc23a6d60fcad6910a2ba7b3b337a62022af06e57b21884b6bd4264",
+    "export_sha256": "7fd8a924a688a9a04fe26a500739aedfaa48cf9e0bc039b9afb4f334cd4fe8db",
     "mode": "100644",
     "path": "pyproject.toml",
     "reasons": [
@@ -1151,8 +1151,8 @@
       "public package issues URL",
       "public package repository URL"
     ],
-    "source_blob": "bca39737dd6ad640665f32e57205cfb9a11557cf",
-    "source_sha256": "2ba1b157baaccdb65abdd574a261e9e6f3f16c622a484dff0d4623e9979e237a"
+    "source_blob": "89770bdc2791a74e7a7be4d487465813c64f1959",
+    "source_sha256": "2aa1ecb7a0985900f56d13653f17041d4ba4b7536e975b08b528b8c144ba1d3b"
   },
   {
     "changed": false,
@@ -1282,12 +1282,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "4a39678e1e53b39331dc24aead94845dc3daa49bd5ca4bfbc93329a1d72dc76f",
+    "export_sha256": "e69e963c8f269d55dd4f10fe199cec27daeac0c19b70006f74cb19c783fc898a",
     "mode": "100644",
     "path": "src/vibeview/__init__.py",
     "reasons": [],
-    "source_blob": "bf66260159de9ddd5845da04fdeb49229cc1f0a5",
-    "source_sha256": "4a39678e1e53b39331dc24aead94845dc3daa49bd5ca4bfbc93329a1d72dc76f"
+    "source_blob": "85a2fca8dadd0d6d9dc95055d655ff412c2c1fff",
+    "source_sha256": "e69e963c8f269d55dd4f10fe199cec27daeac0c19b70006f74cb19c783fc898a"
   },
   {
     "changed": false,
@@ -2839,12 +2839,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "4c50acd2cb0e70a2b9b036bbd15d49937de4450deb7d2a1c6292d8a773c2f3ef",
+    "export_sha256": "8440239f7855eb9ca7bbbd4bef3e2ae76de08ff7a6fb484ab0f47b54eea35566",
     "mode": "100644",
     "path": "tests/test_smiles.py",
     "reasons": [],
-    "source_blob": "6f82069800013db9bd877d8e720dd0c4f920e222",
-    "source_sha256": "4c50acd2cb0e70a2b9b036bbd15d49937de4450deb7d2a1c6292d8a773c2f3ef"
+    "source_blob": "ef2f752b0f1a0714e67f720b52b7d62c8124bad1",
+    "source_sha256": "8440239f7855eb9ca7bbbd4bef3e2ae76de08ff7a6fb484ab0f47b54eea35566"
   },
   {
     "changed": false,
@@ -3003,7 +3003,7 @@
   },
   {
     "changed": true,
-    "export_sha256": "86cdf1baa66233478b5b30b0bd905014402e6f36f81fa384bdae16fa25998b75",
+    "export_sha256": "d97b1b6a183dfb63f952d5b3e8a1381a69fff45f46ab793ffd4be4de84c00029",
     "mode": "100644",
     "path": "PUBLIC_RELEASE_SOURCE.json",
     "reasons": [

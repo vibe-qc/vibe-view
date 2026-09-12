@@ -20,7 +20,7 @@ binary file-like:
 
 from __future__ import annotations
 
-__version__ = "2.16.1"  # Sayle's Starling -- see vibeview.codenames,
+__version__ = "2.16.2"  # Sayle's Starling -- see vibeview.codenames,
 #                        which is the catalogue every surface reads. This
 #                        comment is a convenience, and the drift test in
 #                        tests/test_release_codenames.py keeps it honest.

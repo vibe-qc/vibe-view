@@ -78,6 +78,75 @@ Skips are load-bearing here, so the suite distinguishes two kinds:
 CI sets `VIBEVIEW_REQUIRE_QVF_CORPUS=1` so that in the lane which clones the
 corpus on purpose, a missing corpus is an **error** rather than a skip.
 
+### Tests for optional dependencies must run in every environment
+
+**Never gate a test on a dependency being _present_.** A test marked
+`skipif(HAVE_SOMETHING)` runs only where that package is missing — which is
+usually nobody's machine, or only CI, or only a contributor's. Nobody reads
+its failures, so it can be broken for months while looking green.
+
+That is not hypothetical here. Two `test_smiles.py` classes carried
+`skipif(HAVE_RDKIT)`, and both contained a broken assertion for the whole life
+of the split (2026-09). They asserted `"vibe-view[smiles]" in msg` against a
+remediation that is deliberately path-based for a source checkout — so they
+were really checking *where the repository sat on disk*, not whether the
+message helped a user. They skipped on any machine with RDKit, and passed in
+CI only because `$CI_PROJECT_DIR` happens to be named `vibe-view`.
+
+Force the branch instead. Masking the module makes the import fail whether or
+not the package is installed:
+
+```python
+def test_error_names_the_extra(self, monkeypatch):
+    monkeypatch.setitem(sys.modules, "rdkit", None)   # import rdkit now raises
+    with pytest.raises(ValueError) as exc:
+        smiles_to_qvf("CCO")
+```
+
+Check before you push — and note the **positive control**, because an empty
+result from a pattern you have not tested is worth nothing:
+
+```sh
+# 1. prove the pattern can find the shape, using a throwaway file
+echo '@pytest.mark.skipif(HAVE_X, reason="x")' > /tmp/ctl.py
+grep -nE 'skipif\((HAVE_|HAS_|_HAS_|_HAVE_)[A-Z_]*[,)]' /tmp/ctl.py   # must match
+
+# 2. then run it for real
+grep -rnE 'skipif\((HAVE_|HAS_|_HAS_|_HAVE_)[A-Z_]*[,)]' tests/
+```
+
+**Read the hits; a non-empty result is not by itself a finding.** The
+pattern is deliberately wide, so it matches safe code too. Check the
+*direction* of each condition:
+
+| Condition | Runs when | Verdict |
+|---|---|---|
+| `skipif(HAVE_RDKIT, ...)` | RDKit is **absent** | **the bug** — hides where nobody looks |
+| `skipif(shutil.which("git") is None, ...)` | git is **present** | fine — runs wherever the dependency exists |
+| `skipif(not HAVE_RDKIT, ...)` | RDKit is **present** | fine — the ordinary "needs the extra" gate |
+
+Only a condition that is *true when the dependency is present* hides
+anything.
+
+The command above is deliberately narrow and matches the trap row **only** —
+verified by planting all three rows in a file and running it: one of three
+flagged. On this repository it currently returns a single hit, and that hit is
+prose in a docstring describing a gate that was removed.
+
+The table earns its keep when you **widen** the pattern — adding
+`*_AVAILABLE` / `*_INSTALLED` constants, `find_spec(...) is not None`, or a
+bare `shutil.which(...)`. A wide sweep here returns **seven** hits and all
+seven are benign: six are the safe `shutil.which(...) is None` form and the
+seventh is that same docstring. Widen it when you want confidence there is no
+variant the narrow pattern misses, then read the direction of every hit before
+acting on any of them.
+
+**The carve-out:** an *extra leg* of a test may skip when a companion package
+is missing — the producer/consumer checks that need `vibeqc` do exactly that —
+provided the test's **core assertions still run unconditionally**. The rule
+bans hiding a whole test behind a capability nobody has, not gating an
+additional check that genuinely needs one.
+
 ## QVF schemas are vendored, and pinned
 
 `src/vibeview/schema.json` and `schema_v2.json` are vendored copies of the QVF

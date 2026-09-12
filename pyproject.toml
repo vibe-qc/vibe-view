@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeview"
-version = "2.16.1"
+version = "2.16.2"
 description = "GPU-accelerated interactive 3D viewer for quantum-chemistry structures and results"
 readme = "README.md"
 requires-python = ">=3.11"

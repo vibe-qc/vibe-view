@@ -16,6 +16,28 @@ deliberately not transferred — see the [README](README.md#history).
 
 Nothing yet.
 
+## [v2.16.2] - 2026-09-12 - *Sayle's Starling*
+
+A test and documentation patch. Inherits v2.16.0's codename; viewer runtime
+behavior is unchanged from v2.16.1.
+
+### Fixed
+
+- Missing-RDKit tests now force the absent-dependency branch even when RDKit
+  is installed, and check the installation hint without depending on the
+  checkout directory's name.
+- The patch-release checklist now includes the Electron package version and
+  both lockfile versions, matching the full release procedure.
+
+### Changed
+
+- Contributor guidance explains how to exercise missing optional dependencies
+  in every environment and distinguish safe dependency gates from tests that
+  hide when their dependency is installed.
+- The product handover records current release evidence and the differences
+  between local tests and the release gate, including editable-install and
+  release-tooling checks.
+
 ## [v2.16.1] - 2026-09-10 - *Sayle's Starling*
 
 A one-fix patch. Inherits v2.16.0's codename, as every patch does.
@@ -258,7 +280,8 @@ along with vibe-qc, vibe-queue, qvf and vibe-qc-agentic-loop. The QVF manifest
 schemas, previously symlinks into the producer's tree, became vendored data
 files so the built wheel is self-contained.
 
-[Unreleased]: https://github.com/vibe-qc/vibe-view/compare/v2.16.1...main
+[Unreleased]: https://github.com/vibe-qc/vibe-view/compare/v2.16.2...main
+[v2.16.2]: https://github.com/vibe-qc/vibe-view/tree/v2.16.2
 [v2.16.1]: https://github.com/vibe-qc/vibe-view/tree/v2.16.1
 [v2.16.0]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
 [v2.15.3]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
