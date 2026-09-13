@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeview"
-version = "2.16.2"
+version = "2.17.0"
 description = "GPU-accelerated interactive 3D viewer for quantum-chemistry structures and results"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -82,6 +82,8 @@ tui = ["textual>=1.0"]
 # everything else to ase.io.read. Optional because ASE is a large dependency
 # that most users opening a common structure or QVF file never need.
 ase = ["ase>=3.22"]
+# Official reader for TREXIO HDF5 files and text-backend directories.
+trexio = ["trexio>=2.5"]
 # Build a 3D structure from a SMILES string (`Build from SMILES`). RDKit is
 # BSD-3-Clause and optional: it is a large wheel that routine file viewing does
 # not need.
@@ -116,8 +118,8 @@ queue = ["vq>=0.25"]
 # Tests drive the interactive app (create_app / trame), so pull the viewer.
 # scipy: the live-opt worker's L-BFGS-B loop (normally supplied by the
 # vibe-qc install, which is absent on the vibe-view CI gate).
-test = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[jupyter]", "pytest>=8", "scipy>=1.11"]
-all = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[smiles]", "ipython", "ipywidgets", "psutil"]
+test = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[jupyter]", "pytest>=8", "scipy>=1.11"]
+all = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[smiles]", "ipython", "ipywidgets", "psutil"]
 dev = ["ruff", "mypy"]
 # Release-artifact tooling. scripts/build_release_artifacts.py builds the wheel
 # and sdist twice, normalises the sdist metadata setuptools leaves host-

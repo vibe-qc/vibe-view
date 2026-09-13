@@ -122,6 +122,7 @@ troubleshooting
 :maxdepth: 1
 :caption: The project
 
+roadmap
 codenames
 release_process
 changelog

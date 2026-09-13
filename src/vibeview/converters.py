@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vibeview.trexio_import import TREXIO_EXTENSIONS, is_trexio_directory, trexio_to_qvf
+
 if TYPE_CHECKING:
     from typing import IO
 
@@ -1274,7 +1276,7 @@ _ASE_STEMS = ("POSCAR", "CONTCAR")
 # What the browse page globs for. It previously listed only the native set,
 # so files `detect_format` could happily open were never offered — the
 # inconsistency the 2026-07-02 audit flagged (F2).
-_SUPPORTED_EXTENSIONS = _NATIVE_EXTENSIONS + _ASE_EXTENSIONS
+_SUPPORTED_EXTENSIONS = _NATIVE_EXTENSIONS + _ASE_EXTENSIONS + TREXIO_EXTENSIONS
 
 
 @dataclass(frozen=True)
@@ -1339,6 +1341,19 @@ def format_capabilities() -> tuple[FormatCapability, ...]:
         )
     )
 
+    trexio_available = find_spec("trexio") is not None
+    capabilities.append(
+        FormatCapability(
+            "trexio",
+            TREXIO_EXTENSIONS,
+            "TREXIO optional extra",
+            trexio_available,
+            ("structure", "lattice", "wavefunction.gto"),
+            "TREXIO HDF5 files and text directories; real molecular Gaussian orbitals (s–f)",
+            None if trexio_available else install_hint("trexio"),
+        )
+    )
+
     from vibeview.importers import discover_importers
 
     for status in discover_importers():
@@ -1393,8 +1408,13 @@ def detect_format(path: str | Path) -> str | None:
     - ``.gjf`` / ``.com`` → ``"gjf"``
     - ``.gro`` → ``"gro"``
     - ``.sdf`` / ``.mol`` → ``"sdf"``
+    - ``.trexio`` / ``.h5`` / ``.hdf5`` or a TREXIO text directory → ``"trexio"``
     """
+    if is_trexio_directory(path):
+        return "trexio"
     ext = Path(path).suffix.lower()
+    if ext in TREXIO_EXTENSIONS:
+        return "trexio"
     known = {
         ".qvf": "qvf",
         ".xyz": "xyz",
@@ -1450,6 +1470,7 @@ def convert_to_qvf(path: str | Path, *, format_name: str | None = None) -> io.By
         "qvf": lambda p: io.BytesIO(Path(p).read_bytes()),
         "py": py_to_qvf,
         "ase": ase_to_qvf,
+        "trexio": trexio_to_qvf,
     }
     converter = _CONVERTERS.get(fmt)
     if converter is not None:

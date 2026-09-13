@@ -470,7 +470,7 @@ def citations(reader, section_id: str) -> str:
     data = reader.read_citations(section_id)
     return _lines(
         f"[{_H}]Citations (BibTeX)[/]",
-        f"[{_K}]copy this into your bibliography — see CLAUDE.md § 8[/]",
+        f"[{_K}]copy this into your bibliography[/]",
         "",
         f"[{_V}]{escape(data.bibtex)}[/]",
     )

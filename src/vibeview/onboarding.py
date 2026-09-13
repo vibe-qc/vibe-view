@@ -51,6 +51,7 @@ _OPTIONAL_REQUIREMENTS: dict[str, tuple[_ModuleRequirement, ...]] = {
     ),
     "tui": (_ModuleRequirement("textual", "textual"),),
     "ase_import": (_ModuleRequirement("ase", "ase"),),
+    "trexio_import": (_ModuleRequirement("trexio", "trexio"),),
     "smiles": (_ModuleRequirement("rdkit", "rdkit"),),
     "jupyter": (
         _ModuleRequirement("IPython", "ipython"),
@@ -67,6 +68,7 @@ _CAPABILITY_EXTRAS = {
     "browser": "viewer",
     "tui": "tui",
     "ase_import": "ase",
+    "trexio_import": "trexio",
     "smiles": "smiles",
     "jupyter": "jupyter",
     "queue": "queue",

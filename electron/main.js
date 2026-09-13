@@ -95,7 +95,7 @@ const APP_VERSION = CONFIG.version || app.getVersion();
 // VIBEVIEW_DESKTOP_CONFIG -- it is the only copy of the string left in this
 // file, and tests/test_release_codenames.py asserts it equals what the
 // catalogue resolves for the current version.
-const FALLBACK_CODENAME = "Sayle's Starling";
+const FALLBACK_CODENAME = "Lorensen's Loon";
 const APP_CODENAME = CONFIG.codename || FALLBACK_CODENAME;
 
 app.setName("vibe-view");
@@ -565,8 +565,22 @@ function waitForServer(url, retries = 30, interval = 500) {
 
 // ── File opening ──────────────────────────────────────────────────────
 
+function isTrexioDirectory(dir) {
+  try {
+    return ["metadata.txt", "nucleus.txt"].every((name) =>
+      fs.statSync(path.join(dir, name)).isFile(),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function openFolder(dir) {
   const abs = path.resolve(dir);
+  if (isTrexioDirectory(abs)) {
+    openFile(abs);
+    return;
+  }
   currentFile = null;
   createWindow();
   mainWindow.loadURL(`${SERVER_URL}/browse?dir=${encodeURIComponent(abs)}`);
@@ -579,7 +593,7 @@ function openFile(fp) {
     dialog.showErrorBox("vibe-view", `File not found:\n${abs}`);
     return;
   }
-  if (fs.statSync(abs).isDirectory()) {
+  if (fs.statSync(abs).isDirectory() && !isTrexioDirectory(abs)) {
     openFolder(abs); // a dropped/opened folder browses, not /open
     return;
   }
@@ -760,8 +774,10 @@ function createTray() {
       click: () => createWindow(),
     },
     {
-      label: "Open QVF File...",
-      click: () => showOpenDialog([{ name: "QVF Files", extensions: ["qvf"] }]),
+      label: "Open QVF or TREXIO File...",
+      click: () => showOpenDialog([
+        { name: "QVF and TREXIO Files", extensions: ["qvf", "trexio", "h5", "hdf5"] },
+      ]),
     },
     { type: "separator" },
     {
@@ -817,11 +833,12 @@ function createMenu() {
       label: "File",
       submenu: [
         {
-          label: "Open QVF File...",
+          label: "Open QVF or TREXIO File...",
           accelerator: "CmdOrCtrl+O",
           click: () =>
             showOpenDialog([
               { name: "QVF Files", extensions: ["qvf"] },
+              { name: "TREXIO Files", extensions: ["trexio", "h5", "hdf5"] },
               { name: "All Files", extensions: ["*"] },
             ]),
         },

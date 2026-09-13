@@ -1,7 +1,7 @@
 {
   "repository": "vibe-view",
-  "original_tag": "v2.16.2",
-  "original_tag_commit": "60bd72876e72f9bb542fdca6a6221260d2b2404f",
-  "sanitized_source_commit": "7a89252c6d0db1f784ec3b68c928353ce2199c27",
+  "original_tag": "v2.17.0",
+  "original_tag_commit": "3b9f148bcbdc2e44de567641b0a9f45c2a604036",
+  "sanitized_source_commit": "19acdd55b006e9efdec04ef6552a3937ff788c7a",
   "sanitation": "Separate site operations and private history; preserve scientific source, tests, schemas, release versions and license provenance; apply portable privacy guards and public repository links."
 }

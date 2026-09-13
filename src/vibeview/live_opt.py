@@ -23,7 +23,7 @@ vibe-qc, no new hard dependency):
   but only finite-difference gradients (6N SCFs per step).
   Needs only ``vibeqc`` (which brings scipy) — no ASE.
 * ``"mace"`` — the MACE pre-trained MLIP via ``vibeqc.mlip`` (the
-  maintainer-approved external-engine exception, CLAUDE.md §10),
+  MLIP exception to vibe-qc's own-implementation rule),
   offered when the ``[mace]`` stack (torch + mace + ase) is importable
   next to vibeqc. Uses the default **MIT-licensed MACE-MPA-0** model on
   CPU — the ASL-gated academic models are deliberately not selectable
@@ -370,7 +370,7 @@ def _msindo_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]
 
 def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
     """Return ``fun(coords_A) -> (E_hartree, grad_ha_bohr[n,3])`` on the
-    default MIT-licensed MACE model (vibeqc.mlip; CLAUDE.md §10 MLIP
+    default MIT-licensed MACE model (vibeqc.mlip; vibe-qc's MLIP
     exception). The energy is the model's reference-shifted DFT-surface
     value — the note event names the model for attribution. ASL-gated
     academic models are deliberately not reachable from live-opt.

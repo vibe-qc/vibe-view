@@ -1,5 +1,13 @@
 # vibe-view → Avogadro 2.0 parity roadmap
 
+> **Frozen on 2026-09-13.** This is the parity plan as it stood when vibe-view
+> was split out of the monorepo: its last entry is dated 2026-08-25, and
+> everything it marks done shipped in v2.15.2. It is kept for its evidence and
+> reasoning and is no longer updated. Its issue numbers are the monorepo
+> tracker (project 19), not this repository's, and its `../../docs/user_guide/`
+> links point into the pre-split layout. For current status and remaining
+> work, see the [Roadmap](roadmap.md).
+
 **Goal:** make vibe-view the definitive builder/viewer for vibe-qc + vq work,
 at feature parity with Avogadro 2.0, with the QVF file at the center and a
 heavy focus on *visualizing and interacting with running vq jobs and vibe-qc

@@ -183,7 +183,7 @@ repeat `--extras` when maintaining a non-default profile.
 - **Biomolecule metadata** — QVF `structure` sections carry optional chains / residues / secondary structure for cartoon rendering
 - **Terminal mode** — full 3D viewer, charts and selectable wavefunction surfaces as Unicode braille in any terminal: canonical, alpha/beta, natural and localized orbitals plus computed density, with no display server, GL or X forwarding ([guide](https://vibe-qc.com/vibe-view/docs/capabilities.html))
 - **Jupyter notebooks** — `%vibeview` renders structures, volume captures, tables, SCF histories, and bands inline (requires the `[jupyter]` extra)
-- **Import** — QVF, vibe-qc Python inputs (`.py`), XYZ, CIF, Cube, PDB, Mol2, Gaussian input, GRO, SDF/Mol
+- **Import** — QVF, vibe-qc Python inputs (`.py`), XYZ, CIF, Cube, PDB, Mol2, Gaussian input, GRO, SDF/Mol; TREXIO geometry and Gaussian orbitals through the optional `[trexio]` extra ([format guide](docs/formats.md#trexio-wavefunctions))
 - **Export** — XYZ, CIF, OBJ, glTF, HTML (standalone 3D viewer), JSON
 
 ## Quickstart

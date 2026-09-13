@@ -308,6 +308,7 @@ def _browse_dir(dir_path: Path, rel_path: str = "", show_welcome: bool | None = 
     """
     from vibeview import __version__
     from vibeview.qvf import QVFError, QVFReader
+    from vibeview.trexio_import import TREXIO_EXTENSIONS, is_trexio_directory
 
     dir_path = dir_path.resolve()
     rows = []
@@ -320,7 +321,17 @@ def _browse_dir(dir_path: Path, rel_path: str = "", show_welcome: bool | None = 
     for entry in entries:
         if entry.name.startswith("."):
             continue
-        if entry.is_dir():
+        if is_trexio_directory(entry) or (
+            entry.is_file() and entry.suffix.lower() in TREXIO_EXTENSIONS
+        ):
+            n_files += 1
+            open_url = "/open?file=" + urllib.parse.quote(str(entry.resolve()))
+            rows.append(
+                f'<tr><td><a href="{_html_text(open_url)}" '
+                f'title="Open in 3D viewer">{_html_text(entry.name)}</a></td>'
+                '<td>TREXIO</td><td></td><td></td><td></td><td></td></tr>'
+            )
+        elif entry.is_dir():
             sub_url = "/browse?dir=" + urllib.parse.quote(str(entry))
             rows.append(
                 f'<tr><td><a href="{_html_text(sub_url)}">'
@@ -537,8 +548,9 @@ def _find_free_port(start: int, host: str = "127.0.0.1") -> int:
 def _openable(path: Path) -> bool:
     """True if ``vibe-view open`` can load this file (QVF or convertible)."""
     from vibeview.converters import detect_format
+    from vibeview.trexio_import import is_trexio_directory
 
-    return path.is_file() and detect_format(path) is not None
+    return (path.is_file() or is_trexio_directory(path)) and detect_format(path) is not None
 
 
 def _ensure_viewer(file_path: Path, base_port: int, host: str = "127.0.0.1") -> int:

@@ -13,6 +13,7 @@ Use `open` when you only want to look:
 vibe-view open molecule.xyz
 vibe-view open density.cube
 vibe-view open POSCAR
+vibe-view open calculation.hdf5                 # needs the [trexio] extra
 ```
 
 The conversion happens in memory for that session. The source file is not
@@ -65,6 +66,7 @@ of truth for an installed version.
 | XYZ (`.xyz`) | none | One molecular geometry, coordinates in Å | No cell, bonds, properties, or reliable multi-frame import. |
 | CIF (`.cif`) | none | Explicit atom sites and cell parameters | Symmetry operations are not expanded. Supply an expanded cell when the file stores only the asymmetric unit. |
 | Gaussian cube (`.cube`) | none | Structure and one scalar volume | The volume kind is inferred from the comment lines and defaults to density. No wavefunction, spectra or provenance. `.cub` is not recognized. |
+| TREXIO (`.h5`, `.hdf5`, `.trexio`, or a text-backend directory) | `[trexio]` | Geometry, cell, electron count, real molecular Gaussian basis and MOs, available energies, occupations and spin/symmetry labels | Orbital evaluation covers spherical or Cartesian s/p/d/f shells. Unsupported or incomplete wavefunctions raise an error; see below. |
 | PDB (`.pdb`) | none | Coordinates, atom, residue and chain names, B factors, the `CRYST1` cell | Explicit connectivity is not imported. Use a cleaned single model; alternate locations and multiple models are not resolved. |
 | Tripos Mol2 (`.mol2`) | none | Geometry and explicit bond orders | Charges, force-field atom types beyond the element, and substructure metadata are dropped. |
 | Gaussian input (`.gjf`, `.com`) | none | The Cartesian geometry | Route, basis, constraints and Z-matrix input are not interpreted. Gaussian output, `.chk` and `.fchk` are not supported. |
@@ -82,6 +84,47 @@ aid, not evidence that the source contained bond orders.
 opening a common format never need. When you open a file that needs it,
 vibe-view names the extra and the exact install command.
 
+## TREXIO wavefunctions
+
+Install the official TREXIO Python library through the optional extra (also
+included in `[all]`):
+
+```sh
+python -m pip install -e '.[trexio]'             # from a source checkout
+vibe-view formats                              # reports readiness and an install hint
+vibe-view open calculation.hdf5
+vibe-view import calculation.hdf5 -o calculation.qvf
+vibe-view import ./calculation.trexio            # HDF5 file or TREXIO text directory
+vibe-view import calculation.data --from trexio  # HDF5 with another extension
+```
+
+The HDF5 and text backends use the same importer. Text datasets are directories
+containing TREXIO group files such as `metadata.txt` and `nucleus.txt`; pass the
+whole directory. A dataset counts as one input, including when a batch import
+or the viewer's file dialog discovers it inside a results directory. HDF5 files
+also work through browser uploads. For text datasets, use the server-side path
+dialog or import them to QVF first. The desktop app also accepts TREXIO files
+and opens a text dataset selected through Open Folder or drag and drop.
+
+Nuclear coordinates and cell vectors are converted from bohr to Å. Gaussian
+exponents and MO energies remain in atomic units. The importer translates the
+TREXIO spherical AO order and all three normalization factors (primitive, shell
+and AO) into QVF conventions, preserving orbital values. Restricted and
+unrestricted sets retain their available energies, occupations and symmetry
+labels. Natural occupations are identified as electron occupations. Missing
+energies and occupations are left absent; the importer does not infer an SCF
+occupation pattern from the electron count.
+
+Files without MO coefficients open as structures. When MO coefficients are
+present, they require a complete real, nonperiodic Gaussian basis, including
+the explicit normalization factors. Slater, numerical and plane-wave bases,
+complex or k-point orbitals, nonzero radial powers and shells above f are not
+supported for orbital import. These cases raise an error instead of displaying
+an altered wavefunction; export a cube volume from the producer to view a
+sampled field. Periodic geometry without orbitals retains the cell and periodic
+flags. Integrals, determinants, CI coefficients, ECP operators and linked state
+files are not imported; computed density uses the stored MO occupations.
+
 ## Routes from other programs
 
 | Producer | Best route today | Not imported directly |
@@ -90,6 +133,7 @@ vibe-view names the extra and the exact install command.
 | ORCA | Export `.xyz` for the geometry, `.cube` for one scalar field | `.out`, `.gbw`, `.hess`, `.molden.input` |
 | VASP | Install `[ase]`, then open or import `POSCAR` / `CONTCAR` | `CHGCAR`, `LOCPOT`, `WAVECAR`, `DOSCAR`, `PROCAR` |
 | CP2K, Quantum ESPRESSO, Psi4, PySCF and similar | Export XYZ or CIF for the structure, cube for one volume; or add a QVF writer | Native logs, restart files, code-specific wavefunction files |
+| TREXIO-producing programs | Open a TREXIO dataset with `[trexio]` for geometry and supported Gaussian orbitals | Correlated many-body data, unsupported orbital bases and periodic wavefunctions |
 | Molecular-dynamics tools | PDB, GRO, Mol2, SDF, XYZ, or one of the listed ASE routes | Multi-frame trajectories are not yet a general import path |
 
 `.molden` is not among the built-in formats, so orbitals from a code that

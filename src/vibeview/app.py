@@ -202,6 +202,7 @@ def _scan_gui_directory(
     import os
 
     from vibeview.converters import is_supported_path
+    from vibeview.trexio_import import is_trexio_directory
 
     if max_entries < 1 or max_candidates < 1:
         raise ValueError("GUI scan limits must be positive")
@@ -241,6 +242,11 @@ def _scan_gui_directory(
                     if is_directory:
                         if _is_pruned_gui_directory(entry_path):
                             pruned_directories += 1
+                        elif is_trexio_directory(entry_path):
+                            candidates.append(entry_path)
+                            if len(candidates) >= max_candidates:
+                                truncated = True
+                                break
                         elif recursive:
                             child_directories.append(entry_path)
                         continue
@@ -308,6 +314,7 @@ def _scan_gui_glob(
     import glob
 
     from vibeview.converters import is_supported_path
+    from vibeview.trexio_import import is_trexio_directory
 
     if max_entries < 1 or max_candidates < 1:
         raise ValueError("GUI scan limits must be positive")
@@ -330,7 +337,7 @@ def _scan_gui_glob(
         scanned_entries += 1
         path = Path(match)
         try:
-            if not path.is_file() or not is_supported_path(path):
+            if not (path.is_file() or is_trexio_directory(path)) or not is_supported_path(path):
                 continue
         except Exception as exc:  # plugin probes are third-party code
             error_count += 1
@@ -2606,7 +2613,7 @@ def create_app(readers):
     def load_file_from_bytes() -> None:
         """Load a file uploaded from the browser's file picker.
 
-        Auto-detects .xyz / .cif / .cube formats and converts them
+        Auto-detects supported structure, cube and TREXIO HDF5 files and converts them
         to QVF in-memory before opening.
         """
         import base64
@@ -2642,6 +2649,7 @@ def create_app(readers):
                     mol2_to_qvf,
                     pdb_to_qvf,
                     sdf_to_qvf,
+                    trexio_to_qvf,
                     xyz_to_qvf,
                 )
 
@@ -2654,6 +2662,7 @@ def create_app(readers):
                     "gjf": gjf_to_qvf,
                     "gro": gro_to_qvf,
                     "sdf": sdf_to_qvf,
+                    "trexio": trexio_to_qvf,
                 }
                 conv = _CONV.get(fmt)
                 if conv is None:
@@ -2736,7 +2745,11 @@ def create_app(readers):
         recursive = bool(server.state.open_recursive)
         scan_result: _GuiDirectoryScanResult | None = None
 
-        if target.is_dir():
+        from vibeview.trexio_import import is_trexio_directory
+
+        if is_trexio_directory(target):
+            candidates = [str(target)]
+        elif target.is_dir():
             server.state.status_message = f"Scanning {target}..."
             scan_result = _scan_gui_directory(target, recursive=recursive)
             candidates = [str(path) for path in scan_result.candidates]
@@ -8450,7 +8463,7 @@ def create_app(readers):
             with v.VCard():
                 v.VCardTitle("Open chemistry file(s)")
                 v.VCardText(
-                    "Choose a .qvf file from your machine, or enter a "
+                    "Choose a QVF, structure, cube or TREXIO HDF5 file, or enter a "
                     "server-side path / directory / glob below."
                 )
                 # Browser-native file picker via hidden HTML input.
@@ -8461,11 +8474,11 @@ def create_app(readers):
                 html.Input(
                     id="qvf-file-input",
                     type="file",
-                    accept=".qvf",
+                    accept=".qvf,.xyz,.cif,.cube,.pdb,.mol2,.gjf,.com,.gro,.sdf,.mol,.trexio,.h5,.hdf5",
                     style="display: none;",
                 )
                 v.VBtn(
-                    "Browse .qvf file\u2026",
+                    "Browse chemistry file\u2026",
                     prepend_icon="mdi-file-upload",
                     block=True,
                     variant="tonal",
@@ -8474,7 +8487,7 @@ def create_app(readers):
                 v.VCardText("Server-side path:", classes="text-caption mt-2")
                 v.VTextField(
                     v_model=("open_path",),
-                    label="Path to .qvf file or directory",
+                    label="Path to chemistry file or directory",
                     placeholder="~/jobs/  or  /path/to/calc.qvf",
                     density="compact",
                     hide_details=True,

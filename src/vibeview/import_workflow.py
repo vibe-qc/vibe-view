@@ -12,6 +12,7 @@ from pathlib import Path
 from vibeview.converters import convert_to_qvf, detect_format
 from vibeview.importers import get_importer
 from vibeview.qvf import QVFReader
+from vibeview.trexio_import import is_trexio_directory
 
 
 class ImportWorkflowError(ValueError):
@@ -62,6 +63,13 @@ def _visible_files(
                 for excluded in active_exclusions
             )
         )
+        # A text-backend TREXIO directory is one dataset. Do not descend
+        # into its group files or treat it as a batch-import root.
+        for name in directories[:]:
+            candidate = root_path / name
+            if is_trexio_directory(candidate):
+                directories.remove(name)
+                yield candidate
         for name in sorted(filenames):
             if name.startswith("."):
                 continue
@@ -96,7 +104,11 @@ def collect_import_inputs(
     requested_importer = get_importer(format_name) if format_name is not None else None
     for raw in inputs:
         path = raw.resolve()
-        if path.is_dir():
+        if path.is_dir() and detect_format(path) == "trexio":
+            if format_name not in (None, "trexio"):
+                raise ImportWorkflowError(f"{raw} is a TREXIO dataset")
+            files.append(path)
+        elif path.is_dir():
             saw_directory = True
             for candidate in _visible_files(
                 path,

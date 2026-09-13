@@ -1,9 +1,9 @@
 # vibe-view 2.0 — superseded historical release proposal
 
 > This file records the original v1.1-v2.0 proposal. Its "shipped" and
-> "feature complete" labels are not current feature status. Use the
-> [maintained parity roadmap](docs/ROADMAP_AVOGADRO_PARITY.md) for verified
-> status and remaining work.
+> "feature complete" labels are not current feature status, and its version
+> numbers and codenames never corresponded to a vibe-view release. Use the
+> [roadmap](docs/roadmap.md) for what has shipped and what is planned.
 
 ```
 v1.0  "Fukui's Fox"         ✅ shipped

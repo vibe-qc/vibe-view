@@ -32,7 +32,7 @@ ROADMAP_AVOGADRO_PARITY
 | [Design refresh 2026](design_refresh_2026.md) | The visual and interaction refresh: materials, lighting, ambient occlusion |
 | [Desktop packaging design](desktop_packaging_design.md) | How the Electron app is built, owned and updated, and why source and packaged builds differ |
 | [Cross-repository parity asks](parity_cross_repo_asks.md) | Things the viewer needs from producers, filed before the repositories were split |
-| [Avogadro parity roadmap](ROADMAP_AVOGADRO_PARITY.md) | The feature-parity target that drove much of v1.x–v2.x |
+| [Avogadro parity roadmap](ROADMAP_AVOGADRO_PARITY.md) | The feature-parity plan through v2.15.2, frozen at the split. The maintained plan is the [Roadmap](roadmap.md) |
 
 ## Not on this site
 

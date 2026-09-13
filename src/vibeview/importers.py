@@ -37,6 +37,7 @@ RESERVED_FORMAT_NAMES = frozenset(
         "py",
         "qvf",
         "sdf",
+        "trexio",
         "xyz",
     }
 )

@@ -14,7 +14,35 @@ deliberately not transferred — see the [README](README.md#history).
 - Prepare a portable, privacy-sanitized source snapshot; retain original release version and scientific behavior. Deployment and operator material are maintained separately.
 
 
-Nothing yet.
+## [v2.17.0] - 2026-09-13 - *Lorensen's Loon*
+
+TREXIO geometry and molecular orbitals can now be opened directly, bringing
+another wavefunction format into the viewer's isosurface workflow. QVF
+remains the native archive format. Periodic and complex orbital rendering
+and correlated CI/RDM visualization are outside this release's scope.
+
+### Added
+
+- TREXIO import through the optional `[trexio]` extra (included in `[all]`):
+  HDF5 files and text-backend directories open directly or convert to QVF.
+  Geometry, cells and real molecular Gaussian s/p/d/f orbitals retain their
+  units, normalization, AO ordering and available spin/energy/occupation
+  metadata. Browser uploads accept HDF5; directory scans treat text datasets
+  as one input. Unsupported wavefunctions produce explicit errors.
+
+- Packaging checks now guard the viewer's own distribution metadata, CLI entry
+  point, and core/browser dependency split without requiring a sibling checkout.
+  (#23)
+- **A roadmap aligned with the release series**, `docs/roadmap.md`. It records
+  what each tag shipped, including the parity work already in v2.15.2, and
+  records correctness follow-ups, scope for each registered codename, and the tracks
+  no single minor owns. The Avogadro parity roadmap is frozen as the record of
+  pre-split work, and `ROADMAP_V2.md` points at the new page.
+
+### Changed
+
+- Agent guides now describe the standalone viewer's development and release
+  workflow, replacing inherited monorepo guidance and stale code references.
 
 ## [v2.16.2] - 2026-09-12 - *Sayle's Starling*
 
@@ -280,7 +308,8 @@ along with vibe-qc, vibe-queue, qvf and vibe-qc-agentic-loop. The QVF manifest
 schemas, previously symlinks into the producer's tree, became vendored data
 files so the built wheel is self-contained.
 
-[Unreleased]: https://github.com/vibe-qc/vibe-view/compare/v2.16.2...main
+[Unreleased]: https://github.com/vibe-qc/vibe-view/compare/v2.17.0...main
+[v2.17.0]: https://github.com/vibe-qc/vibe-view/tree/v2.17.0
 [v2.16.2]: https://github.com/vibe-qc/vibe-view/tree/v2.16.2
 [v2.16.1]: https://github.com/vibe-qc/vibe-view/tree/v2.16.1
 [v2.16.0]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md

@@ -256,7 +256,7 @@ def test_non_string_format_name_is_isolated(monkeypatch) -> None:
 
 def test_reserved_names_track_built_in_and_optional_formats() -> None:
     built_in_names = {capability.format_name for capability in converters._BUILTIN_FORMATS}
-    assert built_in_names | {"ase"} == importers.RESERVED_FORMAT_NAMES
+    assert built_in_names | {"ase", "trexio"} == importers.RESERVED_FORMAT_NAMES
 
 
 @pytest.mark.parametrize("format_name", sorted(importers.RESERVED_FORMAT_NAMES))

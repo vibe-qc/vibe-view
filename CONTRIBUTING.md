@@ -39,7 +39,7 @@ python -m venv .venv
 .venv/bin/pip install -e '.[test]'
 ```
 
-`[test]` pulls the viewer, TUI, ASE and Jupyter extras plus pytest and scipy —
+`[test]` pulls the viewer, TUI, ASE, TREXIO and Jupyter extras plus pytest and scipy —
 everything the suite needs. vibe-qc is deliberately **not** installed: it would
 pull a native libint build, and the tests that need a real producer skip via
 `importorskip`. That is expected (see "Tests that skip" below).
@@ -163,8 +163,9 @@ which side moved first.
 
 ## Before you open a merge request
 
-- Run the affected lanes locally and name them. There is no per-commit CI on
-  `main`; a pipeline runs on push, but do not lean on it.
+- Run the affected lanes locally and name them. Pushes to `main` also run the
+  `test`, `qvf-conformance` and `docs-build` jobs; treat that as a second
+  check, not the first.
 - Keep `main` release-ready: no half-finished code paths, docs in parity,
   `CHANGELOG.md` `[Unreleased]` reflecting what you actually landed.
 - If your change touches one of the seven files vibe-qc's `build-test` job runs
@@ -260,6 +261,7 @@ vibe-view is pure Python. Its runtime dependencies —
 [jsonschema](https://python-jsonschema.readthedocs.io/) (MIT) — are all
 MPL-compatible, as are the optional
 [ase](https://gitlab.com/ase/ase) (LGPL-2.1+, imported not linked),
+[TREXIO](https://trex-coe.github.io/trexio/) (BSD-3),
 [rdkit](https://www.rdkit.org/) (BSD-3) and
 [textual](https://textual.textualize.io/) (MIT) extras.
 

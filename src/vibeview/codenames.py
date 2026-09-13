@@ -94,6 +94,9 @@ RELEASE_CODENAMES: dict[str, str] = {
     # in the toolkit he helped create, so this
     # is the most directly earned name in the
     # pool. A loon dives and surfaces.
+    # v2.17.0 brings TREXIO molecular orbitals
+    # into that isosurface workflow; it does
+    # not add a new isosurface algorithm.
     "2.18.0": "Richardson's Robin",  # Jane Richardson: the ribbon diagram
     # (1981). For biomolecular work -- chains,
     # residues, secondary structure -- because
