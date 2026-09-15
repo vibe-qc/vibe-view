@@ -28,6 +28,51 @@
   },
   {
     "changed": false,
+    "export_sha256": "f7724b8ce5af036c70c222eb1e73d7453a60d80185f4c4c7b2ede699c84e0da0",
+    "mode": "100644",
+    "path": ".github/ISSUE_TEMPLATE/bug.yml",
+    "reasons": [],
+    "source_blob": "9d8be58a91a1400878eee353da0d95ad87bc840f",
+    "source_sha256": "f7724b8ce5af036c70c222eb1e73d7453a60d80185f4c4c7b2ede699c84e0da0"
+  },
+  {
+    "changed": false,
+    "export_sha256": "458c02bedbede39dc3d64e167bd74ac0dbf5aee8386f4a3054cc4607cad1753b",
+    "mode": "100644",
+    "path": ".github/ISSUE_TEMPLATE/config.yml",
+    "reasons": [],
+    "source_blob": "9da5575ff851cd2e5314469885753056a34c262a",
+    "source_sha256": "458c02bedbede39dc3d64e167bd74ac0dbf5aee8386f4a3054cc4607cad1753b"
+  },
+  {
+    "changed": false,
+    "export_sha256": "ea1335f43e41628562ec17abb24974d8cda1add7265c9fba1c614012c39d1ca9",
+    "mode": "100644",
+    "path": ".github/ISSUE_TEMPLATE/feature.yml",
+    "reasons": [],
+    "source_blob": "8543e05c0a0fb5c149102fb29e172898b586ee45",
+    "source_sha256": "ea1335f43e41628562ec17abb24974d8cda1add7265c9fba1c614012c39d1ca9"
+  },
+  {
+    "changed": false,
+    "export_sha256": "f0f7e865ffa5a63b7908decddeacbb1d662984cd95c0c224981d1599d61aef96",
+    "mode": "100644",
+    "path": ".github/ISSUE_TEMPLATE/question.yml",
+    "reasons": [],
+    "source_blob": "fb9b5e66f73ddc6e26e9f85e67e4784ba7a75f6b",
+    "source_sha256": "f0f7e865ffa5a63b7908decddeacbb1d662984cd95c0c224981d1599d61aef96"
+  },
+  {
+    "changed": false,
+    "export_sha256": "4dce9490d64a1758a4a61357c1cc96e75a92414aab5683f8531738a12aa90de7",
+    "mode": "100644",
+    "path": ".github/pull_request_template.md",
+    "reasons": [],
+    "source_blob": "16e0492d4ff0d7c76621de68324d3dd6b7aab098",
+    "source_sha256": "4dce9490d64a1758a4a61357c1cc96e75a92414aab5683f8531738a12aa90de7"
+  },
+  {
+    "changed": false,
     "export_sha256": "ef09d51d11004c0e6cdd95d191f704dd243847feceabb28caf7ea58e34a82c49",
     "mode": "100644",
     "path": ".gitignore",
@@ -967,14 +1012,14 @@
   },
   {
     "changed": true,
-    "export_sha256": "61b5f8c4be107310fe5786ef5be40fb660a4f8b29f35f294c9edc66cfefbab07",
+    "export_sha256": "70b0c569d519aa4e4b17ec960b6b0e9d6df882888242349d337d49ada8986fd8",
     "mode": "100644",
     "path": "docs/roadmap.md",
     "reasons": [
       "public tracker landing URL; original issue IDs are private"
     ],
-    "source_blob": "93db5a98acd82ff92b048cb25c948b81c7798052",
-    "source_sha256": "bbedb8da62d39a731ce1a67d670d2abc0e729afed3c8239740b2d797899e2152"
+    "source_blob": "7d425449267c5c5cbe003acaf7e8c69070b96999",
+    "source_sha256": "15dc69fc9ed0a06c961a4688623f5354f7a7cb39cfbaf835506ceaf6dbada641"
   },
   {
     "changed": false,
@@ -3077,7 +3122,7 @@
   },
   {
     "changed": true,
-    "export_sha256": "99d497216a58408ae900c60bd9c37959d83b07d1c5d6cee7dd1eb3d2a160d3ef",
+    "export_sha256": "838ffd13693c5fa856e10fb74e51f2667bbdf9c7089b8f9b30941a682f553b2a",
     "mode": "100644",
     "path": "PUBLIC_RELEASE_SOURCE.json",
     "reasons": [

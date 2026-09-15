@@ -1,8 +1,7 @@
 {
   "repository": "vibe-view",
   "original_tag": "main",
-  "original_tag_commit": "2302b9f8204f2af8021bc04b53c23d3e92d30235",
-  "sanitized_source_commit": "2302b9f8204f2af8021bc04b53c23d3e92d30235",
-  "reviewed_cleanup_commit": "6a55dc8b65f5bc25aa9ccb8ba213efd16fe0d829",
-  "sanitation": "Integrated portable source with private operations and history separated; preserve scientific source, validation, release metadata and licensing."
+  "original_tag_commit": "b95de9658c687dd266709e1584ac554c6cb6f7a2",
+  "sanitized_source_commit": "b95de9658c687dd266709e1584ac554c6cb6f7a2",
+  "sanitation": "Reviewed GitHub contribution forms and current release roadmap; product runtime, installation, scientific tests and existing contributor policies unchanged."
 }

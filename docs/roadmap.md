@@ -2,7 +2,7 @@
 
 What has shipped, in which release, and what is proposed next.
 
-> **Last reviewed 2026-09-13** after v2.17.0 at `3b9f148` was released and its
+> **Last reviewed 2026-09-15** after v2.17.1 at `de0a040` was released and its
 > documentation deployment verified. Update this page when a listed issue closes,
 > and move a release's items into [Shipped](#shipped) as part of
 > [the post-release step](release_process.md).
@@ -22,8 +22,8 @@ decides it at cut time.
 
 | | |
 |---|---|
-| Latest release | **v2.17.0** *Lorensen's Loon*, 2026-09-13, tag and `release` on `3b9f148` |
-| Documentation site | serves 2.17.0; index and three guide pages match the tagged commit's CI artifacts (checked 2026-09-13) |
+| Latest release | **v2.17.1** *Lorensen's Loon*, 2026-09-15, tag and `release` on `de0a040` |
+| Documentation site | serves 2.17.1; index and three guide pages match the tagged commit's CI artifacts (checked 2026-09-15) |
 | Desktop update feed | serves **2.10.0** (checked 2026-09-13), see [Desktop distribution](#desktop-distribution) |
 | Open issues | 14: four correctness defects, one enhancement, three infrastructure, five cross-repository asks, and #20, which is delivered but still open |
 
@@ -60,8 +60,9 @@ split-audit workstreams preserved in private operations record the earlier work.
 | v2.16.1 | 2026-09-10 | inherits | The vibe-qc availability probe degrades instead of raising | #18 |
 | v2.16.2 | 2026-09-12 | inherits | Missing-RDKit tests run in every environment; patch checklist; contributor guidance | #20 |
 | v2.17.0 | 2026-09-13 | *Lorensen's Loon* | TREXIO geometry and molecular Gaussian orbitals; packaging-metadata checks; standalone agent guides | #23 |
+| v2.17.1 | 2026-09-15 | inherits | Complex coefficients and Gamma-point lattice tails for MOs; scene replacement that avoids stale viewports; command-palette Escape handling during presentation | — |
 
-## Correctness follow-ups (not included in v2.17.0)
+## Correctness follow-ups (not included in v2.17.1)
 
 Three correctness defects, found against 2.16.1 while the manuscript figures
 were regenerated, and one warning from vibe-qc's contract run.
