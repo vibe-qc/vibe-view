@@ -476,8 +476,9 @@ class WavefunctionRenderer(BaseRenderer):
         spin: str = "restricted",
         padding_bohr: float = 4.0,
         n_per_dim: int = 60,
+        component: str = "real",
     ) -> tuple[GridData, np.ndarray]:
-        """Evaluate MO `index` on an auto-sized Cartesian grid.
+        """Evaluate an MO on a molecular box or explicitly tagged Gamma cell.
 
         Parameters
         ----------
@@ -490,6 +491,9 @@ class WavefunctionRenderer(BaseRenderer):
             Padding (in bohr) added to the atomic bounding box.
         n_per_dim:
             Grid resolution; total volume size is ``n_per_dim^3`` voxels.
+        component:
+            ``real`` (default), ``imag``, or ``magnitude``. Complex phase is
+            preserved; only the selected display component is returned.
 
         Returns a `(GridData, np.ndarray)` pair whose ``GridData`` is in
         **angstroms** — DELIBERATELY different from the bohr convention of
@@ -502,6 +506,14 @@ class WavefunctionRenderer(BaseRenderer):
         """
         wf = self.load()
         coeffs = self._mo_row(wf, index, spin)
+        if component not in {"real", "imag", "magnitude"}:
+            raise ValueError("Orbital component must be real, imag, or magnitude")
+        if wf.k_point is not None:
+            from vibeview.renderers.periodic_wavefunction import evaluate_gamma_mo
+
+            grid, values = evaluate_gamma_mo(self, wf, coeffs, n_per_dim)
+            values = {"real": np.real, "imag": np.imag, "magnitude": np.abs}[component](values)
+            return grid, values.astype(np.float32)
 
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
 
@@ -527,6 +539,7 @@ class WavefunctionRenderer(BaseRenderer):
             voxel_vectors=vox_ang.astype(np.float64),
             shape=(nx, ny, nz),
         )
+        values = {"real": np.real, "imag": np.imag, "magnitude": np.abs}[component](values)
         return grid, values.astype(np.float32, copy=False)
 
     def evaluate_density(
@@ -612,6 +625,7 @@ class WavefunctionRenderer(BaseRenderer):
         value (Becke Figs. 1-4).
         """
         wf = self.load()
+        self._require_molecular_field(wf, real_only=True)
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
         lo = positions_bohr.min(axis=0) - padding_bohr
         hi = positions_bohr.max(axis=0) + padding_bohr
@@ -716,6 +730,7 @@ class WavefunctionRenderer(BaseRenderer):
         -- both from the paper (§ 3, Fig. 3).
         """
         wf = self.load()
+        self._require_molecular_field(wf, real_only=True)
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
         lo = positions_bohr.min(axis=0) - padding_bohr
         hi = positions_bohr.max(axis=0) + padding_bohr
@@ -805,6 +820,7 @@ class WavefunctionRenderer(BaseRenderer):
         (e/bohr^5).
         """
         wf = self.load()
+        self._require_molecular_field(wf, real_only=True)
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
         lo = positions_bohr.min(axis=0) - padding_bohr
         hi = positions_bohr.max(axis=0) + padding_bohr
@@ -863,6 +879,7 @@ class WavefunctionRenderer(BaseRenderer):
         pass rather than two near-identical ones.
         """
         wf = self.load()
+        self._require_molecular_field(wf)
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
         lo = positions_bohr.min(axis=0) - padding_bohr
         hi = positions_bohr.max(axis=0) + padding_bohr
@@ -897,7 +914,7 @@ class WavefunctionRenderer(BaseRenderer):
                     max_dropped_l = self.last_dropped_l_max
                 elif dropped_fraction == max_dropped_fraction:
                     max_dropped_l = max(max_dropped_l, self.last_dropped_l_max)
-                rho += weight * occ[i] * np.asarray(psi, dtype=float) ** 2
+                rho += weight * occ[i] * np.abs(psi) ** 2
 
         # Preserve an aggregate diagnostic for density callers instead of
         # exposing only whichever occupied MO happened to be evaluated last.
@@ -916,6 +933,19 @@ class WavefunctionRenderer(BaseRenderer):
         return grid, rho.astype(np.float32), integral
 
     # ── helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _require_molecular_field(wf, *, real_only=False):
+        if wf.k_point is not None:
+            raise ValueError(
+                "A single k-point orbital block cannot supply the total periodic field. "
+                "Select a stored density/ELF grid from the QVF instead."
+            )
+        if real_only and any(
+            c is not None and np.iscomplexobj(c)
+            for c in (wf.mo_coefficients, wf.mo_coefficients_alpha, wf.mo_coefficients_beta)
+        ):
+            raise ValueError("Density derivatives for complex orbitals are not supported")
 
     def _mo_row(self, wf: WavefunctionGTOData, index: int, spin: str) -> np.ndarray:
         if wf.spin == "unrestricted":
@@ -979,12 +1009,15 @@ class WavefunctionRenderer(BaseRenderer):
         list order; within a shell, m = -l..+l for pure, or libint
         lexicographic for Cartesian.
         """
-        nx, ny, nz = len(xs), len(ys), len(zs)
         # Pre-compute relative coordinates (grid x atom)
         gx, gy, gz = np.meshgrid(xs, ys, zs, indexing="ij")
-        result = np.zeros((nx, ny, nz), dtype=np.float64)
+        return self._evaluate_at_points(wf, mo_coeffs, atom_pos_bohr, gx, gy, gz)
 
-        total_w = float(np.sum(np.asarray(mo_coeffs, dtype=float) ** 2)) or 1.0
+    def _evaluate_at_points(self, wf, mo_coeffs, atom_pos_bohr, gx, gy, gz):
+        """Evaluate a coefficient row at Cartesian points (all coordinates in bohr)."""
+        result = np.zeros(gx.shape, dtype=np.result_type(mo_coeffs.dtype, np.float64))
+
+        total_w = float(np.sum(np.abs(mo_coeffs) ** 2)) or 1.0
         dropped_w = 0.0
         dropped_lmax = 0
 
@@ -1007,7 +1040,7 @@ class WavefunctionRenderer(BaseRenderer):
                 # consistent. Track the orbital weight we drop so the caller
                 # can warn that the rendered isosurface is incomplete (A2-04).
                 block = mo_coeffs[ao_index : ao_index + n_ao_shell]
-                dropped_w += float(np.sum(np.asarray(block, dtype=float) ** 2))
+                dropped_w += float(np.sum(np.abs(block) ** 2))
                 dropped_lmax = max(dropped_lmax, int(shell.l))
                 ao_index += n_ao_shell
                 continue
@@ -1079,7 +1112,7 @@ class WavefunctionRenderer(BaseRenderer):
         value = np.zeros((nx, ny, nz), dtype=np.float64)
         grad = np.zeros((3, nx, ny, nz), dtype=np.float64)
 
-        total_w = float(np.sum(np.asarray(mo_coeffs, dtype=float) ** 2)) or 1.0
+        total_w = float(np.sum(np.abs(mo_coeffs) ** 2)) or 1.0
         dropped_w = 0.0
         dropped_lmax = 0
 
@@ -1096,7 +1129,7 @@ class WavefunctionRenderer(BaseRenderer):
                 )
             if shell.l > 3:
                 block = mo_coeffs[ao_index : ao_index + n_ao_shell]
-                dropped_w += float(np.sum(np.asarray(block, dtype=float) ** 2))
+                dropped_w += float(np.sum(np.abs(block) ** 2))
                 dropped_lmax = max(dropped_lmax, int(shell.l))
                 ao_index += n_ao_shell
                 continue
@@ -1180,7 +1213,7 @@ class WavefunctionRenderer(BaseRenderer):
         hess = np.zeros((6, nx, ny, nz), dtype=np.float64)
         pairs = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
 
-        total_w = float(np.sum(np.asarray(mo_coeffs, dtype=float) ** 2)) or 1.0
+        total_w = float(np.sum(np.abs(mo_coeffs) ** 2)) or 1.0
         dropped_w = 0.0
         dropped_lmax = 0
 
@@ -1197,7 +1230,7 @@ class WavefunctionRenderer(BaseRenderer):
                 )
             if shell.l > 3:
                 block = mo_coeffs[ao_index : ao_index + n_ao_shell]
-                dropped_w += float(np.sum(np.asarray(block, dtype=float) ** 2))
+                dropped_w += float(np.sum(np.abs(block) ** 2))
                 dropped_lmax = max(dropped_lmax, int(shell.l))
                 ao_index += n_ao_shell
                 continue

@@ -1507,6 +1507,10 @@ def create_app(readers):
             "relocalize_method": "ibo",
             "relocalize_method_options": [],
             "wf_n_per_dim": 60,
+            "wf_component": "real",
+            "wf_is_complex": False,
+            "mo_last_component": "real",
+            "relocalize_supported": True,
             # Total density vs spin density (rho_alpha - rho_beta). The
             # button below drives both; spin needs an unrestricted section.
             "wf_density_spin": False,
@@ -4202,6 +4206,11 @@ def create_app(readers):
         state = server.state
         if state.relocalize_running:
             return
+        if state.relocalize_supported is False:
+            state.relocalize_status = (
+                "Periodic/complex re-localization is not supported in the viewer"
+            )
+            return
         method = str(state.relocalize_method or "ibo")
 
         async def _work() -> None:
@@ -4417,6 +4426,7 @@ def create_app(readers):
                 state.status_message = "No wavefunction section active."
             return
         source_reader = reader
+        component = str(state.wf_component or "real")
         with _wf_epoch_lock:
             render_epoch = (
                 _wf_render_epoch
@@ -4442,6 +4452,7 @@ def create_app(readers):
                     index,
                     spin,
                     update_state=False,
+                    component=component,
                 )
             except Exception as e:  # noqa: BLE001
                 with _wf_epoch_lock:
@@ -4471,6 +4482,7 @@ def create_app(readers):
                 state.wf_selected_spin = spin
                 state.mo_last_spin = spin
                 state.mo_last_index = index
+                state.mo_last_component = component
                 state.wf_surface_kind = "mo"
                 state.mo_visible = True
                 state.volume_loaded = True
@@ -8028,6 +8040,13 @@ def create_app(readers):
                 "if(k==='k'&&command&&!e.altKey){e.preventDefault();"
                 "t.state.set('palette_open',true);t.state.flush();return;}"
                 "var target=e.target;"
+                # The persistent presentation overlay can own Vuetify's top
+                # overlay slot even while the palette has keyboard focus.
+                # Close the focused palette explicitly before the input guard.
+                "if(k==='escape'&&!e.repeat&&target&&target.closest&&"
+                "target.closest('[role=dialog][aria-label=\"Command palette\"]')){"
+                "e.preventDefault();t.state.set('palette_open',false);"
+                "t.state.flush();return;}"
                 "if(target&&(target.tagName==='INPUT'||target.tagName==='TEXTAREA'||"
                 "target.tagName==='SELECT'||target.isContentEditable||"
                 "(target.closest&&target.closest('[contenteditable=true]'))))return;"
@@ -9272,7 +9291,8 @@ def create_app(readers):
                     )
                     # Bind controller method so handlers can push the mesh
                     # state to the client after plotter edits.
-                    ctrl.view_update = local_view.update
+                    view_update = _retaining_view_updater(plotter, local_view.update)
+                    ctrl.view_update = view_update
                     ctrl.view_reset_camera = local_view.reset_camera
                     # push_camera sends the server plotter's exact camera to the
                     # client, unlike update() (geometry only — the client keeps
@@ -9283,7 +9303,7 @@ def create_app(readers):
                     # Stash on the plotter so module-level _rebuild_* helpers
                     # can reach the updater without taking ctrl as an extra
                     # positional arg through 12 call sites.
-                    plotter._vibe_view_update = local_view.update
+                    plotter._vibe_view_update = view_update
                     plotter._vibe_view_push_camera = local_view.push_camera
 
                     # Right-click context menu: JavaScript intercepts
@@ -11056,8 +11076,8 @@ def _build_controls(server, ctrl) -> None:
     ):
         v.VCardTitle("{{ wf_panel_title }}")
         v.VCardText(
-            "Pick an MO and click Render. The isosurface uses |iso| from "
-            "the isovalue slider (positive lobe blue, negative red)."
+            "Pick an MO and click Render. Adjust Orbital isovalue to choose "
+            "the surface level (positive lobe blue, negative red)."
         )
         # One dropdown keyed on a composite "{spin}:{index}" value with a
         # rich title (energy / occupation / HOMO-LUMO). Spin is encoded in
@@ -11069,6 +11089,16 @@ def _build_controls(server, ctrl) -> None:
             item_title="title",
             item_value="value",
             label="Molecular orbital",
+        )
+        v.VSelect(
+            v_if=("wf_is_complex",),
+            v_model=("wf_component",),
+            items=(
+                "[{title:'Real part',value:'real'},"
+                "{title:'Imaginary part',value:'imag'},"
+                "{title:'Magnitude |ψ|',value:'magnitude'}]",
+            ),
+            label="Orbital component",
         )
         # Re-localize: ask vibe-qc for a criterion this file does not carry.
         # Runs in a subprocess; the result lands as its own sidebar section.
@@ -11094,7 +11124,10 @@ def _build_controls(server, ctrl) -> None:
                     "Localize",
                     click=ctrl.run_relocalize,
                     loading=("relocalize_running",),
-                    disabled=("relocalize_running || relocalize_available === false",),
+                    disabled=(
+                        "!relocalize_supported || relocalize_running "
+                        "|| relocalize_available === false",
+                    ),
                     size="small",
                     block=True,
                 )
@@ -11152,6 +11185,15 @@ def _build_controls(server, ctrl) -> None:
             type="number",
             min=20,
             max=120,
+        )
+        v.VTextField(
+            v_model=("isovalue",),
+            label="Orbital isovalue",
+            type="number",
+            min=0.001,
+            step=0.005,
+            hint="Click Render MO to apply",
+            persistent_hint=True,
         )
         # One-click frontier orbitals (design refresh 2026 roadmap).
         with v.VRow(dense=True, classes="mb-1"):
@@ -11827,6 +11869,26 @@ def _push_camera(plotter: pv.Plotter) -> None:
     # Best-effort: a disconnected client must not break a file switch.
     with contextlib.suppress(Exception):
         push()
+
+
+def _retaining_view_updater(plotter, update):
+    """Keep the last sent scene alive until its replacement is serialized.
+
+    trame-vtk identifies VTK objects by memory address. Releasing actors
+    before rebuilding can reuse a mapper's address for a lookup table;
+    vtk.js then updates the wrong instance and its viewport stops updating.
+    Retaining the actor roots also retains their mapper/data/property graph.
+    """
+    previous_actors = tuple(plotter.actors.values())
+
+    def update_view(*args, **kwargs):
+        nonlocal previous_actors
+        current_actors = tuple(plotter.actors.values())
+        result = update(*args, **kwargs)
+        previous_actors = current_actors
+        return result
+
+    return update_view
 
 
 def _push_view(plotter: pv.Plotter) -> None:
@@ -13505,6 +13567,7 @@ def _replay_wavefunction_surface(
             section,
             int(index),
             str(getattr(state, "mo_last_spin", None) or "restricted"),
+            component=str(getattr(state, "mo_last_component", None) or "real"),
         )
     elif kind in ("density", "spin_density"):
         state.wf_density_spin = kind == "spin_density"
@@ -14310,6 +14373,18 @@ def _activate_wavefunction(reader: QVFReader, state, section) -> None:
         section_id = section.id
         rows = renderer.mo_table()
         state.wf_section_id = section_id
+        state.wf_component = "real"
+        state.wf_is_complex = any(
+            c is not None and np.iscomplexobj(c)
+            for c in (wf.mo_coefficients, wf.mo_coefficients_alpha, wf.mo_coefficients_beta)
+        )
+        state.relocalize_supported = not bool(state.is_periodic) and not state.wf_is_complex
+        state.relocalize_status = (
+            "Periodic/complex re-localization is not supported in the viewer; "
+            "generate localized orbitals with the periodic calculation and open its QVF."
+            if not state.relocalize_supported
+            else ""
+        )
         state.wf_mo_rows = rows
         # Default the picker to the HOMO (most-requested orbital), keyed on
         # the composite "{spin}:{index}" value the dropdown now uses.
@@ -14377,6 +14452,7 @@ def _render_mo_volume(
     spin: str,
     *,
     update_state: bool = True,
+    component: str | None = None,
 ) -> str:
     """Evaluate an MO on a grid and render the resulting isosurface."""
     import logging
@@ -14394,10 +14470,12 @@ def _render_mo_volume(
 
     wf_renderer = WavefunctionRenderer(section, reader)
     _t = time.perf_counter()
+    component = component or getattr(state, "wf_component", None) or "real"
     grid, values = wf_renderer.evaluate_mo(
         mo_index,
         spin=spin,
         n_per_dim=n_per_dim,
+        component=component,
     )
     _log.info(
         "render_mo: evaluate_mo done in %.2fs (grid %s)",
@@ -14418,23 +14496,12 @@ def _render_mo_volume(
 
     _remove_actors_by_prefix(plotter, "mo_iso_")
 
-    # PyVista renamed UniformGrid → ImageData (gone since 0.44). For
-    # point-centred scalar data, ``dimensions`` must equal the grid shape
-    # (one point per voxel), NOT shape+1 (that is cell-data sizing and
-    # mismatches the point_data length below).
-    pv_grid = pv.ImageData(
-        dimensions=(grid.shape[0], grid.shape[1], grid.shape[2]),
-        spacing=(
-            float(grid.voxel_vectors[0, 0]),
-            float(grid.voxel_vectors[1, 1]),
-            float(grid.voxel_vectors[2, 2]),
-        ),
-        origin=tuple(float(x) for x in grid.origin),
-    )
-    pv_grid.point_data["values"] = values.ravel(order="F")
+    # The shared contour helper handles both Cartesian and skew cell grids.
+    from vibeview.renderers.volume import build_isosurface_mesh
+
     _t = time.perf_counter()
-    contour_pos = pv_grid.contour(isosurfaces=[+iso_pos], scalars="values")
-    contour_neg = pv_grid.contour(isosurfaces=[-iso_pos], scalars="values")
+    contour_pos = build_isosurface_mesh(values, grid, +iso_pos, grid_units="angstrom")
+    contour_neg = build_isosurface_mesh(values, grid, -iso_pos, grid_units="angstrom")
     _log.info(
         "render_mo: contour done in %.2fs (|iso|=%.3f, %d + %d points)",
         time.perf_counter() - _t,
@@ -14475,7 +14542,15 @@ def _render_mo_volume(
         contour_pos.n_points,
         contour_neg.n_points,
     )
-    msg = f"Rendered MO #{mo_index} ({spin}) at |iso|={iso_pos:.3f}"
+    msg = f"Rendered MO #{mo_index} ({spin}, {component}) at |iso|={iso_pos:.3f}"
+    if not contour_pos.n_points and not contour_neg.n_points:
+        msg = (
+            f"No {component} orbital surface at |iso|={iso_pos:.3f}; "
+            "lower the isovalue or choose another component"
+        )
+    if wf_renderer.load().k_point is not None:
+        msg += " — Gamma-point lattice sum"
+
     frac = getattr(wf_renderer, "last_dropped_l_fraction", 0.0)
     if frac > 0.005:
         lmax = getattr(wf_renderer, "last_dropped_l_max", 0)

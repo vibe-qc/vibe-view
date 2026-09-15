@@ -2,8 +2,8 @@
 
 What has shipped, in which release, and what is proposed next.
 
-> **Last reviewed 2026-09-13** for the v2.17.0 release preparation, including
-> TREXIO support landed at `af3dfb1`. Update this page when a listed issue closes,
+> **Last reviewed 2026-09-13** after v2.17.0 at `3b9f148` was released and its
+> documentation deployment verified. Update this page when a listed issue closes,
 > and move a release's items into [Shipped](#shipped) as part of
 > [the post-release step](release_process.md).
 
@@ -12,19 +12,18 @@ What has shipped, in which release, and what is proposed next.
 (project 35). The pre-split monorepo tracker, project 19, numbered its issues
 independently; its numbers appear only as "project 19 #N".
 
-**Proposed, not scheduled.** Each minor release below carries the codename
-registered for it, and its scope follows that name's theme. A registered name
+**Future releases are proposed, not scheduled.** Each unreleased minor below
+carries its registered codename, and its proposed scope follows that theme. A registered name
 [commits to nothing](codenames.md) about when, or whether, that release is
-cut. The scope under each version is a proposal for the maintainer, who
+cut. The scope under each future version is a proposal for the maintainer, who
 decides it at cut time.
 
 ## Where things stand
 
 | | |
 |---|---|
-| Latest release | **v2.16.2** *Sayle's Starling*, 2026-09-12, `release` on `60bd728` |
-| Current release preparation | **v2.17.0** *Lorensen's Loon*: TREXIO import, packaging checks and agent guides |
-| Documentation site | serves 2.16.2 (checked 2026-09-13) |
+| Latest release | **v2.17.0** *Lorensen's Loon*, 2026-09-13, tag and `release` on `3b9f148` |
+| Documentation site | serves 2.17.0; index and three guide pages match the tagged commit's CI artifacts (checked 2026-09-13) |
 | Desktop update feed | serves **2.10.0** (checked 2026-09-13), see [Desktop distribution](#desktop-distribution) |
 | Open issues | 14: four correctness defects, one enhancement, three infrastructure, five cross-repository asks, and #20, which is delivered but still open |
 
@@ -49,10 +48,10 @@ the first public commit. Its full evidence and reasoning is in the frozen
 
 ### Since the split
 
-No roadmap feature work has shipped since the split. These releases made
-vibe-view a standalone product: post-split repair, a documentation site,
-release machinery and artwork. The product and split-audit workstreams in
-`handovers/` record the detail.
+The first post-split releases made vibe-view a standalone product through
+repairs, a documentation site, release machinery and artwork. v2.17.0 adds
+TREXIO geometry and molecular-orbital interoperability. The product and
+split-audit workstreams preserved in private operations record the earlier work.
 
 | Release | Date | Codename | What shipped | Issues |
 |---|---|---|---|---|
@@ -60,7 +59,7 @@ release machinery and artwork. The product and split-audit workstreams in
 | v2.16.0 | 2026-09-09 | *Sayle's Starling* | Product manual with real viewer figures; wordmark, favicon and the seven-image codename series; `release` extra; `trame<4` bound; QTAIM and spectrum-panel fixes | #9, #13, #20 |
 | v2.16.1 | 2026-09-10 | inherits | The vibe-qc availability probe degrades instead of raising | #18 |
 | v2.16.2 | 2026-09-12 | inherits | Missing-RDKit tests run in every environment; patch checklist; contributor guidance | #20 |
-| v2.17.0 (prepared) | 2026-09-13 | *Lorensen's Loon* | TREXIO geometry and molecular Gaussian orbitals; packaging-metadata checks; standalone agent guides | #23 |
+| v2.17.0 | 2026-09-13 | *Lorensen's Loon* | TREXIO geometry and molecular Gaussian orbitals; packaging-metadata checks; standalone agent guides | #23 |
 
 ## Correctness follow-ups (not included in v2.17.0)
 
@@ -75,12 +74,12 @@ were regenerated, and one warning from vibe-qc's contract run.
 | [#21](https://github.com/vibe-qc/vibe-view/issues) | `create_app` schedules `_reset_export_flag` and never awaits it | A `RuntimeWarning`; not yet diagnosed |
 
 All four touch `src/`, so the `VIBE_VIEW_TAG` check in
-[release step 3](release_process.md) applies to this patch.
+[release step 3](release_process.md) applies when these follow-ups land.
 
 Housekeeping: #20 is still open although everything it asked for shipped in
 v2.16.0 and v2.16.2.
 
-## Minor releases (proposed scope)
+## Minor releases and remaining proposals
 
 The "not yet" items below come from the parity roadmap, which stopped being
 updated on 2026-08-25. Check each one against the code before scoping a

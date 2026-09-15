@@ -124,6 +124,11 @@ def request_from_reader(
         return None
     if not structure.atoms:
         return None
+    if any(getattr(structure, "pbc", ())):
+        raise ValueError(
+            "Periodic re-localization is not supported; "
+            "generate localized orbitals in the producer"
+        )
 
     bohr_per_angstrom = 1.8897261254578281
     numbers = [int(a.atomic_number) for a in structure.atoms]
@@ -142,6 +147,12 @@ def request_from_reader(
                 occupied = coefficients[:n_occ]
     except Exception:
         occupied = None
+
+    if occupied is not None:
+        import numpy as np
+
+        if np.iscomplexobj(occupied):
+            raise ValueError("Complex orbital re-localization is not supported")
 
     return build_request(
         numbers,

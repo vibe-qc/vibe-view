@@ -125,6 +125,9 @@ shows a tooltip for it.
 | <kbd>←</kbd> / <kbd>→</kbd> | Previous / next slide in presentation mode |
 | <kbd>?</kbd> | Show this list in the viewer |
 
+When the command palette is open, <kbd>Esc</kbd> closes it and returns focus
+to the control that launched it, including during presentation mode.
+
 Rotate with a left drag, pan with a middle drag, zoom with the wheel.
 
 ## The Display card
@@ -274,6 +277,12 @@ by the producer, which is why a `wavefunction.gto` section is a far better
 way to ship orbitals than forty `volume.orbital` sections.
 
 * **Grid points / axis** sets the evaluation resolution.
+* **Orbital isovalue** sets the surface level; click **Render MO** to apply.
+* **Orbital component** appears for complex coefficients: choose the real
+  part (default), imaginary part, or magnitude |ψ|, then click **Render MO**.
+  Signed parts use blue/red lobes; magnitude has only a positive surface.
+  The file's phase is preserved. An empty contour reports that the isovalue
+  is too high for that component.
 * **Compute total density** sums the occupied orbitals into a density
   surface and reports ∫ρ dV as an electron-count check.
 * Canonical, alpha/beta, natural and localized sets each get their own
@@ -282,12 +291,26 @@ way to ship orbitals than forty `volume.orbital` sections.
 * **Re-localize with** applies a different localization criterion than the
   producer chose. The viewer does not localize anything itself; this shells
   out to vibe-qc in a subprocess and is only offered when vibe-qc is
-  importable in the viewer's environment.
+  importable in the viewer's environment. This worker handles real molecular
+  orbitals only. For periodic or complex wavefunctions, generate localized
+  orbitals with the calculation and load its exported QVF instead;
+  installing vibe-qc does not enable periodic localization in this viewer.
 
 The on-demand evaluator covers shells through `l = 3`. An orbital with more
 than 0.5 % of its weight in g or higher shells is drawn and the status line
-says the surface is incomplete. Periodic wavefunctions are Gamma-point fields
-from central-cell atomic orbitals; image tails are not added.
+says the surface is incomplete. A wavefunction explicitly tagged with
+`k_point: [0, 0, 0]` is evaluated as a Gamma-point lattice sum in a fully
+periodic 3D primitive cell, including neighboring atomic-orbital tails.
+Skew cells keep their actual shape. **Apply replication** repeats that cell
+and its orbital surface. Very diffuse bases have a work limit; use a stored
+orbital grid if evaluation exceeds it.
+
+Nonzero k-points and partially periodic Bloch evaluation are not supported
+and produce an explanatory error. A single stored k-point block also does
+not establish the weights needed for a total periodic density or its
+ELF/NCI/Laplacian; select the producer's stored fields instead. Older periodic
+archives without explicit k-point metadata retain central-cell/cluster
+sampling and do not acquire a Bloch interpretation from their filename.
 
 ```{figure} images/15-orbital-homo.png
 :alt: The positive and negative formaldehyde HOMO lobes evaluated from the stored wavefunction.

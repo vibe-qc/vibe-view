@@ -1266,6 +1266,8 @@ class WavefunctionGTOData:
     # while the latter carry transition weights.  Consumers must not infer
     # that distinction from a section id or from a coincidental sum.
     occupation_semantics: str | None = None
+    # Explicit Bloch wavevector metadata; None retains legacy cluster semantics.
+    k_point: np.ndarray | None = None
 
 
 @dataclass
@@ -2308,6 +2310,34 @@ class QVFReader:
             if "mo_coefficients" in self.get_section(section_id).members:
                 coeffs = self._read_binary_member(section_id, "mo_coefficients")
 
+        def _decode_coefficients(values):
+            if values is None:
+                return None
+            encoding = meta_raw.get("coefficient_encoding")
+            if encoding == "complex_split_last_axis":
+                if values.ndim != 3 or values.shape[-1] != 2:
+                    raise QVFError("Complex MO coefficients must have shape [n_mo, n_ao, 2]")
+                components = meta_raw.get("coefficient_components", ["real", "imag"])
+                if components != ["real", "imag"]:
+                    raise QVFError("Complex MO components must be ordered real, imag")
+                values = values[..., 0] + 1j * values[..., 1]
+            elif encoding not in (None, "real"):
+                raise QVFError(f"Unsupported MO coefficient encoding: {encoding}")
+            if values.ndim != 2 or (n_ao and values.shape[1] != n_ao):
+                raise QVFError("MO coefficients must have shape [n_mo, n_ao]")
+            if not np.isfinite(values).all():
+                raise QVFError("MO coefficients must be finite")
+            return values
+
+        coeffs = _decode_coefficients(coeffs)
+        a_c = _decode_coefficients(a_c)
+        b_c = _decode_coefficients(b_c)
+        k_point = meta_raw.get("k_point")
+        if k_point is not None:
+            k_point = np.asarray(k_point, dtype=float)
+            if k_point.shape != (3,) or not np.isfinite(k_point).all():
+                raise QVFError("k_point must contain three finite numbers")
+
         def _optional_array(key: str, dtype) -> np.ndarray | None:
             raw = meta_raw.get(key)
             if raw is None:
@@ -2325,6 +2355,7 @@ class QVFReader:
                 else None
             ),
             occupation_semantics=occupation_semantics,
+            k_point=k_point,
             structure_ref=structure_ref,
             pure=global_pure,
             n_ao=n_ao,

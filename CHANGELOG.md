@@ -11,8 +11,41 @@ deliberately not transferred — see the [README](README.md#history).
 
 ## [Unreleased]
 
-- Prepare a portable, privacy-sanitized source snapshot; retain original release version and scientific behavior. Deployment and operator material are maintained separately.
+- Desktop builds now retain artifacts locally; operators publish feeds with separate private deployment tooling.
 
+
+### Maintenance: separate product source and private operations
+
+Site-specific provisioning scripts, deployment configuration and operator
+records move to private operations storage. Portable product installers remain
+in source; private helpers are installed independently. Contributor privacy
+checks support an external private terms file without publishing its contents.
+
+
+### Maintenance
+
+- Use the publication repository in package/citation metadata and the desktop
+  issue link. Strengthen contributor privacy checks and redact their diagnostics.
+
+## [v2.17.1] - 2026-09-15 - *Lorensen's Loon*
+
+Correctness fixes for complex and periodic molecular orbitals and browser
+scene replacement. Inherits v2.17.0's codename.
+
+### Fixed
+
+- Escape closes the command palette and returns focus to its launching
+  control during presentation mode, as it does in the normal viewer.
+- Scene rebuilds retain the previous VTK objects until the replacement is
+  sent, preventing reused object identifiers from freezing the browser or
+  desktop viewport after periodic replication or section changes.
+- QVF complex split-axis orbital coefficients decode without dropping the
+  imaginary component. The orbital panel offers real, imaginary and magnitude
+  surfaces. Explicit Gamma-point orbitals in 3D cells include lattice-image
+  tails and preserve skew cells; unsupported Bloch cases report why.
+- Periodic/complex re-localization now explains the molecular worker's limit
+  before probing vibe-qc. Single-k-point blocks cannot be mistaken for a full
+  periodic density or its derived fields.
 
 ## [v2.17.0] - 2026-09-13 - *Lorensen's Loon*
 
@@ -308,7 +341,8 @@ along with vibe-qc, vibe-queue, qvf and vibe-qc-agentic-loop. The QVF manifest
 schemas, previously symlinks into the producer's tree, became vendored data
 files so the built wheel is self-contained.
 
-[Unreleased]: https://github.com/vibe-qc/vibe-view/compare/v2.17.0...main
+[Unreleased]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
+[v2.17.1]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
 [v2.17.0]: https://github.com/vibe-qc/vibe-view/tree/v2.17.0
 [v2.16.2]: https://github.com/vibe-qc/vibe-view/tree/v2.16.2
 [v2.16.1]: https://github.com/vibe-qc/vibe-view/tree/v2.16.1

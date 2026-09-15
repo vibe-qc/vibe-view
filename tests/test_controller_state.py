@@ -235,7 +235,7 @@ def test_rebuild_scene_preserves_ssao_choice(
 @pytest.mark.parametrize(
     ("kind", "expected"),
     [
-        ("mo", ("mo", 4, "beta")),
+        ("mo", ("mo", 4, "beta", "imag")),
         ("density", ("density", False)),
         ("spin_density", ("density", True)),
         ("elf", ("elf",)),
@@ -254,8 +254,8 @@ def test_replay_wavefunction_surface_dispatches_exact_recipe(
     monkeypatch.setattr(
         appmod,
         "_render_mo_volume",
-        lambda _r, _p, _v, _s, _section, index, spin: calls.append(
-            ("mo", index, spin)
+        lambda _r, _p, _v, _s, _section, index, spin, *, component: calls.append(
+            ("mo", index, spin, component)
         ),
     )
     monkeypatch.setattr(
@@ -288,6 +288,8 @@ def test_replay_wavefunction_surface_dispatches_exact_recipe(
         wf_section_id="wf",
         mo_last_index=4,
         mo_last_spin="beta",
+        mo_last_component="imag",
+        wf_component="real",
         wf_density_spin=None,
     )
 
