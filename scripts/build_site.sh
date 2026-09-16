@@ -29,16 +29,8 @@
 #   CI_PIPELINE_ID                 -- recorded in .build-info when set
 set -euo pipefail
 
-# vibe-view publishes into a SUBTREE of vibe-qc.com, not its root. The domain
-# has several independent publishers and each one owns exactly one subtree:
-#
-#   /                    -- vibe-qc's marketing site
-#   /docs/               -- vibe-qc's documentation
-#   /preview/            -- vibe-qc's marketing staging site
-#   /vibe-view/docs/     -- this site
-#
-# Keep this default in lockstep with html_baseurl in docs/conf.py and with
-# DEPLOY_PATH in .gitlab-ci.yml.
+# Override the public canonical URL for a separately configured documentation site.
+# This script only builds local files; deployment belongs to external tooling.
 CANONICAL="${CANONICAL:-https://vibe-qc.com/vibe-view/docs}"
 OUT="${OUT:-public}"
 

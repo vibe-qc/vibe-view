@@ -1,3 +1,12 @@
+# Site deployment is optional and configured outside the source repository.
+# Authorized operators set all three include variables in project settings.
+include:
+  - project: '$VIBE_VIEW_CI_PROJECT'
+    ref: '$VIBE_VIEW_CI_REF'
+    file: '$VIBE_VIEW_CI_FILE'
+    rules:
+      - if: '$VIBE_VIEW_CI_PROJECT || $VIBE_VIEW_CI_REF || $VIBE_VIEW_CI_FILE'
+
 # Portable build and validation rules.
 stages:
   - test
@@ -46,7 +55,7 @@ test:
     # genuine producer artifact, and this lane requires it (see the script
     # step): a missing corpus fails here rather than skipping.
     - git clone --depth 1 --branch "$QVF_TAG"
-      "https://github.com/vibe-qc/qvf.git"
+      "${QVF_REPOSITORY_URL:-https://github.com/vibe-qc/qvf.git}"
       /tmp/qvf
     - pip install -e '.[test,release]'
   script:
@@ -102,7 +111,7 @@ qvf-conformance:
   before_script:
     - apt-get -qq update && apt-get -qq install -y --no-install-recommends git
     - git clone --depth 1 --branch "$QVF_TAG"
-      "https://github.com/vibe-qc/qvf.git"
+      "${QVF_REPOSITORY_URL:-https://github.com/vibe-qc/qvf.git}"
       /tmp/qvf
     - pip install -e '.[ase]' jsonschema
   script:
@@ -198,10 +207,4 @@ docs-build:
         - "scripts/build_site.sh"
         - "src/vibeview/codenames.py"
 
-# --------------------------------------------------------------------
-# Shared rsync-over-SSH deploy setup -- key, pinned known_hosts, strict
-# host-key checking. Lives in exactly one place and is pulled in with
-# !reference, the same arrangement project 34 uses, so this
-# security-sensitive setup is never copy-pasted. A referencing job supplies
-# DEPLOY_HOST / DEPLOY_USER / DEPLOY_PATH in `variables`.
-# --------------------------------------------------------------------
+# Deployment jobs, when configured, come from the external include above.

@@ -2,11 +2,11 @@
 # Safely remove a standalone vibe-view source installation.
 #
 # USAGE
-#     ./vibe-view/scripts/uninstall.sh [OPTIONS]
+#     ./scripts/uninstall.sh [OPTIONS]
 #
 # OPTIONS
 #     --venv PATH           Explicit standalone venv. Default: auto-detect,
-#                           preferring vibe-view/.venv.
+#                           preferring .venv.
 #     --python BIN          Trusted Python used for ownership and desktop
 #                           cleanup (default: python3).
 #     --adopt-legacy        Permit an unmarked legacy venv only when trusted
@@ -18,10 +18,10 @@
 #     -h, --help            Show this help.
 #
 # EXAMPLES
-#     ./vibe-view/scripts/uninstall.sh
-#     ./vibe-view/scripts/uninstall.sh --dry-run
-#     ./vibe-view/scripts/uninstall.sh --venv .venv-py313
-#     ./vibe-view/scripts/uninstall.sh --keep-desktop
+#     ./scripts/uninstall.sh
+#     ./scripts/uninstall.sh --dry-run
+#     ./scripts/uninstall.sh --venv .venv-py313
+#     ./scripts/uninstall.sh --keep-desktop
 #
 # The default removes only the dedicated viewer venv, this checkout's
 # recognizable Electron runtime, a source-backed macOS app owned by this

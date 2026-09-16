@@ -200,7 +200,8 @@ def main() -> int:
     try:
         import textual  # noqa: F401
     except ModuleNotFoundError:
-        print("terminal-mode captures need the [tui] extra: pip install 'vibeview[tui]'")
+        print("From the viewer checkout root, install the [tui] extra: "
+              "python -m pip install -e '.[tui]'")
         return 1
 
     OUT.mkdir(parents=True, exist_ok=True)

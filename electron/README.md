@@ -7,20 +7,20 @@ with the same codebase — no platform-specific code required.
 
 ```bash
 # One-time standalone environment setup, from the checkout root:
-./vibe-view/scripts/install.sh
-source vibe-view/.venv/bin/activate
+./scripts/install.sh
+source .venv/bin/activate
 
 vibe-view desktop                  # native window, browse page for the cwd
 vibe-view desktop water.qvf        # native window with water.qvf loaded
 vibe-view desktop --port 9090      # custom server port
 
 # Later, with the desktop window closed:
-./vibe-view/scripts/update-desktop.sh
+./scripts/update-desktop.sh
 
 # After closing all desktop windows and CLI/server launches, repair or remove:
-./vibe-view/scripts/reinstall.sh --desktop
-./vibe-view/scripts/uninstall.sh --dry-run
-./vibe-view/scripts/uninstall.sh
+./scripts/reinstall.sh --desktop
+./scripts/uninstall.sh --dry-run
+./scripts/uninstall.sh
 ```
 
 The `vibe-view desktop` commands work from **any directory**; the relative
@@ -78,7 +78,7 @@ a later reinstall.
 | Requirement | Version | Install |
 |-------------|---------|---------|
 | Python | 3.11+ | https://python.org/ |
-| vibe-view | 2.0.0+ | `pip install -e 'vibe-view[viewer]'` |
+| vibe-view | 2.0.0+ | `python -m pip install -e '.[viewer]'` |
 
 Node.js is **not** required for `vibe-view desktop` — the Electron
 binary comes straight from GitHub releases. Node is only needed for
@@ -109,7 +109,7 @@ for trusted local files and prints a warning because it weakens isolation.
 The source installer installs `[viewer,tui]`, records its interpreter for
 reuse by an installed or packaged app, and leaves the Electron download lazy.
 Pass `--with-electron` to download and brand the runtime during installation.
-Use `./vibe-view/scripts/update-desktop.sh` from the checkout root to update
+Use `./scripts/update-desktop.sh` from the checkout root to update
 Git, refresh the Python environment, synchronize the reviewed Electron engine,
 and refresh the source-backed Applications copy in one step. A packaged app
 from a DMG is deliberately left to its packaged-update workflow.
@@ -117,7 +117,7 @@ from a DMG is deliberately left to its packaged-update workflow.
 ## Development Mode
 
 ```bash
-cd vibe-view/electron
+cd electron
 python3 install-electron.py   # one-time binary download (or: npm run install-electron)
 npm start                     # launches via the wrapper cli.js
 ```
@@ -167,7 +167,7 @@ rebrands the downloaded `Electron.app` on macOS: it rewrites
 ad-hoc re-signs (`codesign --force --deep --sign -`) — plist edits
 invalidate the stock signature and arm64 macOS refuses unsigned
 binaries. The step is idempotent. For a normal user-facing refresh, run
-`./vibe-view/scripts/update-desktop.sh` from the checkout root. Directly
+`./scripts/update-desktop.sh` from the checkout root. Directly
 running `python3 install-electron.py` remains a developer helper.
 
 To change the icon: edit `make-icon.py`, run `npm run make-icon`, copy
@@ -183,7 +183,7 @@ The dev-mode setup above already gives a native branded window. For a
 packaged, double-clickable desktop shell, use the build script:
 
 ```bash
-cd vibe-view/electron
+cd electron
 ./build-desktop.sh          # native host: macOS dmg/zip or Linux AppImage
 ./build-desktop.sh --dir    # fast unpacked dev build for the current host
 ./build-desktop.sh --mac    # explicit macOS package
@@ -229,7 +229,7 @@ are documented in **[`PUBLISHING.md`](PUBLISHING.md)**.
 
 That feed belongs only to packaged apps containing `app.asar`. A source launch
 loads the checkout's live `main.js` and editable Python package, so it updates
-with `./vibe-view/scripts/update-desktop.sh` from the checkout root. The source
+with `./scripts/update-desktop.sh` from the checkout root. The source
 updater marks its Applications copy with the owning checkout, refuses unknown
 or packaged bundles, and needs an explicit `--adopt-desktop` before taking over
 a source app from another checkout. Linux and Windows require their current
@@ -240,7 +240,7 @@ or Windows feed automatically.
 ## Troubleshooting
 
 **"Electron directory not found"**
-→ `vibe-view desktop` needs a source checkout (`vibe-view/electron/`);
+→ `vibe-view desktop` needs a source checkout (`electron/` at its root);
 it is not shipped in the wheel.
 
 **"Server did not start" / the setup screen appears**
@@ -253,7 +253,7 @@ debug the server directly, run it in the launching environment:
 → Another instance is running. Quit it, or `vibe-view desktop --port 9090`.
 
 **App still shows as "Electron" in the dock**
-→ Quit the app, run `./vibe-view/scripts/update-desktop.sh` from the checkout
+→ Quit the app, run `./scripts/update-desktop.sh` from the checkout
 root, and relaunch. Use the direct Python installer only when developing the
 Electron tooling itself.
 

@@ -191,3 +191,35 @@ def test_the_missing_tool_message_points_at_the_extra() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "[release]" in source
 
+
+def test_wheel_wrapper_stages_inside_standalone_checkout(tmp_path: Path) -> None:
+    """The pre-split wrapper escaped into the parent repository's docs tree."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    checkout = tmp_path / "viewer checkout"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy(VIEWER_DIR / "scripts" / "make_wheel.sh", scripts)
+    # Replace the expensive builder, retaining the wrapper's real path handling.
+    (scripts / "build_release_artifacts.py").write_text(
+        "import argparse, pathlib\n"
+        "p=argparse.ArgumentParser()\n"
+        "p.add_argument('--output-dir');p.add_argument('--stage-wheel')\n"
+        "a=p.parse_args()\n"
+        "for folder in [a.output_dir,a.stage_wheel]:\n"
+        " d=pathlib.Path(folder);d.mkdir(parents=True,exist_ok=True)\n"
+        " (d/'vibeview-9.8.7-py3-none-any.whl').write_bytes(b'fixture')\n"
+    )
+    result = subprocess.run(
+        ["bash", str(scripts / "make_wheel.sh")],
+        cwd=tmp_path,
+        env={**os.environ, "VIBE_VIEW_RELEASE_PYTHON": sys.executable},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    wheel = checkout / "docs/_static/downloads/vibeview-9.8.7-py3-none-any.whl"
+    assert wheel.read_bytes() == b"fixture"
+    assert not (tmp_path / "docs").exists()

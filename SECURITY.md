@@ -13,7 +13,7 @@ table will appear here once the release line is declared stable.
 
 ## Reporting a vulnerability
 
-Please email **mpei@vibe-qc.com** directly. Do not open a public GitLab issue
+Please email **mpei@vibe-qc.com** directly. Do not open a public issue
 for security-relevant reports — that includes any bug you believe could be
 exploited for code execution, data leakage, or resource exhaustion beyond what
 the test suite would surface.

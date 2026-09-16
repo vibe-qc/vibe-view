@@ -10,8 +10,8 @@ If you are trying to use vibe-view, everything you want is in
 [Using vibe-view](index.md) — start with [Installation](installation.md).
 
 The notes cross-reference each other and the repository by relative path.
-Those links resolve on GitLab; several of them do not resolve through this
-site, which is a deliberate trade rather than an oversight. Where a note is
+Those links are intended for the repository browser; several of them do not
+resolve through this generated site. Where a note is
 still relevant it is cited from the code or the maintained developer guides.
 
 ```{toctree}

@@ -25,12 +25,23 @@ output, and the exact command or click sequence.
 
 ## Getting set up
 
+Clone the public source repository:
+
 ```sh
 git clone https://github.com/vibe-qc/vibe-view.git
+```
+
+Enter the standalone repository and install:
+
+```sh
 cd vibe-view
 ./scripts/install.sh
 source .venv/bin/activate
 ```
+
+GitLab remains the canonical development service. Maintainers provide its
+connection details separately to authorized contributors. Public snapshots can
+lag development; check the available public tags when selecting a release.
 
 Or, for a plain development install:
 
@@ -61,6 +72,9 @@ checkout where `tests/_qvf_corpus.py` looks:
 git clone https://github.com/vibe-qc/qvf.git ../qvf
 QVF_CORPUS=../qvf/conformance/corpus python -m pytest tests -q
 ```
+
+The [QVF GitHub mirror](https://github.com/vibe-qc/qvf) provides the same
+standalone format repository.
 
 ### Tests that skip, and tests that must not
 
@@ -270,7 +284,8 @@ MPL-compatible, as are the optional
 The portable guard checks home paths without storing real user names. Operators
 can add private literal terms through `VIBE_PRIVACY_TERMS_FILE` or the clone-local
 `privacy.termsFile` Git setting. Use an absolute path to a UTF-8 file outside the
-source checkout, with one literal term per line. Matching is case-insensitive;
+Git repository (including worktrees and object stores), with one literal term
+per line. Matching is case-insensitive;
 a configured missing, empty or in-tree file blocks the check. Keep the private
 terms file and resolved installation paths out of commits. The repository's
 privacy tests load the same external policy when configured.
@@ -278,3 +293,22 @@ privacy tests load the same external policy when configured.
 Site wrappers and deployment configuration are maintained separately in private
 operations storage. Product changes must use portable examples and preserve the
 existing generic installation and configuration APIs.
+
+### Private operational state
+
+Keep release briefs, host configuration, deployment targets, private guard terms
+and operational evidence outside every product checkout, including `.git` and
+ignored directories. Credentials stay in the existing secret stores. Private
+operator records use `VIBE_PRIVATE_ROOT` when set (an absolute external path),
+otherwise `$XDG_STATE_HOME/vibe-private` or `~/.local/state/vibe-private`.
+State directories must be caller-owned with mode 0700; records use mode 0600.
+Relative paths, Git worktrees/object stores and symlink interfaces are refused.
+Ordinary virtualenvs and generated build artifacts keep their existing paths.
+
+CI is portable by default. An authorized deployment operator can set
+`VIBE_VIEW_CI_PROJECT`, `VIBE_VIEW_CI_REF` (an immutable commit), and
+`VIBE_VIEW_CI_FILE` in the canonical project's CI settings to add private jobs.
+Without these settings only product validation runs; incomplete or invalid
+configured includes fail CI validation. `QVF_REPOSITORY_URL` can select an
+externally configured corpus source; the default is the public QVF repository.
+Neither source files nor the public mirror contain the private settings.

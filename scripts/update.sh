@@ -2,7 +2,7 @@
 # Update a standalone vibe-view source install.
 #
 # USAGE
-#     ./vibe-view/scripts/update.sh [OPTIONS]
+#     ./scripts/update.sh [OPTIONS]
 #
 # OPTIONS
 #     --dev                 Switch to and fast-forward `main`.
@@ -14,7 +14,7 @@
 #     --python BIN          Python for --recreate-venv (default: python3;
 #                           requires --recreate-venv).
 #     --venv PATH           Explicit venv. Default: auto-detect, preferring
-#                           vibe-view/.venv.
+#                           .venv.
 #     --recreate-venv       Safely replace the detected virtualenv.
 #     --adopt-legacy        With --recreate-venv, permit an unmarked legacy
 #                           venv only when trusted PEP 610 metadata proves it
@@ -31,18 +31,18 @@
 #     -h, --help            Show this help.
 #
 # EXAMPLES
-#     ./vibe-view/scripts/update.sh
-#     ./vibe-view/scripts/update.sh --dev
-#     ./vibe-view/scripts/update.sh --release
-#     ./vibe-view/scripts/update.sh --skip-git
-#     ./vibe-view/scripts/update.sh --recreate-venv
-#     ./vibe-view/scripts/update.sh --with-electron
-#     ./vibe-view/scripts/update.sh --desktop
-#     ./vibe-view/scripts/update-desktop.sh
+#     ./scripts/update.sh
+#     ./scripts/update.sh --dev
+#     ./scripts/update.sh --release
+#     ./scripts/update.sh --skip-git
+#     ./scripts/update.sh --recreate-venv
+#     ./scripts/update.sh --with-electron
+#     ./scripts/update.sh --desktop
+#     ./scripts/update-desktop.sh
 #
-# Git operations apply to the whole vibe-qc checkout because vibe-view is a
-# peer subproject in that repository. The Python reinstall touches only the
-# standalone vibe-view environment. macOS and Linux are supported directly.
+# Git operations apply to this standalone vibe-view checkout. The Python
+# reinstall touches only its dedicated environment. macOS and Linux are
+# supported directly.
 
 set -euo pipefail
 
@@ -72,7 +72,7 @@ print_help() {
     if [ "${VIBE_VIEW_DESKTOP_WRAPPER:-0}" = "1" ]; then
         cat <<'EOF'
 USAGE
-    ./vibe-view/scripts/update-desktop.sh [OPTIONS]
+    ./scripts/update-desktop.sh [OPTIONS]
 
 DESCRIPTION
     Update vibe-view's checkout, standalone Python environment, reviewed
@@ -89,7 +89,7 @@ OPTIONS
                           profile must contain the viewer dependencies.
     --python BIN          Python for --recreate-venv (default: python3;
                           requires --recreate-venv).
-    --venv PATH           Explicit venv (default: vibe-view/.venv).
+    --venv PATH           Explicit venv (default: .venv).
     --recreate-venv       Safely replace the detected virtualenv.
     --adopt-legacy        With --recreate-venv, adopt an unmarked legacy venv
                           only after trusted PEP 610 ownership proof.

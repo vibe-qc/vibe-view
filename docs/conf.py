@@ -198,19 +198,7 @@ html_favicon = "_static/logo/vibe-view-favicon.svg"
 templates_path = ["_templates"]
 html_css_files = ["custom.css"]  # shared with vibe-qc; see _static/custom.css
 
-# Canonical URL for this site. vibe-qc.com is one document root with several
-# independent publishers, each of which rsyncs --delete-after into a subtree it
-# alone owns:
-#
-#   /                     -- vibe-qc's Astro marketing site
-#   /docs/                -- vibe-qc's Sphinx docs
-#   /preview/             -- vibe-qc's marketing staging site
-#   /vibe-view/docs/      -- THIS site
-#
-# Keep this in lockstep with ``DEPLOY_PATH`` and ``CANONICAL`` in the
-# docs-deploy job of .gitlab-ci.yml. Widening either one past
-# /vibe-view/docs/ would make this publisher's --delete-after able to prune
-# somebody else's subtree.
+# Public canonical URL. Private deployment configuration is maintained separately.
 html_baseurl = "https://vibe-qc.com/vibe-view/docs/"
 html_context = {"site_url": html_baseurl}
 
@@ -218,15 +206,13 @@ html_theme_options = {
     "sidebar_hide_name": True,
     "light_logo": "logo/vibe-view-wordmark-light.svg",
     "dark_logo": "logo/vibe-view-wordmark-dark.svg",
-    # Furo's ``source_repository`` only parses github.com / gitlab.com /
-    # bitbucket.org; a self-hosted GitLab URL is rejected. Same workaround as
-    # vibe-qc: a manual footer icon instead.
+    # Public repository links are independent of private deployment settings.
     "footer_icons": [
         {
-            "name": "GitLab",
+            "name": "Source",
             "url": "https://github.com/vibe-qc/vibe-view",
             "html": "",
-            "class": "fa-brands fa-solid fa-gitlab fa-2x",
+            "class": "fa-brands fa-solid fa-github fa-2x",
         },
     ],
     "navigation_with_keys": True,

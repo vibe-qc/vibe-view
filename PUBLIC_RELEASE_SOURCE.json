@@ -1,7 +1,0 @@
-{
-  "repository": "vibe-view",
-  "original_tag": "main",
-  "original_tag_commit": "b95de9658c687dd266709e1584ac554c6cb6f7a2",
-  "sanitized_source_commit": "b95de9658c687dd266709e1584ac554c6cb6f7a2",
-  "sanitation": "Reviewed GitHub contribution forms and current release roadmap; product runtime, installation, scientific tests and existing contributor policies unchanged."
-}

@@ -2847,7 +2847,7 @@ def vq_features_cmd(feature):
 
 
 def _electron_dir() -> Path:
-    """The Electron app directory in the source tree (vibe-view/electron)."""
+    """The Electron app directory at the standalone checkout root (electron/)."""
     from vibeview.install_hints import source_project_dir
 
     project = source_project_dir()
@@ -2948,7 +2948,7 @@ def desktop_cmd(file, port, no_sandbox):
     if not electron_dir.exists():
         click.echo(f"Electron directory not found: {electron_dir}", err=True)
         click.echo(
-            "The desktop app requires a source checkout (vibe-view/electron/).", err=True
+            "The desktop app requires electron/ in a standalone vibe-view checkout.", err=True
         )
         raise SystemExit(1)
 

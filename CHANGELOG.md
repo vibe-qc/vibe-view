@@ -11,6 +11,25 @@ deliberately not transferred — see the [README](README.md#history).
 
 ## [Unreleased]
 
+### Changed
+- Public source is usable without private URL rewriting or omitted agent guides.
+  Site CI settings and release coordination stay outside the product repository.
+- Installer launcher records use external private state with verified migration
+  from the legacy checkout record; ordinary virtualenv locations are unchanged.
+
+
+### Fixed
+
+- Installation, quickstart and desktop tutorials now begin with exact clone
+  commands: deploy-key SSH access to GitLab on port 26, or the GitHub mirror.
+  README and contributor setup use the same options. (#20)
+
+- Clone, install and desktop help now use the standalone repository root;
+  wheel staging stays inside the viewer checkout and repair URLs use its
+  own documentation subtree. Installation pages identify the GitHub mirror
+  and distinguish available source/CI downloads from unpublished website
+  wheels. (#20)
+
 - Desktop builds now retain artifacts locally; operators publish feeds with separate private deployment tooling.
 
 
@@ -274,8 +293,8 @@ a `release-candidate/*` pipeline and publishes the documentation site.
   (#11)
 - **`docs-build` and `docs-deploy` CI.** `docs-build` renders the site on
   every ref that makes a pipeline; `docs-deploy` rsyncs it, `--delete-after`,
-  into `/web/vibe-view/docs/` and nothing wider. `deploy/known_hosts.deploy`
-  pins the host keys, verified against the live host. Two guards project 34
+  into the dedicated documentation subtree and nothing wider. External
+  deployment configuration pins the independently verified host keys. Two guards project 34
   does not have: one names an empty `DEPLOY_SSH_KEY_B64` and the protected-ref
   rule behind it (the failure that broke vibe-qc's first `docs-deploy` with
   `error in libcrypto`), one rejects a key that decoded to something that is
@@ -302,7 +321,7 @@ a `release-candidate/*` pipeline and publishes the documentation site.
   RasMol (1992) was the first molecular viewer a scientist could simply
   install and run, free, without the program that produced the data; that is
   what this release is. `docs/codenames.md` carries the pool and the policy,
-  `.release-status/IMAGE-BRIEF-sayles-starling.md` the artwork brief. (#13)
+  the private operations repository preserves the artwork brief. (#13)
 - `VIBEVIEW_REQUIRE_QVF_CORPUS=1` in the CI `test` job: in a lane that clones
   the QVF conformance corpus on purpose, a missing corpus is now an error
   rather than a skip. `tests/test_qvf_corpus_guard.py` covers the guard. (#3)

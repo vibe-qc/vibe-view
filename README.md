@@ -26,12 +26,23 @@ Prerequisites are Python 3.11 or newer and Git. Debian and Ubuntu users also
 need the matching `python3-venv` package. Docker is not used, and no C++
 compiler or vibe-qc native dependency build is required.
 
+Clone the public source repository:
+
 ```sh
 git clone https://github.com/vibe-qc/vibe-view.git
+```
+
+Enter the standalone repository and install:
+
+```sh
 cd vibe-view
 ./scripts/install.sh
 source .venv/bin/activate
 ```
+
+GitLab remains the canonical development service. Maintainers provide its
+connection details separately to authorized contributors. Public snapshots can
+lag development; check the available public tags when selecting a release.
 
 The installer is for macOS and Linux. It creates a dedicated environment
 under `.venv` at the repository root and installs the standalone CLI, browser viewer,
@@ -154,18 +165,14 @@ repeat `--extras` when maintaining a non-default profile.
 > planned but is **not published yet**, so
 > `pip install vibeview --index-url https://vibe-qc.com/pypi/simple/` will not
 > resolve. Bare `pip install vibeview` and `pipx install vibeview` do not work
-> yet either. Use the checkout installer above or the wheel linked from the
-> [quickstart](https://vibe-qc.com/vibe-view/docs/quickstart.html). (It superseded
-> `docs/tutorial/vibe_view_getting_started.md` in the vibe-qc repository.)
+> yet either. Use the checkout installer above; see the
+> [installation and downloads guide](https://vibe-qc.com/vibe-view/docs/installation.html).
 
-> **Release note:** the hosted 2.15.2 wheel includes the `demo`, `doctor`,
-> `formats`, persistent `import`, and importer-plugin features described
-> below. Older versioned wheels remain available for version-pinned bootstrap
-> and repair. Check an installation with `vibe-view --help`.
+> **Downloads:** use the standalone repository’s source archives or validated
+> build artifacts, described in the installation guide. The old 2.15.2 wheel
+> under the producer’s documentation is a historical artifact, not the current
+> viewer. A GitHub source mirror does not imply published wheel or desktop assets.
 
-> **Note:** the vibe-view GitLab project is currently private (public once the
-> JCC release paper is out). Email `mpei@vibe-qc.com` with a public SSH key
-> to request read-only clone access.
 
 ## Features
 
@@ -318,26 +325,18 @@ MPL 2.0 — see [LICENSE](LICENSE).
 
 ## History
 
-vibe-view began life as the `vibe-view/` directory of the private `vibe-qc`
-monorepo and was split out into this repository on 2026-09-08, together with
-[vibe-qc](https://github.com/vibe-qc/vibe-qc),
-[vibe-queue](https://github.com/vibe-qc/vibe-queue),
-[qvf](https://github.com/vibe-qc/qvf) and
-[vibe-qc-agentic-loop](https://vibe-qc.com/docs/).
+vibe-view was split from the vibe-qc monorepo on 2026-09-08. It is now an
+independently versioned companion to [vibe-qc](https://github.com/vibe-qc/vibe-qc),
+[vibe-queue](https://github.com/vibe-qc/vibe-queue) and
+[qvf](https://github.com/vibe-qc/qvf).
 
-**All development before the first public commit (`9585e28`, tagged
-`v2.15.2`) took place in that private monorepo.** Its history was deliberately
-not transferred: this repository starts from a fresh root commit, so
-`git log` shows the public history only, and the pre-split monorepo is
-retained privately as a frozen archive.
+The canonical development history remains private. Public snapshots have new
+commit identities and record their source revision and per-file checksums in
+publication provenance. A public commit ID is not interchangeable with a
+canonical development commit ID; original release tags remain immutable.
 
-Two consequences are worth knowing about:
-
-* Commits before `9585e28` do not exist here. A `git blame` that stops at the
-  root commit has not lost anything — that is where the public record begins.
-* The QVF manifest schemas under `src/vibeview/` were symlinks into the
-  monorepo's producer tree and are now vendored real files. The normative
-  copy lives in the [qvf](https://github.com/vibe-qc/qvf) repository
-  and `scripts/check_qvf_conformance.py` guards the two against drift.
+The QVF manifest schemas under `src/vibeview/` are vendored real files. The
+normative copy lives in the [qvf repository](https://github.com/vibe-qc/qvf),
+and `scripts/check_qvf_conformance.py` checks the schema pins and corpus.
 
 Copyright (c) 2026 Michael F. Peintinger and vibe-qc contributors.

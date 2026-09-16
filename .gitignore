@@ -38,8 +38,7 @@ electron/dist/
 npm-debug.log*
 
 # ── vibe-view runtime droppings ───────────────────────────────────────
-# Written by `scripts/install.sh --link-bin`.
-.vibe-view-bin-links
+# Legacy launcher records are migrated outside the checkout by lifecycle scripts.
 # Headless capture and export scratch output.
 *.qvf.tmp
 

@@ -532,7 +532,7 @@ function registerSetupIpc() {
   });
   ipcMain.handle("setup:open-docs", () => {
     shell.openExternal(
-      "https://vibe-qc.com/docs/user_guide/vibe_view_desktop.html",
+      "https://vibe-qc.com/vibe-view/docs/desktop.html",
     );
     return true;
   });
@@ -903,7 +903,7 @@ function createMenu() {
       submenu: [
         {
           label: "vibe-view Documentation",
-          click: () => shell.openExternal("https://vibe-qc.com/docs/"),
+          click: () => shell.openExternal("https://vibe-qc.com/vibe-view/docs/"),
         },
         {
           label: "Check for Updates",
@@ -964,7 +964,7 @@ function checkForUpdates() {
     detail:
       "To update vibe-view:\n\n" +
       "•  From a source checkout: quit the desktop app, then run\n" +
-      "   ./vibe-view/scripts/update-desktop.sh from the checkout root.\n\n" +
+      "   ./scripts/update-desktop.sh from the checkout root.\n\n" +
       "•  For a packaged app: use its published update feed or install\n" +
       "   the current replacement package for your platform.",
     buttons: ["OK"],

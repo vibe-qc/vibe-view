@@ -289,7 +289,7 @@ def launch_desktop_app() -> bool:
         print(
             "Electron app not found at",
             electron_dir,
-            "\nRun:  cd vibe-view/electron && npm install",
+            "\nRun from the vibe-view checkout root:  cd electron && npm install",
         )
         return False
 

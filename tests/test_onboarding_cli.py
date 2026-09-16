@@ -328,3 +328,14 @@ def test_install_hint_uses_hosted_wheel_outside_checkout(monkeypatch) -> None:
     command = hints.install_hint("tui")
     assert "vibeview[tui] @ https://example.test/vibeview.whl" in command
     assert " -e " not in command
+
+
+def test_hosted_wheel_url_uses_standalone_site(monkeypatch) -> None:
+    import vibeview
+    from vibeview.install_hints import hosted_wheel_url
+
+    monkeypatch.setattr(vibeview, "__version__", "9.8.7")
+    assert hosted_wheel_url() == (
+        "https://vibe-qc.com/vibe-view/docs/_static/downloads/"
+        "vibeview-9.8.7-py3-none-any.whl"
+    )

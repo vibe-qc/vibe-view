@@ -289,7 +289,7 @@
             _mock: true,
           }),
           copy: async (t) => navigator.clipboard && navigator.clipboard.writeText(t),
-          openDocs: async () => window.open("https://vibe-qc.com/docs/", "_blank"),
+          openDocs: async () => window.open("https://vibe-qc.com/vibe-view/docs/", "_blank"),
           quit: () => window.close(),
         };
 
@@ -298,7 +298,7 @@
       // on Homebrew / Debian / Fedora Pythons that reject it. main.js
       // (findPython) discovers this venv, so Recheck picks it up automatically.
       const wheelUrl = appVersion
-        ? "https://vibe-qc.com/docs/_static/downloads/vibeview-" +
+        ? "https://vibe-qc.com/vibe-view/docs/_static/downloads/vibeview-" +
           appVersion + "-py3-none-any.whl"
         : "";
       const viewerRequirement = wheelUrl
@@ -317,7 +317,7 @@
         : posixQuote(bootstrapPython) + " -m venv " + posixQuote(venv) +
           "\n" + posixQuote(venv + "/bin/pip") + " install " +
           posixQuote(viewerRequirement);
-      const DOCS = "https://vibe-qc.com/docs/user_guide/vibe_view_desktop.html";
+      const DOCS = "https://vibe-qc.com/vibe-view/docs/desktop.html";
 
       const COPY = {
         "no-python": {

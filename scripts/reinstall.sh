@@ -12,7 +12,7 @@ ADOPT_DESKTOP=0
 print_help() {
     cat <<'EOF'
 USAGE
-    ./vibe-view/scripts/reinstall.sh [OPTIONS]
+    ./scripts/reinstall.sh [OPTIONS]
 
 DESCRIPTION
     Transactionally rebuild the standalone vibe-view environment from the
@@ -23,7 +23,7 @@ DESCRIPTION
 OPTIONS
     --extras GROUP        modes (default), core, viewer, tui, all, or test.
     --python BIN          Python used to create the venv (default: python3).
-    --venv PATH           Venv path (default: vibe-view/.venv).
+    --venv PATH           Venv path (default: .venv).
     --adopt-legacy        Permit an unmarked legacy venv only when trusted
                           PEP 610 metadata links it to this exact checkout.
     --desktop             Also synchronize the reviewed Electron runtime and

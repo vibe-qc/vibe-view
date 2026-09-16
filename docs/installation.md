@@ -16,18 +16,29 @@ There is no `pip install vibeview` yet. The private package index at
 `pip install vibeview` nor `pipx install vibeview` resolves today. Install
 from the checkout, as below.
 
-The GitLab project is also private until the JCC release paper is out. Email
-`mpei@vibe-qc.com` with a public SSH key to request read-only clone access.
+The public GitHub source can be cloned without credentials. Canonical
+development access is provided separately to authorized contributors.
 :::
 
 ## Install from a checkout
 
+Clone the public source repository:
+
 ```sh
 git clone https://github.com/vibe-qc/vibe-view.git
+```
+
+Enter the standalone repository and install:
+
+```sh
 cd vibe-view
 ./scripts/install.sh
 source .venv/bin/activate
 ```
+
+GitLab remains the canonical development service. Maintainers provide its
+connection details separately to authorized contributors. Public snapshots can
+lag development; check the available public tags when selecting a release.
 
 `install.sh` is for macOS and Linux. It creates a dedicated environment under
 `.venv` at the repository root and installs the CLI, the browser viewer, the
@@ -48,6 +59,36 @@ vibe-view doctor
 `doctor` reports the core install and every optional mode, tells you what is
 missing, and prints the exact command that would fix it. `--json` makes it
 machine-readable.
+
+## Source archives and downloads
+
+Use the standalone viewer's [public tags](https://github.com/vibe-qc/vibe-view/tags) to select a
+source snapshot. Extract it, enter the extracted repository root, and run the
+same `./scripts/install.sh` command. A source archive has no Git metadata, so
+use a clone for `update.sh` branch switching and pulls.
+
+Validated wheel and source-distribution artifacts are retained by the canonical
+CI service for the selected revision. Authorized contributors can obtain them
+from the release owner. Extract the reviewed artifacts and install the wheel
+in a dedicated environment:
+
+```sh
+python3 -m venv .venv-viewer
+source .venv-viewer/bin/activate
+python -m pip install './dist/vibeview-X.Y.Z-py3-none-any.whl[viewer,tui]'
+```
+
+Replace `X.Y.Z` with the version in the downloaded filename. The Python wheel
+does not contain the source-backed Electron app; use a checkout for desktop.
+Repository and CI artifact access may require authentication.
+
+Website wheels belong under
+`https://vibe-qc.com/vibe-view/docs/_static/downloads/`, matching the viewer's
+own `docs/_static/downloads/` staging directory. As checked on 2026-09-15,
+the v2.17.1 website wheel is not published there. Do not treat a constructed
+versioned URL as a download that already exists: use the source install or
+validated CI artifact until that release's wheel has been published. The old
+producer-hosted 2.15.2 wheel is historical, not the current viewer.
 
 ## Installation profiles
 
@@ -86,7 +127,8 @@ Two of these have caveats worth knowing before you hit them:
 * **`queue` is deliberately not in `all`.** `vq` is published on no package
   index, so a `pip install vibeview[all]` that tried to pull it would fail to
   resolve for everyone. Install vibe-queue from its own checkout first;
-  `pip install vibeview[queue]` is then satisfied by what is already there.
+  `python -m pip install -e '.[queue]'` from the viewer root is then satisfied
+  by what is already there.
   [Queue integration](queue.md) has the full story, including why the extra
   cannot resolve at all on Python 3.11.
 * **`ase` is large.** vibe-view hand-rolls the common formats — XYZ, CIF,
@@ -197,3 +239,17 @@ For a side-by-side comparison of install, update, repair and removal across
 vibe-view, vibe-qc, vq and vibe-basis — including profile selection, ownership
 markers, legacy adoption and what each uninstall keeps — see the toolset
 lifecycle guide in the [vibe-qc documentation](https://vibe-qc.com/docs/).
+
+## Launcher records
+
+`install.sh --link-bin` keeps its directory inventory outside the checkout at
+`$VIBE_PRIVATE_ROOT/vibe-view/state/<checkout-hash>/bin-links`. If the variable
+is unset, the root is `$XDG_STATE_HOME/vibe-private`, or
+`~/.local/state/vibe-private` when `XDG_STATE_HOME` is unset. Paths must be
+absolute and outside all Git checkouts and object stores. Private directories
+use mode 0700 and the inventory uses mode 0600.
+
+The next link or unlink operation verifies and migrates a legacy
+`.vibe-view-bin-links` file before removing the old copy. A dry run does not
+move it. Keep the same private root for install, update and uninstall so each
+operation can find the same inventory. This does not relocate virtualenvs.

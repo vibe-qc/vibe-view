@@ -88,11 +88,15 @@ def distribution_requirement(extra: str | None = None) -> str:
 
 
 def hosted_wheel_url() -> str:
-    """Return the immutable documentation-hosted wheel for this version."""
+    """Return the standalone-site publication URL for this version.
+
+    Release publication must stage this wheel; constructing the URL does not
+    imply that a wheel is already available. See the installation guide.
+    """
     from vibeview import __version__
 
     filename = f"vibeview-{__version__}-py3-none-any.whl"
-    return f"https://vibe-qc.com/docs/_static/downloads/{filename}"
+    return f"https://vibe-qc.com/vibe-view/docs/_static/downloads/{filename}"
 
 
 def install_hint(extra: str | None = None) -> str:

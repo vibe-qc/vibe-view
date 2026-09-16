@@ -2,7 +2,7 @@
 # Install vibe-view from this source checkout.
 #
 # USAGE
-#     ./vibe-view/scripts/install.sh [OPTIONS]
+#     ./scripts/install.sh [OPTIONS]
 #
 # OPTIONS
 #     --extras GROUP        Capability profile (default: modes):
@@ -10,10 +10,10 @@
 #                           core  = QVF CLI, show, capture, export
 #                           viewer = core + browser/desktop server
 #                           tui   = core + interactive terminal viewer
-#                           all   = every optional vibe-view integration
+#                           all   = every installable optional integration (not queue)
 #                           test  = viewer/TUI plus the test dependencies
 #     --python BIN          Python used to create the venv (default: python3).
-#     --venv PATH           Venv path (default: vibe-view/.venv). Relative
+#     --venv PATH           Venv path (default: .venv). Relative
 #                           paths are resolved from the vibe-view directory.
 #     --force               Replace an existing checkout-owned virtualenv.
 #     --adopt-legacy        With --force, permit an unmarked legacy venv only
@@ -35,16 +35,16 @@
 #     -h, --help            Show this help.
 #
 # EXAMPLES
-#     ./vibe-view/scripts/install.sh
-#     ./vibe-view/scripts/install.sh --with-electron
-#     ./vibe-view/scripts/install.sh --extras core
-#     ./vibe-view/scripts/install.sh --python python3.13 --venv .venv-py313
-#     ./vibe-view/scripts/install.sh --force
-#     ./vibe-view/scripts/install.sh --with-electron --dock \
+#     ./scripts/install.sh
+#     ./scripts/install.sh --with-electron
+#     ./scripts/install.sh --extras core
+#     ./scripts/install.sh --python python3.13 --venv .venv-py313
+#     ./scripts/install.sh --force
+#     ./scripts/install.sh --with-electron --dock \
 #         --link-bin /opt/homebrew/bin
 #
 # The default source install is intentionally self-contained under
-# vibe-view/.venv and does not build or install vibe-qc. The scripts support
+# .venv and does not build or install vibe-qc. The scripts support
 # macOS and Linux; on Windows use the equivalent py -m venv / pip commands.
 
 set -euo pipefail

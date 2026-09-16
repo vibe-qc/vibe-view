@@ -15,14 +15,15 @@ detail.
 
 vibe-view splits its dependencies into extras so a capture-only host does
 not have to install a web server. A missing mode is almost always a missing
-extra:
+extra. Run these commands from the standalone vibe-view repository root,
+with its environment activated:
 
 | Symptom | Missing | Fix |
 |---|---|---|
-| `open`, `serve`, `compare`, `desktop` fail to start | `[viewer]` | `pip install 'vibeview[viewer]'` |
-| `tui` fails; `show` works | `[tui]` | `pip install 'vibeview[tui]'` |
-| A structure format is not recognised | `[ase]` | `pip install 'vibeview[ase]'` |
-| SMILES construction is absent | `[smiles]` | `pip install 'vibeview[smiles]'` |
+| `open`, `serve`, `compare`, `desktop` fail to start | `[viewer]` | `python -m pip install -e '.[viewer]'` |
+| `tui` fails; `show` works | `[tui]` | `python -m pip install -e '.[tui]'` |
+| A structure format is not recognised | `[ase]` | `python -m pip install -e '.[ase]'` |
+| SMILES construction is absent | `[smiles]` | `python -m pip install -e '.[smiles]'` |
 | `%vibeview` is not a magic | `[jupyter]` | Install it in the environment running the **kernel** |
 | The vq panel or `from-vq` is unavailable | `[queue]` | See [Queue integration](queue.md); it is not a plain pip install |
 | Build-from-name, auto-optimize, re-localize or container submission are greyed out | vibe-qc | These are producer features; the viewer works without them |
@@ -175,7 +176,7 @@ pre-marker one), and every lifecycle script refuses to run under `sudo`.
 
 ## Reporting a bug
 
-Issues go to [project 35](https://github.com/vibe-qc/vibe-view/issues).
+Issues go to [the viewer tracker](https://github.com/vibe-qc/vibe-view/issues).
 Include:
 
 ```sh

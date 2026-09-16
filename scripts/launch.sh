@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# vibe-view/scripts/launch.sh — convenience launcher for the viewer.
+# scripts/launch.sh — convenience launcher for the viewer.
 #
 # Resolves the project venv, sanity-checks the install, and runs
 # ``vibe-view open <qvf>`` with sensible defaults. Any extra flags
 # after the QVF path are forwarded verbatim to the CLI.
 #
 # Usage:
-#   ./vibe-view/scripts/launch.sh path/to/calculation.qvf
-#   ./vibe-view/scripts/launch.sh calc.qvf --port 9000
-#   ./vibe-view/scripts/launch.sh calc.qvf --host 0.0.0.0 --no-browser
+#   ./scripts/launch.sh path/to/calculation.qvf
+#   ./scripts/launch.sh calc.qvf --port 9000
+#   ./scripts/launch.sh calc.qvf --host 0.0.0.0 --no-browser
 #
 # Environment overrides:
 #   VIBE_VIEW_VENV       Explicit venv path (default: auto-detect
-#                        vibe-view/.venv first, then legacy repo-root
+#                        .venv in this checkout first, then documented legacy
 #                        environments).
 #   VIBE_VIEW_PORT       Default port (default: 8080).
 #   VIBE_VIEW_LOG_FILE   Override log path (default: see ``vibe-view

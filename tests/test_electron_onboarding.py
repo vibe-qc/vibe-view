@@ -35,6 +35,9 @@ def test_setup_uses_detected_interpreter_and_versioned_wheel() -> None:
     assert "posixQuote(bootstrapPython) + \" -m venv \"" in setup
     assert "vibeview-\" +" in setup
     assert 'appVersion + "-py3-none-any.whl"' in setup
+    assert "https://vibe-qc.com/vibe-view/docs/_static/downloads/vibeview-" in setup
+    assert "https://vibe-qc.com/vibe-view/docs/desktop.html" in setup
+    assert "https://vibe-qc.com/docs/" not in setup
 
 
 def test_desktop_cli_uses_the_recorded_source_checkout(

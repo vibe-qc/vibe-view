@@ -2,7 +2,27 @@
 
 Five minutes, no calculation of your own, no vibe-qc.
 
-## 1. Check the installation
+## 1. Clone and install
+
+You need Git and Python 3.11 or newer. These install commands are for macOS
+and Linux; the [installation guide](installation.md) covers prerequisites
+and other options. If you already installed the viewer, skip to step 2.
+
+Clone the public source repository:
+
+```sh
+git clone https://github.com/vibe-qc/vibe-view.git
+```
+
+Then install from the repository root:
+
+```sh
+cd vibe-view
+./scripts/install.sh
+source .venv/bin/activate
+```
+
+## 2. Check the installation
 
 ```sh
 vibe-view doctor
@@ -12,7 +32,7 @@ Every optional mode gets a row saying whether it is ready and, when it is
 not, the command that would fix it. A `Core install: ready` line is enough to
 continue.
 
-## 2. Make a file to look at
+## 3. Make a file to look at
 
 ```sh
 vibe-view demo
@@ -31,7 +51,7 @@ calculation and then opens it, so it requires vibe-qc in the same
 environment. `demo` is the one that works on a bare viewer install.
 :::
 
-## 3. Look at it
+## 4. Look at it
 
 ```sh
 vibe-view demo --open        # write it and launch the browser in one step
@@ -65,7 +85,7 @@ as Unicode braille with no display server, no OpenGL and no X forwarding.
 The same water structure rendered by `vibe-view show`, directly from its terminal output.
 ```
 
-## 4. Ask it questions without opening anything
+## 5. Ask it questions without opening anything
 
 ```sh
 vibe-view info vibe-view-demo.qvf              # metadata and section sizes

@@ -284,5 +284,5 @@ each by hand, and nothing could see them drift.
 
 Each release gets a 1672 × 941 image in one of the two house treatments the
 vibe-qc series established. The brief for the next one is written before the
-release and lives in `.release-status/`. The images above are AI-generated
+release and lives with private release coordination outside this checkout. The images above are AI-generated
 artwork, separate from the real software captures used in the manual.

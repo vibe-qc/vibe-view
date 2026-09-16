@@ -41,6 +41,18 @@ the installer was evaluated and deferred; the reasoning is in
 
 ## Installing
 
+Clone the public source repository:
+
+```sh
+git clone https://github.com/vibe-qc/vibe-view.git
+```
+
+Then enter the checkout before following your platform's install commands:
+
+```sh
+cd vibe-view
+```
+
 **macOS and Linux.** The lifecycle installer creates the environment and
 records it for direct app launches:
 

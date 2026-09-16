@@ -143,6 +143,6 @@ versioned.
 | **vibe-queue** (`vq`) | Job scheduler; the [`[queue]` extra](queue.md) talks to it | [its repository](https://github.com/vibe-qc/vibe-queue) |
 | **qvf** | The normative QVF specification and conformance corpus | [its repository](https://github.com/vibe-qc/qvf) |
 
-Source: [github.com/vibe-qc/vibe-view](https://github.com/vibe-qc/vibe-view) ·
-Issues: [project 35](https://github.com/vibe-qc/vibe-view/issues) ·
+[Public source](https://github.com/vibe-qc/vibe-view) ·
+[Issues](https://github.com/vibe-qc/vibe-view/issues) ·
 Licence: MPL 2.0

@@ -28,20 +28,26 @@ page is about the extra itself.
 
 ## Installing it
 
-```sh
-# 1. Install vibe-queue from its own checkout, into the same environment.
-pip install /path/to/vibe-queue
+Clone the public queue source next to the viewer checkout.
 
-# 2. Now the extra resolves against what is already there.
-pip install 'vibeview[queue]'
+```sh
+# From the vibe-view repository root, using Python 3.12 or newer:
+source .venv/bin/activate
+git clone https://github.com/vibe-qc/vibe-queue.git ../vibe-queue
+python -m pip install ../vibe-queue
+python -m pip install -e '.[queue]'
 ```
 
-The order matters, and so does the fact that step 1 is a path. Two things
-about this extra are unusual, and both are deliberate.
+The `.[queue]` path refers to this viewer checkout, so it does not ask a
+package index for the unpublished viewer.
+
+Install the queue from its local path before adding the viewer extra. Two
+things about this extra are unusual, and both are deliberate.
 
 ### It is not in `[all]`
 
-`pip install 'vibeview[all]'` installs viewer, tui, ase, smiles and jupyter —
+`python -m pip install -e '.[all]'` from the viewer checkout installs
+viewer, tui, ase, smiles and jupyter —
 but **not** `queue`.
 
 The extra requires the distribution `vq`, which is what vibe-queue's own
