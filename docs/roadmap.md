@@ -2,8 +2,9 @@
 
 What has shipped, in which release, and what is proposed next.
 
-> **Last reviewed 2026-09-15** after v2.17.1 at `de0a040` was released and its
-> documentation deployment verified. Update this page when a listed issue closes,
+> **Last reviewed 2026-09-16** during preparation of v2.18.0. The selected
+> implementation is complete; release validation and independent review remain
+> release gates. Update this page when a listed issue closes,
 > and move a release's items into [Shipped](#shipped) as part of
 > [the post-release step](release_process.md).
 
@@ -23,9 +24,10 @@ decides it at cut time.
 | | |
 |---|---|
 | Latest release | **v2.17.1** *Lorensen's Loon*, 2026-09-15, tag and `release` on `de0a040` |
+| Release in preparation | **v2.18.0** *Richardson's Robin*: biomolecule polish and the four correctness fixes below |
 | Documentation site | serves 2.17.1; index and three guide pages match the tagged commit's CI artifacts (checked 2026-09-15) |
 | Desktop update feed | serves **2.10.0** (checked 2026-09-13), see [Desktop distribution](#desktop-distribution) |
-| Open issues | 14: four correctness defects, one enhancement, three infrastructure, five cross-repository asks, and #20, which is delivered but still open |
+| Open issues | 15: four correctness defects, one enhancement, three infrastructure, five cross-repository asks, and the still-open delivery/publication records #20 and #28 |
 
 ## Shipped
 
@@ -62,20 +64,21 @@ split-audit workstreams preserved in private operations record the earlier work.
 | v2.17.0 | 2026-09-13 | *Lorensen's Loon* | TREXIO geometry and molecular Gaussian orbitals; packaging-metadata checks; standalone agent guides | #23 |
 | v2.17.1 | 2026-09-15 | inherits | Complex coefficients and Gamma-point lattice tails for MOs; scene replacement that avoids stale viewports; command-palette Escape handling during presentation | — |
 
-## Correctness follow-ups (not included in v2.17.1)
+## Correctness fixes selected for v2.18.0
 
 Three correctness defects, found against 2.16.1 while the manuscript figures
-were regenerated, and one warning from vibe-qc's contract run.
+were regenerated, and one warning from vibe-qc's contract run. All four are
+implemented in the candidate. Issue closure follows independent review.
 
-| Issue | Defect | Effect |
+| Issue | Defect | Candidate behaviour |
 |---|---|---|
-| [#24](https://github.com/vibe-qc/vibe-view/issues) | `slice` rebuilds the manifest and drops section fields and root metadata | Data loss; any slice that keeps a `run.record` fails `validate` |
-| [#25](https://github.com/vibe-qc/vibe-view/issues) | The combined band structure and DOS panel applies one Fermi shift to both panels | One of the two panels is empty for spec-compliant archives |
-| [#27](https://github.com/vibe-qc/vibe-view/issues) | Every scene rebuild repaints the dark background | The user's light-background choice is discarded |
-| [#21](https://github.com/vibe-qc/vibe-view/issues) | `create_app` schedules `_reset_export_flag` and never awaits it | A `RuntimeWarning`; not yet diagnosed |
+| [#24](https://github.com/vibe-qc/vibe-view/issues) | `slice` drops section fields and root metadata | Preserve original metadata and kept bytes; prune removed viewer hints and validate before replacing output |
+| [#25](https://github.com/vibe-qc/vibe-view/issues) | Combined bands/DOS uses one Fermi shift for both panels | Shift bands by their own reference; preserve the DOS grid; separate axes when the bands' reference is absent |
+| [#27](https://github.com/vibe-qc/vibe-view/issues) | Scene rebuilds discard the light-background choice | Keep the explicit background through rebuilds and reloads |
+| [#21](https://github.com/vibe-qc/vibe-view/issues) | Headless export creates an unawaited reset coroutine | Schedule a callback only when an event loop is running |
 
-All four touch `src/`, so the `VIBE_VIEW_TAG` check in
-[release step 3](release_process.md) applies when these follow-ups land.
+These changes touch `src/` and `create_app`; the consumer's `VIBE_VIEW_TAG`
+coordination is part of [release validation](release_process.md).
 
 Housekeeping: #20 is still open although everything it asked for shipped in
 v2.16.0 and v2.16.2.
@@ -110,21 +113,22 @@ additional isosurfaces per volume; clip planes; volume cross-fade.
 
 ### v2.18.0: *Richardson's Robin*, biomolecules
 
-**Today:** all of M5. The theme's headline work shipped in v2.15.2, so this
-release is polish unless new scope is added.
+**Selected scope, implemented in the candidate:** polish of M5, whose initial
+biomolecule support shipped in v2.15.2, plus the correctness fixes above.
 
-**Proposed:**
+- Isolate or hide selected residues without connecting hidden ribbon spans.
+- Select residues by clicking the viewport.
+- Share chain, secondary-structure, residue and B-factor palettes across ribbons,
+  atoms and bonds.
+- Retain PDB HELIX/SHEET ranges and distinguish supplied alpha, pi and 3₁₀
+  helices and beta bridges. The CA-only geometric assignment stays H/E/C.
+- Draw crisp strand edges and independently shaded end caps; include the final
+  residue in a chain-terminal strand assignment.
+- Show dashed geometric hydrogen-bond contacts using explicit H and N/O
+  candidates in the supplied coordinates.
 
-- Isolate or hide everything outside a residue selection.
-- Select residues by clicking in the viewport.
-- Offer the ribbon-colour modes outside the cartoon representation.
-- Distinguish alpha, pi and 3₁₀ helices, and bridges from sheets, with a
-  separate ribbon profile for each. The geometric assignment cannot tell them
-  apart, so producer-supplied ranges remain the source for that detail.
-- Give strands crisp edges instead of an elliptical cross-section, and correct
-  the end-cap normals.
-- Stop reading a chain-terminal strand's last residue as coil.
-- Draw hydrogen bonds in their own dashed style.
+The [biomolecule guide](biomolecules.md) documents the display controls and
+scientific limits. No new core dependency or QVF schema change is needed.
 
 ### v2.19.0: *Phong's Pheasant*, materials and lighting
 
@@ -212,7 +216,7 @@ announced.
 ### Desktop distribution
 
 Maintainer-gated. The update feed serves 2.10.0 while the source is at
-2.16.2. Publishing it needs the maintainer's SSH deploy key
+2.17.1. Publishing it needs the maintainer's SSH deploy key
 (`electron/PUBLISHING.md`). Linux and Windows artifacts need build hosts,
 because electron-builder cannot cross-build them from macOS. Code signing
 stays deferred: there is no Apple Developer ID.

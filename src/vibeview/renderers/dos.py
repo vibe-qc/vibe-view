@@ -14,6 +14,13 @@ import numpy as np
 import plotly.graph_objects as go
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers.energy_window import (
+    EnergyWindow,
+    apply_axis_range,
+    auto_energy_window,
+    dos_support,
+    resolve_window,
+)
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader, Section
@@ -79,33 +86,45 @@ class DOSRenderer(BaseRenderer):
             self._loaded = True
         return self._energies, self._dos
 
-    def render_to_html(self, include_plotlyjs: str | bool = "cdn") -> str:
-        """Render the DOS as an interactive Plotly chart.
+    def default_energy_window(self) -> EnergyWindow | None:
+        """The valence window this DOS would open at (#26).
 
-        The Fermi level (``fermi_energy_ev``, section-level metadata) is
-        honoured so the user can locate E_F — previously it was ignored, so
-        a producer that ships absolute energies (e.g. the committed NaCl
-        showcase, spanning thousands of eV) gave an unreadable plot with no
-        Fermi marker (audit finding A4-01). When E_F falls inside the energy
-        window we Fermi-reference (subtract it, mark x=0), matching the
-        native vibe-qc plotter; when it falls outside (suspect / molecular)
-        we keep absolute energies but surface E_F in the axis label rather
-        than shifting all the data off-screen.
+        QVF §4.3 stores the grid in eV relative to E_F, so the energies
+        need no shift. The window is computed from the grid points that
+        actually carry weight, but measured against the whole grid —
+        that is the range the axis would otherwise autoscale to.
         """
         energies, dos = self.load()
-        energies = np.asarray(energies, dtype=float)
+        e = np.asarray(energies, dtype=float)
+        if e.size == 0:
+            return None
+        return auto_energy_window(
+            dos_support(e, dos), full_range=(float(e.min()), float(e.max()))
+        )
 
-        fermi = self._section_meta("fermi_energy_ev", None)
-        x_title = "Energy (eV)"
-        fermi_referenced = False
-        if fermi is not None and energies.size:
-            fermi = float(fermi)
-            if float(energies.min()) <= fermi <= float(energies.max()):
-                energies = energies - fermi
-                x_title = "E − E_F (eV)"
-                fermi_referenced = True
-            else:
-                x_title = f"Energy (eV)  ·  E_F = {fermi:.2f} eV (outside range)"
+    def render_to_html(
+        self,
+        include_plotlyjs: str | bool = "cdn",
+        *,
+        energy_window: EnergyWindow | None = None,
+        auto_window: bool = True,
+    ) -> str:
+        """Render the DOS as an interactive Plotly chart.
+
+        QVF §4.3 stores DOS energies in eV relative to E_F = 0.
+        The optional absolute Fermi metadata never shifts that grid.
+
+        ``energy_window`` limits the energy axis to ``(min, max)`` in eV.
+        Left unset, the chart opens on :meth:`default_energy_window`; pass
+        ``auto_window=False`` for the full autoscale (#26).
+        """
+        energies, dos = self.load()
+        window = resolve_window(
+            energy_window, auto=auto_window, compute=self.default_energy_window
+        )
+        energies = np.asarray(energies, dtype=float)
+        x_title = "E − E_F (eV)"
+        fermi_referenced = True
 
         fig = go.Figure()
 
@@ -183,7 +202,7 @@ class DOSRenderer(BaseRenderer):
 
         fig.update_layout(
             title=("Density of States" if not self.is_projected else "Projected DOS"),
-            xaxis={"title": x_title},
+            xaxis=apply_axis_range({"title": x_title}, window),
             yaxis={"title": y_title},
             template="plotly_dark",
             height=450,
@@ -229,19 +248,50 @@ def make_bands_dos_html(
 </html>"""
 
 
+def bands_dos_energy_window(bands_renderer, dos_renderer) -> EnergyWindow | None:
+    """The valence window the combined panel would open at (#26).
+
+    The two panels share one energy axis, so the window has to frame both:
+    it is computed from the band eigenvalues and the weighted part of the
+    DOS grid together, against the full range of both. Returns ``None``
+    when the bands carry no Fermi reference, because then the two axes are
+    on different references and nothing can be windowed jointly.
+    """
+    bd = bands_renderer.load()
+    if bd.fermi is None or bd.fermi == 0.0:
+        return None
+    energies, dos = dos_renderer.load()
+    e_dos = np.asarray(energies, dtype=float)
+    e_bands = np.asarray(bd.eigenvalues, dtype=float).ravel() - float(bd.fermi)
+    states = np.concatenate([e_bands, dos_support(e_dos, dos)])
+    # The axis would otherwise autoscale over whichever panel reaches further.
+    spans = [e_bands] + ([e_dos] if e_dos.size else [])
+    full_lo = min(float(a.min()) for a in spans)
+    full_hi = max(float(a.max()) for a in spans)
+    return auto_energy_window(states, full_range=(full_lo, full_hi))
+
+
 def render_bands_dos_combined(
     bands_renderer,
     dos_renderer,
     *,
     title: str = "Band Structure & DOS",
     include_plotlyjs: str | bool = "cdn",
+    energy_window: EnergyWindow | None = None,
+    auto_window: bool = True,
 ) -> str:
     """Serialize the combined bands+DOS figure to a standalone HTML fragment.
 
-    See :func:`_bands_dos_figure` for the shared-energy-axis layout and the
-    single-Fermi-reference contract (audit A4-04 + follow-up).
+    See :func:`_bands_dos_figure` for the energy-reference conventions and
+    :func:`bands_dos_energy_window` for the default window.
     """
-    fig = _bands_dos_figure(bands_renderer, dos_renderer, title=title)
+    fig = _bands_dos_figure(
+        bands_renderer,
+        dos_renderer,
+        title=title,
+        energy_window=energy_window,
+        auto_window=auto_window,
+    )
     return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs)
 
 
@@ -250,21 +300,28 @@ def _bands_dos_figure(
     dos_renderer,
     *,
     title: str = "Band Structure & DOS",
+    energy_window: EnergyWindow | None = None,
+    auto_window: bool = True,
 ):
-    """Bands + DOS in ONE figure with a **shared energy axis** (the standard
-    solid-state figure): band structure on the left (E vs k), DOS rotated on
-    the right (DOS vs E), the two energy axes aligned, and a single Fermi
-    line spanning both (audit finding A4-04).
+    """Bands (left) and rotated DOS (right), aligned when E_F is known.
 
-    Both panels are referenced to the Fermi level so E_F sits at 0 in each:
-    the bands use ``kpath.fermi``; the DOS uses its ``fermi_energy_ev`` when
-    that level lies within the DOS energy window (matching
-    :meth:`DOSRenderer.render_to_html`). When neither carries a Fermi level
-    the raw energies are shown and no reference line is drawn.
+    QVF §4.3 stores DOS energies relative to E_F already; bands carry
+    absolute eV eigenvalues and their own kpath.fermi reference. Without
+    that reference, keep separately labelled axes rather than imply alignment.
+
+    ``energy_window`` limits the shared energy axis to ``(min, max)`` in eV
+    relative to E_F; unset, it opens on :func:`bands_dos_energy_window`
+    (#26). ``auto_window=False`` restores the full autoscale.
     """
     from plotly.subplots import make_subplots
 
     from vibeview.renderers.bands import _band_axis_ticks
+
+    window = resolve_window(
+        energy_window,
+        auto=auto_window,
+        compute=lambda: bands_dos_energy_window(bands_renderer, dos_renderer),
+    )
 
     bd = bands_renderer.load()
     eig = bd.eigenvalues  # [n_spin, n_k, n_bands]
@@ -273,35 +330,15 @@ def _bands_dos_figure(
 
     energies, dos = dos_renderer.load()
     energies = np.asarray(energies, dtype=float)
-    d_fermi = dos_renderer._section_meta("fermi_energy_ev", None)
-    d_referenced = (
-        d_fermi is not None
-        and energies.size > 0
-        and float(energies.min()) <= float(d_fermi) <= float(energies.max())
-    )
-    # Reference BOTH panels to a SINGLE Fermi zero, or the shared energy axis
-    # is meaningless. Previously the bands were shifted by their own fermi and
-    # the DOS by its own, so when the bands carried fermi=0.0 (the writer's
-    # "no Fermi level" sentinel) while the DOS had a real in-window E_F, the
-    # two panels sat on different zeros under one shared y-axis — the bands
-    # offset from the DOS, the single E_F line correct only for the DOS, and
-    # the axis mislabeled "E − E_F". Prefer the DOS in-window Fermi (a concrete
-    # value on the energy grid); fall back to the bands Fermi, treating 0.0 as
-    # "no reference" (matching the always-eV bands axis, A4-02). Draw the E_F
-    # line + "E − E_F" label only when both panels share that zero. (A4-04 follow-up)
-    if d_referenced:
-        e_ref: float | None = float(d_fermi)
-    elif b_fermi is not None and abs(float(b_fermi)) > 1e-12:
-        e_ref = float(b_fermi)
-    else:
-        e_ref = None
-    b_shift = e_ref if e_ref is not None else 0.0
-    e_dos = energies - e_ref if e_ref is not None else energies
-    referenced = e_ref is not None
+    # Each section has its own energy convention (QVF §4.3). Subtracting
+    # an absolute reference from the DOS grid a second time corrupts it.
+    b_shift = float(b_fermi) if b_fermi is not None else 0.0
+    e_dos = energies
+    referenced = b_fermi is not None
 
     fig = make_subplots(
-        rows=1, cols=2, shared_yaxes=True,
-        column_widths=[0.72, 0.28], horizontal_spacing=0.02,
+        rows=1, cols=2, shared_yaxes=referenced,
+        column_widths=[0.72, 0.28], horizontal_spacing=0.02 if referenced else 0.10,
         subplot_titles=("Band structure", "DOS"),
     )
 
@@ -342,10 +379,11 @@ def _bands_dos_figure(
             row=1, col=2,
         )
 
-    if referenced:
+    for col in ([1, 2] if referenced else [2]):
         fig.add_hline(
             y=0.0, line={"color": "#CC3333", "width": 1, "dash": "dash"},
             annotation_text="E<sub>F</sub>", annotation_position="top left",
+            row=1, col=col,
         )
 
     tick_vals, tick_text, boundaries = _band_axis_ticks(bd.kpath, n_kpts)
@@ -354,6 +392,18 @@ def _bands_dos_figure(
 
     y_title = "E − E_F (eV)" if referenced else "Energy (eV)"
     fig.update_yaxes(title_text=y_title, row=1, col=1)
+    if not referenced:
+        fig.update_yaxes(title_text="E − E_F (eV)", side="right", row=1, col=2)
+    if window is not None:
+        # The window is in eV relative to E_F. The DOS axis is always on that
+        # reference (QVF §4.3); the bands axis only when the file carries a
+        # Fermi energy — without one it shows absolute eV, and stamping the
+        # same numbers on it would window the wrong scale. Set both axes
+        # explicitly rather than leaning on shared_yaxes, which links them
+        # for interaction but leaves the right panel its own initial range.
+        if referenced:
+            fig.update_yaxes(range=[window[0], window[1]], row=1, col=1)
+        fig.update_yaxes(range=[window[0], window[1]], row=1, col=2)
     x1 = {"title_text": "k-point"}
     if tick_vals:
         x1.update({"tickvals": tick_vals, "ticktext": tick_text})

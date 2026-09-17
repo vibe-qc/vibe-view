@@ -1,393 +1,571 @@
-"""Viewer-side re-localization (shelling out to vibe-qc).
-
-Split the same way ``test_live_opt.py`` splits: the viewer half is tested
-against a canned-JSON fake worker so it needs no vibe-qc, and the worker half
-is tested for real but skipped when vibe-qc is not importable.
-
-The load-bearing test here is
-``test_worker_refuses_orbitals_that_are_not_orthonormal``. Passing canonical
-coefficients straight from a QVF into a basis rebuilt by name assumes the two
-share an AO ordering. That is true today and pinned on the vibe-qc side, but
-if it ever stops being true the failure mode is plausible, wrong orbitals
-rather than a crash -- so the worker checks rather than trusts.
-"""
+"""Protocol and archive adapter contracts without a co-installed vibe-qc."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import json
+import os
+import re
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from vibeview.relocalize import (
-    METHODS,
-    build_request,
-    parse_event,
-    probe,
-    request_from_reader,
-    run_relocalization,
-)
+from vibeview import relocalize as client
+from vibeview.qvf import QVFReader
 
-_HAS_VIBEQC = probe().get("available", False)
-_needs_vibeqc = pytest.mark.skipif(
-    not _HAS_VIBEQC, reason="vibe-qc not importable in this interpreter"
-)
+DATA = Path(__file__).parent / "data" / "relocalize"
 
 
-def _localized_qvf(tmp_path: Path) -> str:
-    """A small real QVF with a canonical wavefunction and provenance.basis.
+def request_fixture():
+    return json.loads((DATA / "h2.request.json").read_text())
 
-    Built by running vibe-qc rather than hand-assembled: the whole feature
-    turns on ``provenance.basis`` actually being written, so a fixture that
-    fabricates it would test the wrong thing.
-    """
-    import os
 
-    import vibeqc as vq
+def result_fixture():
+    return json.loads((DATA / "h2.result.json").read_text())
 
-    angstrom = 1.8897261254578281
-    molecule = vq.Molecule(
-        [
-            vq.Atom(8, [0.0, 0.0, 0.0]),
-            vq.Atom(1, [0.0, 0.7933 * angstrom, -0.6135 * angstrom]),
-            vq.Atom(1, [0.0, -0.7933 * angstrom, -0.6135 * angstrom]),
+
+def capabilities():
+    return {
+        "backend": "vibe-qc",
+        "backend_version": "0.17.5.dev0",
+        "ready": True,
+        "native_core_ready": True,
+        "fresh_rhf": {"ready": True},
+        "methods": {
+            method: {
+                "ready": True,
+                "molecular": True,
+                "periodic": False,
+                "coefficient_types": ["real"],
+                "spins": ["restricted"],
+                "occupations": [2],
+                "kpoints": ["none"],
+                "ao_convention": "qvf-gto-v1",
+                "max_atomic_number": 86,
+                "supplied_subspace": True,
+                "fresh_rhf": True,
+            }
+            for method in client.METHODS
+        },
+    }
+
+
+@pytest.fixture
+def molecular_qvf(tmp_path):
+    request = request_fixture()
+    data = {
+        "structure.json": {
+            "atoms": [
+                {
+                    "symbol": "H",
+                    "atomic_number": z,
+                    "position": (np.array(p) * client.BOHR_ANGSTROM).tolist(),
+                }
+                for z, p in zip(
+                    request["system"]["atomic_numbers"],
+                    request["system"]["positions_bohr"],
+                    strict=True,
+                )
+            ],
+            "pbc": [False, False, False],
+        },
+        "basis.json": {
+            "structure_ref": "structure",
+            "pure": True,
+            "n_ao": 2,
+            "shells": request["basis"]["shells"],
+        },
+        "mo.json": {
+            "spin": "restricted",
+            "orbital_kind": "canonical",
+            "n_mo": 1,
+            "n_ao": 2,
+            "occupations": [2],
+            "energies": [-0.5],
+        },
+    }
+    files = {name: json.dumps(value).encode() for name, value in data.items()}
+    files["mo.bin"] = np.array(request["orbitals"]["coefficients"]["data"], dtype="<f8").tobytes()
+
+    def member(path, binary=False):
+        result = {
+            "path": path,
+            "format": "binary" if binary else "json",
+            "sha256": hashlib.sha256(files[path]).hexdigest(),
+        }
+        if binary:
+            result.update(dtype="float64", shape=[1, 2])
+        return result
+
+    manifest = {
+        "qvf_version": 1,
+        "source": {"program": "vibe-qc", "version": "0.17.5.dev0", "calculation": "H2 fixture"},
+        "provenance": {"charge": 0, "multiplicity": 1, "n_electrons": 2, "basis": "sto-3g"},
+        "sections": [
+            {
+                "id": "structure",
+                "kind": "structure",
+                "members": {"structure": member("structure.json")},
+            },
+            {
+                "id": "wf",
+                "kind": "wavefunction.gto",
+                "members": {
+                    "basis": member("basis.json"),
+                    "mo_metadata": member("mo.json"),
+                    "mo_coefficients": member("mo.bin", True),
+                },
+            },
         ],
-        charge=0,
-        multiplicity=1,
+    }
+    path = tmp_path / "h2.qvf"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        for name, content in files.items():
+            archive.writestr(name, content)
+    return path
+
+
+@pytest.fixture
+def reader(molecular_qvf):
+    with QVFReader(molecular_qvf) as value:
+        yield value
+
+
+def fake_worker(tmp_path, body):
+    path = tmp_path / "worker.py"
+    path.write_text(
+        "import json,sys,os,time\n"
+        "r = None if '--probe' in sys.argv else json.loads(sys.stdin.readline())\n"
+        "def event(kind, **payload):\n"
+        "    return dict(protocol='vibeqc.relocalize',protocol_version=1,"
+        "worker_version='1.0.0',id=None if r is None else r['id'],event=kind,**payload)\n"
+        "def emit(kind, **payload):\n"
+        "    print(json.dumps(event(kind, **payload)),flush=True)\n" + body
     )
-    cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        vq.run_job(molecule=molecule, basis="sto-3g", method="rhf")
-    finally:
-        os.chdir(cwd)
-    return str(next(Path(tmp_path).glob("*.qvf")))
+    return [sys.executable, str(path)]
 
 
-# ── viewer half: no vibe-qc needed ───────────────────────────────────────
-
-
-def _fake_worker(tmp_path: Path, body: str) -> list[str]:
-    """Write a stub worker script; returns a worker_cmd for the runner."""
-    script = tmp_path / "fake_relocalize_worker.py"
-    script.write_text(body)
-    return [sys.executable, str(script)]
-
-
-def test_build_request_round_trips_through_json():
-    request = build_request(
-        [6, 1], [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]], "def2-svp", "ibo"
+def test_request_exact_shells_and_nonleading_occupied_rows(reader, monkeypatch):
+    wf = reader.read_wavefunction_gto("wf")
+    occupied = wf.mo_coefficients.copy()
+    wf.mo_coefficients = np.vstack([np.zeros_like(occupied), occupied])
+    wf.occupations = np.array([0, 2])
+    monkeypatch.setattr(reader, "read_wavefunction_gto", lambda _: wf)
+    request = client.request_from_reader(reader, "boys")
+    expected = request_fixture()
+    assert request["basis"]["shells"] == expected["basis"]["shells"]
+    assert "name" not in request["basis"]
+    assert request["orbitals"] == expected["orbitals"]
+    np.testing.assert_allclose(
+        request["system"]["positions_bohr"], expected["system"]["positions_bohr"]
     )
-    decoded = json.loads(json.dumps(request))
-    assert decoded["numbers"] == [6, 1]
-    assert decoded["basis"] == "def2-svp"
-    assert decoded["method"] == "ibo"
-    assert decoded["charge"] == 0
-    assert "occupied_coefficients" not in decoded
+    assert request["source"] == "supplied"
 
 
-def test_build_request_carries_supplied_orbitals():
-    request = build_request(
-        [1], [[0.0, 0.0, 0.0]], "sto-3g", "boys",
-        occupied_coefficients=np.eye(2),
-    )
-    assert request["occupied_coefficients"] == [[1.0, 0.0], [0.0, 1.0]]
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        (lambda r, w: r.provenance.pop("charge"), "charge"),
+        (lambda r, w: r.provenance.update(uses_ecp=True), "ECP"),
+        (lambda r, w: setattr(w, "spin", "unrestricted"), "restricted"),
+        (lambda r, w: setattr(w, "occupations", np.array([1.5])), "doubly"),
+        (lambda r, w: setattr(w, "occupations", np.array([0.0])), "electron count"),
+        (lambda r, w: setattr(w, "mo_coefficients", None), "no occupied coefficients"),
+        (lambda r, w: setattr(w, "mo_coefficients", w.mo_coefficients.astype(complex)), "Complex"),
+        (lambda r, w: setattr(w, "shells", []), "shells"),
+        (lambda r, w: setattr(w, "orbital_kind", "natural"), "weights"),
+    ],
+)
+def test_incomplete_or_unsupported_inputs_never_fall_back(reader, monkeypatch, change, reason):
+    wf = reader.read_wavefunction_gto("wf")
+    monkeypatch.setattr(reader, "read_wavefunction_gto", lambda _: wf)
+    change(reader, wf)
+    with pytest.raises(ValueError, match=reason):
+        client.request_from_reader(reader, "ibo")
 
 
-@pytest.mark.parametrize("line", ["", "   ", "not json", "[1, 2]", "null"])
-def test_parse_event_rejects_noise(line):
-    assert parse_event(line) is None
+def test_edited_geometry_requires_explicit_fresh_rhf(reader):
+    reader.set_edit_overlay([[0, 0, 0], [0, 0, 1]], ["H", "H"])
+    with pytest.raises(ValueError, match="Geometry edits"):
+        client.request_from_reader(reader, "ibo")
+    request = client.request_from_reader(reader, "ibo", source="fresh_rhf")
+    assert request["source"] == "fresh_rhf" and "orbitals" not in request
+    assert request["system"]["positions_bohr"][1][2] == pytest.approx(1 / client.BOHR_ANGSTROM)
 
 
-def test_parse_event_accepts_bytes_and_dicts():
-    assert parse_event(b'{"note": "hi"}\n') == {"note": "hi"}
-
-
-def test_run_relocalization_returns_the_done_event(tmp_path):
-    cmd = _fake_worker(
-        tmp_path,
-        "import sys, json\n"
-        "sys.stdin.read()\n"
-        "print(json.dumps({'note': 'working'}), flush=True)\n"
-        "print(json.dumps({'done': True, 'method': 'ibo', 'n_occ': 1,\n"
-        "                  'n_ao': 2, 'coefficients': [[1.0, 0.0]]}), flush=True)\n",
-    )
-    notes: list[str] = []
-    result = asyncio.run(
-        run_relocalization({"method": "ibo"}, worker_cmd=cmd, on_note=notes.append)
-    )
-    assert result["done"] is True
-    assert result["coefficients"] == [[1.0, 0.0]]
-    assert notes == ["working"]
-
-
-def test_run_relocalization_surfaces_a_worker_error(tmp_path):
-    cmd = _fake_worker(
-        tmp_path,
-        "import sys, json\n"
-        "sys.stdin.read()\n"
-        "print(json.dumps({'error': 'basis not found'}), flush=True)\n",
-    )
-    result = asyncio.run(run_relocalization({}, worker_cmd=cmd))
-    assert result["error"] == "basis not found"
-
-
-def test_run_relocalization_reports_a_silent_worker(tmp_path):
-    cmd = _fake_worker(tmp_path, "import sys\nsys.stdin.read()\n")
-    result = asyncio.run(run_relocalization({}, worker_cmd=cmd))
-    assert "without a result" in result["error"]
-
-
-def test_run_relocalization_times_out_rather_than_hanging(tmp_path):
-    cmd = _fake_worker(tmp_path, "import sys, time\nsys.stdin.read()\ntime.sleep(30)\n")
-    result = asyncio.run(
-        run_relocalization({}, worker_cmd=cmd, timeout_s=1.0)
-    )
-    assert "timed out" in result["error"]
-
-
-def test_run_relocalization_reports_an_unlaunchable_worker():
-    result = asyncio.run(
-        run_relocalization({}, worker_cmd=["/nonexistent/interpreter"])
-    )
-    assert "could not start worker" in result["error"]
-
-
-class _FakeReader:
-    """Minimal QVFReader stand-in for request_from_reader."""
-
-    def __init__(self, provenance, atoms=None):
-        self.provenance = provenance
-        self._atoms = atoms
-
-    def read_structure(self):
-        if self._atoms is None:
-            raise RuntimeError("no structure")
-
-        class _S:
-            atoms = self._atoms
-
-        return _S()
-
-    def read_wavefunction_gto(self, section_id):
-        raise RuntimeError("no wavefunction")
-
-
-class _FakeAtom:
-    def __init__(self, z, position):
-        self.atomic_number = z
-        self.position = position
-
-
-def test_request_from_reader_needs_the_basis_name():
-    """A file that does not record provenance.basis cannot be re-localized;
-    the caller must be able to tell that apart from a failure."""
-    reader = _FakeReader({}, [_FakeAtom(1, [0.0, 0.0, 0.0])])
-    assert request_from_reader(reader, "ibo") is None
-
-
-def test_request_from_reader_converts_angstrom_to_bohr():
-    reader = _FakeReader(
-        {"basis": "sto-3g", "charge": 0, "multiplicity": 1},
-        [_FakeAtom(1, [1.0, 0.0, 0.0])],
-    )
-    request = request_from_reader(reader, "ibo")
-    assert request is not None
-    assert request["positions_bohr"][0][0] == pytest.approx(1.8897261254578281)
-
-
-def test_request_from_reader_survives_a_missing_wavefunction():
-    """No canonical section is not fatal -- the worker falls back to an SCF."""
-    reader = _FakeReader(
-        {"basis": "sto-3g"}, [_FakeAtom(1, [0.0, 0.0, 0.0])]
-    )
-    request = request_from_reader(reader, "ibo")
-    assert request is not None
-    assert "occupied_coefficients" not in request
-
-
-# ── worker half: needs vibe-qc ───────────────────────────────────────────
-
-
-@_needs_vibeqc
-def test_probe_lists_the_criteria_the_viewer_offers():
-    result = probe()
-    assert result["available"] is True
-    assert set(result["methods"]) == set(METHODS)
-
-
-@_needs_vibeqc
-def test_worker_localizes_h2o_and_finds_the_textbook_pattern():
-    """H2O/STO-3G: one O core, two O-H bonds, two lone pairs."""
-    from vibeview.relocalize import _run_relocalization
-
-    angstrom = 1.8897261254578281
-    request = build_request(
-        [8, 1, 1],
-        [
-            [0.0, 0.0, 0.0],
-            [0.0, 0.7933 * angstrom, -0.6135 * angstrom],
-            [0.0, -0.7933 * angstrom, -0.6135 * angstrom],
-        ],
-        "sto-3g",
+def test_capabilities_are_per_method_and_per_source(reader):
+    cap = capabilities()
+    cap["methods"]["boys"]["ready"] = False
+    assert [o["value"] for o in client.method_options(reader, cap, "wf")[0]] == [
         "ibo",
-    )
-    events: list[dict] = []
-    _run_relocalization(request, events.append)
-    done = [e for e in events if e.get("done")]
-    assert done, [e for e in events if "error" in e]
-    result = done[0]
-    assert result["n_occ"] == 5
-    assert len(result["coefficients"]) == 5
-    # One single-centre orbital is the oxygen core; the lone pairs sit on
-    # oxygen too, so what must hold is that no orbital is spread over more
-    # than two centres and the O-H bonds are two-centre.
-    assert max(result["n_centres"]) <= 2
-    assert sum(1 for c in result["n_centres"] if c == 2) == 2
+        "pipek-mezey",
+    ]
+    cap["fresh_rhf"]["ready"] = False
+    assert client.method_options(reader, cap, "wf", source="fresh_rhf")[0] == []
+    cap["native_core_ready"] = False
+    assert client.method_options(reader, cap, "wf")[0] == []
 
 
-@_needs_vibeqc
-def test_worker_refuses_orbitals_that_are_not_orthonormal():
-    """The safety net for the one assumption the fast path makes.
-
-    Supplied coefficients are contracted against a basis rebuilt by name.
-    If the AO conventions ever diverge the arithmetic still runs and returns
-    plausible garbage, so the worker checks C^T S C = I first.
-    """
-    from vibeview.relocalize import _run_relocalization
-
-    request = build_request(
-        [1, 1],
-        [[0.0, 0.0, 0.0], [0.0, 0.0, 1.4]],
-        "sto-3g",
-        "ibo",
-        occupied_coefficients=[[1.0, 1.0]],  # deliberately unnormalised
-    )
-    events: list[dict] = []
-    _run_relocalization(request, events.append)
-    errors = [e["error"] for e in events if "error" in e]
-    assert errors and "not orthonormal" in errors[0]
-
-
-@_needs_vibeqc
-def test_worker_rejects_an_ao_count_mismatch():
-    from vibeview.relocalize import _run_relocalization
-
-    request = build_request(
-        [1, 1],
-        [[0.0, 0.0, 0.0], [0.0, 0.0, 1.4]],
-        "sto-3g",
-        "ibo",
-        occupied_coefficients=[[1.0, 0.0, 0.0, 0.0]],  # 4 AOs, basis has 2
-    )
-    events: list[dict] = []
-    _run_relocalization(request, events.append)
-    errors = [e["error"] for e in events if "error" in e]
-    assert errors and "AO rows" in errors[0]
-
-
-@_needs_vibeqc
-def test_overlay_makes_a_computed_wavefunction_behave_like_an_archived_one(
-    tmp_path,
-):
-    """The whole point of the reader overlay: once registered, every existing
-    consumer -- sidebar, picker, isosurface evaluator -- works unchanged."""
-    import asyncio as _asyncio
-
-    from vibeview.app import _sidebar_section_title
-    from vibeview.qvf import QVFReader
-    from vibeview.relocalize import (
-        overlay_section_id,
-        run_relocalization,
-        wavefunction_from_result,
-    )
-    from vibeview.renderers.wavefunction import WavefunctionRenderer
-
-    source = _localized_qvf(tmp_path)
-    reader = QVFReader(source)
-    before = {s.id for s in reader.sections}
-
-    request = request_from_reader(reader, "boys")
-    result = _asyncio.run(run_relocalization(request))
-    assert "error" not in result, result
-
-    section_id = overlay_section_id("boys")
-    reader.set_wavefunction_overlay(
-        section_id,
-        wavefunction_from_result(result, reader.read_wavefunction_gto("wf")),
-    )
-
-    assert section_id in {s.id for s in reader.sections}
-    assert _sidebar_section_title(
-        {"id": section_id, "kind": "wavefunction.gto"}
-    ) == "Re-localized (Boys)"
-
-    section = next(s for s in reader.sections if s.id == section_id)
-    renderer = WavefunctionRenderer(section, reader)
-    wavefunction = renderer.load()
-    assert wavefunction.orbital_kind == "localized"
-    assert wavefunction.localization_method == "boys"
-    # No fabricated eigenvalue spectrum.
-    assert np.allclose(wavefunction.energies, 0.0)
-    # The picker labels by composition, not by a meaningless energy.
-    titles = [row["title"] for row in renderer.mo_table()]
-    assert titles and all("Eh" not in t for t in titles)
-    # And it actually renders on a grid.
-    _grid, values = renderer.evaluate_mo(0)
-    assert values.shape == (60, 60, 60)
-    assert np.abs(values).max() > 0
-
-    reader.clear_wavefunction_overlays()
-    assert {s.id for s in reader.sections} == before
-
-
-@_needs_vibeqc
-def test_overlay_replaces_rather_than_accumulates(tmp_path):
-    """Re-running a criterion must not add a second sidebar row."""
-    from vibeview.qvf import QVFReader, WavefunctionGTOData
-
-    reader = QVFReader(_localized_qvf(tmp_path))
+def test_result_overlay_preserves_basis_and_has_no_energy(reader):
+    request = client.request_from_reader(reader, "ibo")
     canonical = reader.read_wavefunction_gto("wf")
-
-    def _stub(n_mo):
-        return WavefunctionGTOData(
-            structure_ref=canonical.structure_ref,
-            pure=canonical.pure,
-            n_ao=canonical.n_ao,
-            shells=canonical.shells,
-            spin="restricted",
-            orbital_kind="localized",
-            energies=np.zeros(n_mo),
-            occupations=np.full(n_mo, 2.0),
-            symmetry_labels=None,
-            alpha_energies=None,
-            alpha_occupations=None,
-            beta_energies=None,
-            beta_occupations=None,
-            mo_coefficients=np.zeros((n_mo, canonical.n_ao)),
-            mo_coefficients_alpha=None,
-            mo_coefficients_beta=None,
-        )
-
-    reader.set_wavefunction_overlay("wf_relocalized_ibo", _stub(3))
-    count = sum(1 for s in reader.sections if s.id == "wf_relocalized_ibo")
-    reader.set_wavefunction_overlay("wf_relocalized_ibo", _stub(5))
-    assert sum(1 for s in reader.sections if s.id == "wf_relocalized_ibo") == count == 1
-    # The payload is replaced, not merged.
-    assert reader.read_wavefunction_gto("wf_relocalized_ibo").mo_coefficients.shape[0] == 5
-
-
-@_needs_vibeqc
-def test_worker_refuses_open_shell():
-    from vibeview.relocalize import _run_relocalization
-
-    request = build_request(
-        [1], [[0.0, 0.0, 0.0]], "sto-3g", "ibo", multiplicity=2
+    overlay = client.wavefunction_from_result(result_fixture(), canonical, request)
+    assert overlay.shells is canonical.shells and overlay.energies is None
+    assert overlay.relocalization["population_model"] == "iao-mini"
+    np.testing.assert_array_equal(overlay.occupations, [2])
+    sid = client.overlay_section_id("ibo")
+    reader.set_wavefunction_overlay(sid, overlay)
+    assert reader.read_wavefunction_gto(sid) is overlay
+    reader.set_edit_overlay([[0, 0, 0], [0, 0, 1]], ["H", "H"])
+    assert sid not in reader.wavefunction_overlay_ids
+    np.testing.assert_array_equal(
+        reader.read_wavefunction_gto("wf").mo_coefficients, canonical.mo_coefficients
     )
-    events: list[dict] = []
-    _run_relocalization(request, events.append)
-    errors = [e["error"] for e in events if "error" in e]
-    assert errors and "closed-shell" in errors[0]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda r: r.update(spin="unrestricted"),
+        lambda r: r.update(representation="finite_torus_ao"),
+        lambda r: r.update(scf_performed=True),
+        lambda r: r.update(occupations=[1]),
+        lambda r: r.update(charges=[5, 5]),
+        lambda r: r.update(population_model="lowdin_finite_torus"),
+        lambda r: r.update(
+            coefficients={"encoding": "complex_split_last_axis", "data": [[[1, 0], [0, 1]]]}
+        ),
+        lambda r: r["coefficients"]["data"][0].__setitem__(0, 0.0),
+        lambda r: r["validation"].update(subspace_residual=1),
+        lambda r: r.update(centroids_bohr=[[float("nan"), 0, 0]]),
+    ],
+)
+def test_invalid_result_cannot_become_an_overlay(reader, change):
+    result = result_fixture()
+    change(result)
+    with pytest.raises(ValueError):
+        client.wavefunction_from_result(
+            result, reader.read_wavefunction_gto("wf"), client.request_from_reader(reader, "ibo")
+        )
+    assert not reader.wavefunction_overlay_ids
+
+
+def test_subprocess_protocol_drains_diagnostics(tmp_path):
+    result = result_fixture()
+    cmd = fake_worker(
+        tmp_path,
+        "os.write(2,b'diagnostic\\n'*20000)\nemit('started',stage='validating')\nemit('result',result="
+        + repr(result)
+        + ")\n",
+    )
+    actual = asyncio.run(client.run_relocalization(request_fixture(), worker_cmd=cmd))
+    assert actual == result
+
+
+@pytest.mark.parametrize(
+    "body,message",
+    [
+        ("emit('started')\n", "without a result|sequence"),
+        ("print('native noise')\n", "backend"),
+        ("emit('result',result={})\nemit('result',result={})\n", "sequence"),
+        ("r['id']='stale'\nemit('started')\nemit('result',result={})\n", "request ID"),
+        ("emit('started')\nemit('result',result={})\nsys.exit(3)\n", "status 3"),
+        ("e=event('capabilities')\ne['protocol_version']=2\nprint(json.dumps(e))\n", "protocol"),
+        (
+            "emit('error',error={'code':'invalid_source','message':'No orbitals',"
+            "'field':'orbitals'})\nsys.exit(2)\n",
+            "No orbitals",
+        ),
+    ],
+)
+def test_subprocess_refuses_invalid_or_unsuccessful_events(tmp_path, body, message):
+    result = asyncio.run(
+        client.run_relocalization(request_fixture(), worker_cmd=fake_worker(tmp_path, body))
+    )
+    assert re.search(message, result["error"])
+
+
+def test_failed_probe_and_partial_readiness(tmp_path):
+    cap = capabilities()
+    cap["methods"]["boys"]["ready"] = False
+    result = asyncio.run(
+        client.probe_worker(
+            worker_cmd=fake_worker(
+                tmp_path, "emit('capabilities',capabilities=" + repr(cap) + ")\n"
+            )
+        )
+    )
+    assert result["available"] and not result["capabilities"]["methods"]["boys"]["ready"]
+    missing = asyncio.run(client.probe_worker("/nonexistent/python"))
+    assert not missing["available"] and missing["reason"]
+
+
+@pytest.mark.parametrize("probe", [False, True])
+def test_timeout_reaps_worker(tmp_path, probe):
+    pidfile = tmp_path / "pid"
+    cmd = fake_worker(
+        tmp_path, f"open({str(pidfile)!r},'w').write(str(os.getpid()))\ntime.sleep(60)\n"
+    )
+    call = (
+        client.probe_worker(worker_cmd=cmd, timeout_s=0.3)
+        if probe
+        else client.run_relocalization(request_fixture(), worker_cmd=cmd, timeout_s=0.3)
+    )
+    result = asyncio.run(call)
+    assert "timed out" in result.get("error", result.get("reason", ""))
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
+
+
+def test_cancellation_reaps_worker(tmp_path):
+    pidfile = tmp_path / "pid"
+    cmd = fake_worker(
+        tmp_path, f"open({str(pidfile)!r},'w').write(str(os.getpid()))\ntime.sleep(60)\n"
+    )
+
+    async def run():
+        task = asyncio.create_task(client.run_relocalization(request_fixture(), worker_cmd=cmd))
+        for _ in range(100):
+            if pidfile.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert pidfile.exists()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
+
+
+def test_backend_path_is_explicit_and_preserves_venv_symlink():
+    assert client.backend_command(sys.executable) == [
+        sys.executable,
+        "-I",
+        "-m",
+        "vibeqc_relocalize",
+    ]
+    for path in ["", "python", "relative/python"]:
+        with pytest.raises(ValueError):
+            client.backend_command(path)
+
+
+@pytest.mark.parametrize("method", client.METHODS)
+@pytest.mark.parametrize("source", ["supplied", "fresh_rhf"])
+def test_separately_installed_backend(reader, method, source):
+    backend = os.environ.get("VIBEQC_RELOCALIZE_PYTHON")
+    if not backend:
+        pytest.skip("Set VIBEQC_RELOCALIZE_PYTHON for the separately installed native backend test")
+    report = asyncio.run(client.probe_worker(backend))
+    assert report["available"], report
+    request = client.request_from_reader(reader, method, source=source)
+    result = asyncio.run(client.run_relocalization(request, backend_python=backend))
+    assert "error" not in result, result
+    overlay = client.wavefunction_from_result(result, reader.read_wavefunction_gto("wf"), request)
+    assert overlay.relocalization["scf_performed"] is (source == "fresh_rhf")
+
+
+@pytest.fixture
+def app_pair(molecular_qvf, monkeypatch, tmp_path):
+    from tests.test_controller_smoke import _capture_plotters
+    from vibeview.app import create_app
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "settings"))
+    from vibeview.settings import set_setting
+
+    set_setting("relocalize_backend_python", sys.executable)
+    plotters = _capture_plotters(monkeypatch)
+    readers = [QVFReader(molecular_qvf), QVFReader(molecular_qvf)]
+    app = create_app(readers)
+    app.controller.view_update = lambda *a, **kw: None
+    assert app.state.relocalize_backend_python == sys.executable
+    assert app.state.settings_relocalize_backend_python == sys.executable
+    app.state.relocalize_capabilities = capabilities()
+    app.state.relocalize_available = True
+    app.controller.activate_section("wf")
+    try:
+        yield app, readers, plotters[0]
+    finally:
+        app.controller.cancel_relocalize()
+        for reader in readers:
+            reader.close()
+        for plotter in plotters:
+            plotter.close()
+
+
+@pytest.mark.parametrize("source", ["supplied", "fresh_rhf"])
+def test_controller_applies_and_clears_session_overlay(app_pair, monkeypatch, source):
+    app, readers, _ = app_pair
+    app.state.relocalize_source = source
+    app.state.flush()
+
+    async def result(request, **kwargs):
+        assert request["source"] == source
+        assert ("orbitals" in request) is (source == "supplied")
+        result = result_fixture()
+        result.update(source=source, scf_performed=(source == "fresh_rhf"))
+        return result
+
+    monkeypatch.setattr(client, "run_relocalization", result)
+
+    async def run():
+        app.controller.run_relocalize()
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    sid = client.overlay_section_id("ibo", source)
+    assert readers[0].wavefunction_overlay_ids == [sid]
+    assert app.state.wf_section_id == sid
+    if source == "fresh_rhf":
+        entry = next(e for e in app.state.sidebar_entries if e["id"] == sid)
+        assert entry["title"] == "Re-localized (IBO, new RHF)"
+    assert "iao-mini" in app.state.relocalize_result_summary
+    label = "New RHF" if source == "fresh_rhf" else "Archived occupied subspace"
+    assert label in app.state.relocalize_result_summary
+    assert len(app.state.relocalize_charge_rows) == 2
+    app.controller.clear_relocalization()
+    assert not readers[0].wavefunction_overlay_ids
+    assert app.state.wf_section_id == "wf"
+    assert not app.state.relocalize_charge_rows
+
+
+@pytest.mark.parametrize("action", ["file", "geometry", "cancel", "backend", "section"])
+def test_controller_discards_late_results(app_pair, monkeypatch, action):
+    app, readers, plotter = app_pair
+
+    async def run():
+        started, released = asyncio.Event(), asyncio.Event()
+
+        async def delayed(request, **kwargs):
+            started.set()
+            # A response already queued at cancellation must still be stale.
+            with contextlib.suppress(asyncio.CancelledError):
+                await released.wait()
+            return result_fixture()
+
+        monkeypatch.setattr(client, "run_relocalization", delayed)
+        app.controller.run_relocalize()
+        await started.wait()
+        if action == "file":
+            app.controller.switch_file(1)
+        elif action == "geometry":
+            from vibeview.app import _rebuild_structure_from_positions
+
+            _rebuild_structure_from_positions(
+                readers[0], plotter, [[0, 0, 0], [0, 0, 1]], ["H", "H"]
+            )
+        elif action == "cancel":
+            app.controller.cancel_relocalize()
+        elif action == "backend":
+            app.state.relocalize_backend_python = "/different/backend/python"
+        else:
+            app.controller.activate_section("structure")
+        released.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert not any(r.wavefunction_overlay_ids for r in readers)
+    assert not app.state.relocalize_running
+
+
+def test_global_backend_setting_preserves_other_preferences(app_pair, monkeypatch):
+    from vibeview.settings import load_settings, save_settings
+
+    app, _, _ = app_pair
+    save_settings({"recent_files": ["example.qvf"], "default_opacity": 0.3})
+    app.state.settings_relocalize_backend_python = sys.executable
+    app.controller.save_settings()
+    stored = load_settings()
+    assert stored["relocalize_backend_python"] == sys.executable
+    assert stored["recent_files"] == ["example.qvf"]
+    assert stored["default_opacity"] == 0.3
+    assert not app.state.relocalize_capabilities
+
+
+@pytest.mark.parametrize("bad", [None, [], {"ibo": None}])
+def test_malformed_capability_payload_is_unavailable(tmp_path, bad):
+    cap = capabilities()
+    cap["methods"] = bad
+    result = asyncio.run(
+        client.probe_worker(
+            worker_cmd=fake_worker(
+                tmp_path, "emit('capabilities',capabilities=" + repr(cap) + ")\n"
+            )
+        )
+    )
+    assert not result["available"]
+    assert "capabilities" in result["reason"]
+
+
+def test_fresh_rhf_refuses_changed_atom_identities(reader):
+    reader.set_edit_overlay([[0, 0, 0], [0, 0, 1]], ["H", "Li"])
+    with pytest.raises(ValueError, match="atom identities"):
+        client.request_from_reader(reader, "ibo", source="fresh_rhf")
+
+
+def test_basis_label_is_required_only_for_fresh_rhf(reader):
+    reader.provenance.pop("basis")
+    assert "name" not in client.request_from_reader(reader, "ibo")["basis"]
+    with pytest.raises(ValueError, match="basis name"):
+        client.request_from_reader(reader, "ibo", source="fresh_rhf")
+
+
+def test_probe_surfaces_missing_worker_diagnostics(tmp_path):
+    cmd = fake_worker(tmp_path, "print('No module named vibeqc_relocalize',file=sys.stderr)\n")
+    result = asyncio.run(client.probe_worker(worker_cmd=cmd))
+    assert not result["available"]
+    assert "No module named vibeqc_relocalize" in result["reason"]
+
+
+def test_fresh_rhf_remains_available_after_position_edit(app_pair):
+    from vibeview.app import _rebuild_structure_from_positions, _refresh_relocalize_state
+
+    app, readers, plotter = app_pair
+    app.state.relocalize_source = "fresh_rhf"
+    app.state.flush()
+    _rebuild_structure_from_positions(readers[0], plotter, [[0, 0, 0], [0, 0, 1]], ["H", "H"])
+    assert app.state.relocalize_supported
+    app.state.relocalize_source = "supplied"
+    _refresh_relocalize_state(readers[0], app.state)
+    assert not app.state.relocalize_supported
+    assert "Geometry edits" in app.state.relocalize_reason
+
+
+def test_stale_probe_cannot_replace_newer_readiness(app_pair, monkeypatch):
+    app, _, _ = app_pair
+
+    async def run():
+        started, released = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def probe(path):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await released.wait()
+                return {"available": True, "capabilities": capabilities(), "reason": ""}
+            return {"available": False, "capabilities": {}, "reason": "Native core unavailable"}
+
+        monkeypatch.setattr(client, "probe_worker", probe)
+        app.controller.check_relocalize_backend()
+        await started.wait()
+        app.controller.check_relocalize_backend()
+        await asyncio.sleep(0)
+        released.set()
+        await asyncio.sleep(0)
+        assert not app.state.relocalize_available
+        assert not app.state.relocalize_supported
+        assert app.state.relocalize_backend_status == "Native core unavailable"
+        assert not app.state.relocalize_probe_running
+
+    asyncio.run(run())

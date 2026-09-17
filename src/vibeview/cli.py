@@ -1729,108 +1729,19 @@ def slice_cmd(qvf_file: Path, keep: str | None, drop: str | None, output: Path |
         vibe-view slice big.qvf -k structure,vol_dens_0 -o small.qvf
         vibe-view slice big.qvf -d citations0 -o no-cites.qvf
     """
-    import json as _json
-    import shutil
-    import tempfile
-    import zipfile
+    from vibeview.api import slice_qvf
+    from vibeview.qvf import QVFError
 
-    from vibeview.qvf import QVFError, QVFReader
-
-    # --keep and --drop together are ambiguous (the old code silently
-    # ignored --keep); refuse loudly instead.
-    if keep and drop:
-        click.echo("Error: --keep and --drop are mutually exclusive.", err=True)
-        raise SystemExit(1)
-
-    # Each selector matches section IDs *and* kinds — dot-detection
-    # made dotless kinds (structure, vibrations, bands, ...) unselectable
-    # as kinds despite the help text promising 'IDs or kinds'.
-    keep_sel = {item.strip() for item in keep.split(",")} if keep else set()
-    drop_sel = {item.strip() for item in drop.split(",")} if drop else set()
-
+    out_path = output or qvf_file.with_stem(f"{qvf_file.stem}_sliced")
     try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from None
-
-    try:
-        # Decide which sections to keep
-        to_keep = []
-        for sec in reader.sections:
-            if drop_sel:
-                if sec.id in drop_sel or sec.kind in drop_sel:
-                    continue
-                to_keep.append(sec)
-            elif keep_sel:
-                if sec.id in keep_sel or sec.kind in keep_sel:
-                    to_keep.append(sec)
-            else:
-                to_keep.append(sec)
-
-        if not to_keep:
-            click.echo("No sections to keep.", err=True)
-            reader.close()
-            raise SystemExit(1)
-
-        out_path = output or qvf_file.with_stem(f"{qvf_file.stem}_sliced")
-        if out_path.suffix != ".qvf":
-            out_path = out_path.with_suffix(".qvf")
-
-        # Build new manifest — preserve only required source fields
-        kept_ids = {s.id for s in to_keep}
-        kept_paths: set[str] = set()
-        new_sections = []
-        for sec in to_keep:
-            new_members = {}
-            for name, member in sec.members.items():
-                m = {"path": member.path, "format": member.format, "sha256": member.sha256}
-                if member.dtype:
-                    m["dtype"] = member.dtype
-                if member.shape:
-                    m["shape"] = member.shape
-                new_members[name] = m
-                kept_paths.add(member.path)
-            # Only include non-None extra fields to pass schema validation
-            sec_dict: dict = {"id": sec.id, "kind": sec.kind, "members": new_members}
-            if getattr(sec, "label", None):
-                sec_dict["label"] = sec.label
-            if getattr(sec, "component", None):
-                sec_dict["component"] = sec.component
-            new_sections.append(sec_dict)
-
-        src = reader.manifest.source
-        new_source = {
-            "program": src.program,
-            "version": src.version,
-            "calculation": src.calculation,
-        }
-        manifest: dict = {
-            "qvf_version": reader.manifest.qvf_version,
-            "source": new_source,
-            "sections": new_sections,
-        }
-        if hasattr(reader.manifest, "provenance") and reader.manifest.provenance:
-            prov = reader.manifest.provenance
-            manifest["provenance"] = prov.model_dump() if hasattr(prov, "model_dump") else prov
-
-        # Copy kept members
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf_out:
-            zf_out.writestr("manifest.json", _json.dumps(manifest))
-            with zipfile.ZipFile(qvf_file, "r") as zf_in:
-                for member_path in sorted(kept_paths):
-                    zf_out.writestr(member_path, zf_in.read(member_path))
-
-        n_kept = len(to_keep)
-        n_total = len(reader.sections)
-        click.echo(f"Sliced: {n_kept}/{n_total} sections kept → {out_path}")
-        out_size = out_path.stat().st_size
-        in_size = qvf_file.stat().st_size
-        click.echo(
-            f"Size: {_human_size(in_size)} → {_human_size(out_size)} ({(100 * out_size / max(1, in_size)):.0f}%)"
+        result = slice_qvf(
+            qvf_file, out_path,
+            keep=[v.strip() for v in keep.split(",")] if keep else None,
+            drop=[v.strip() for v in drop.split(",")] if drop else None,
         )
-    finally:
-        reader.close()
+    except (QVFError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Sliced → {result}")
 
 
 @main.command("merge")

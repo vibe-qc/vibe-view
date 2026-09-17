@@ -288,13 +288,82 @@ way to ship orbitals than forty `volume.orbital` sections.
 * Canonical, alpha/beta, natural and localized sets each get their own
   list. Localized orbitals are labelled by the atoms they sit on, because a
   localized orbital has no meaningful energy ordering.
-* **Re-localize with** applies a different localization criterion than the
-  producer chose. The viewer does not localize anything itself; this shells
-  out to vibe-qc in a subprocess and is only offered when vibe-qc is
-  importable in the viewer's environment. This worker handles real molecular
-  orbitals only. For periodic or complex wavefunctions, generate localized
-  orbitals with the calculation and load its exported QVF instead;
-  installing vibe-qc does not enable periodic localization in this viewer.
+* **Re-localize with** sends the occupied subspace to a separately installed
+  vibe-qc backend. Configure it as described below. IBO, Foster–Boys and
+  Pipek–Mezey appear only when their backend readiness checks pass and the
+  selected archive supplies compatible data.
+
+#### Configure re-localization
+
+Install vibe-qc with its native core in its own Python environment. The viewer
+does not need vibe-qc installed in its environment, and the backend does not
+need vibe-view. This integration requires the standalone worker's **API 1.0.0
+or later in major version 1, JSON protocol 1**, introduced for vibe-qc 0.17.5.
+Before that release is available, use a vibe-qc source installation containing
+commit `0830147b8a09f2263901960101ab571fa5e96957` or a later descendant.
+Follow the [vibe-qc installation instructions](https://github.com/vibe-qc/vibe-qc)
+for the native build; a Python package import alone does not establish readiness.
+
+1. Open **Settings**, enter the absolute path to that environment's **Python
+   executable**, and select **Save backend and check**. Choose the Python
+   executable itself, without shell arguments or a wrapper command.
+2. The setting persists globally across files and viewer restarts. On startup,
+   the viewer checks the native core and individual localization methods.
+   **Check backend** repeats that probe after an installation or upgrade.
+3. Select a wavefunction, keep **Archived occupied orbitals** selected, choose
+   **Re-localize with**, then select **Localize**. The viewer passes exact
+   archived shells, real occupied coefficients, occupations and structure data
+   as JSON. It does not pass a QVF filename or reconstruct a basis by name.
+
+For a backend Python at `/path/to/backend/bin/python`, these are the commands
+used by the viewer:
+
+```sh
+/path/to/backend/bin/python -I -m vibeqc_relocalize --probe
+/path/to/backend/bin/python -I -m vibeqc_relocalize
+```
+
+The worker uses stdin/stdout for versioned JSON and stderr for diagnostics.
+The probe times out after 60 seconds; localization after 300 seconds. **Cancel**
+terminates the worker. A missing executable, incompatible protocol, unavailable
+native core or backend refusal produces an explanatory status in the panel.
+
+The molecular adapter requires a restricted singlet with explicit charge,
+multiplicity, exact QVF GTO shells and electron occupations of 0 or 2. The
+occupied coefficients must cover the complete all-electron occupied subspace.
+No density matrix is required. A density-only archive cannot preserve the
+archived occupied orbitals through this interface. ECP calculations, fractional
+occupations, unrestricted/spinor orbitals, complex coefficients, and periodic
+systems (including Gamma-only archives) are not supported by this adapter.
+The limit is 512 AOs and elements through radon. Unsupported or incomplete
+archives show a reason instead of an enabled action.
+
+**New RHF + localize** explicitly calculates a new wavefunction before
+localizing. It requires a compatible archived all-electron basis, occupations,
+charge and multiplicity, but does not require archived coefficients. Worker
+API 1.0.0 also needs the archived basis name for its atomic initial guess;
+exact shells still define the calculation basis. It may
+use edited positions of the same atoms. Changes to atom identities require a
+new calculation archive. Selecting this option never preserves the previous
+calculation's occupied subspace, even if that calculation also used RHF.
+There is no automatic SCF fallback when localization fails or data is missing.
+
+Results appear as session wavefunction overlays in the sidebar. They include
+localized orbital surfaces, atom populations, centroids and centre counts,
+plus an IAO charge table and the backend's subspace/orthonormality errors.
+The viewer also checks the returned rotation and its action on the supplied
+coefficients. Localized orbitals have no canonical orbital energies. The
+panel identifies whether the source was the archive or a new RHF calculation;
+the current kernel does not certify localization convergence.
+
+**Clear re-localized overlays** returns to the archived wavefunction. Geometry
+edits remove existing localization overlays. File/section changes, edits and
+backend changes discard any in-flight result belonging to the old state.
+The original QVF file is never modified. The backend's experimental periodic
+finite-torus output needs additional archive metadata and a separate rendering
+adapter; it is deliberately not offered as molecular localization.
+
+#### Orbital evaluation limits
 
 The on-demand evaluator covers shells through `l = 3`. An orbital with more
 than 0.5 % of its weight in g or higher shells is drawn and the status line
@@ -321,13 +390,37 @@ An orbital evaluated on demand from `wavefunction.gto`, both lobes drawn.
 The **Basis Functions** panel does the same for a `basis.ao` section: pick
 an atomic orbital and see it.
 
+(bands-dos-panel)=
 ### `bands`, `dos.total`, `dos.projected`, `dos.coop`, `dos.cohp`
 
 Interactive Plotly charts. A `bands` section plots every band along the
 k-path with the Fermi level as a horizontal reference; hover any band for
 its energy. When a `dos.total` section is also present the two are drawn as
-one figure on a shared, Fermi-referenced energy axis. Projected DOS, COOP
+one figure on a shared, Fermi-referenced energy axis. Bands are shifted by
+their own `kpath.fermi`; QVF DOS grids already use E_F = 0 and are never shifted
+again by an absolute Fermi tag. If bands lack a Fermi reference, the panels
+use separate energy axes and labels. Projected DOS, COOP
 and COHP add per-channel traces you can toggle in the legend.
+
+**Energy window.** An all-electron periodic archive carries core states
+hundreds or thousands of eV below E_F, and an axis autoscaled to all of
+them squeezes the valence and conduction bands into a few pixels. The
+panel therefore opens on a valence window: the states grouped around E_F,
+with the core shells left off the axis. **E − E_F min** and **E − E_F max**
+move it — commit with Enter or by leaving the field — and **Reset window**
+returns to the default. Double-clicking the chart is Plotly's own
+autoscale, which shows the full range including the core states.
+
+A file whose spectrum has no core states is not windowed at all, so
+pseudopotential archives keep the axis they have always had. A producer
+can ship its own first view with an `energy_window` hint in
+`viewer_defaults`, as `[min, max]` in eV relative to E_F:
+
+```json
+"viewer_defaults": {
+  "bands": {"energy_window": [-15.0, 10.0]}
+}
+```
 
 ```{figure} images/08-bands-dos.png
 :alt: Illustrative electronic band curves along Gamma–X–L beside density of states on a shared energy axis.
@@ -507,8 +600,9 @@ scenes, see [Figures without a display](headless.md).
 
 A producer can suggest how a file should open by writing `viewer_defaults`
 into the manifest: which section to activate, per-section isovalues,
-colormaps and opacities, camera bookmarks. vibe-view applies them before
-rendering anything. They are hints: every one can be overridden from the
+colormaps and opacities, camera bookmarks, and the bands/DOS
+[energy window](#bands-dos-panel).
+vibe-view applies them before rendering anything. They are hints: every one can be overridden from the
 UI, and unknown fields are ignored rather than rejected. The keys are
 described in the QVF specification in the
 [qvf repository](https://github.com/vibe-qc/qvf).

@@ -1,9 +1,8 @@
 """Regression tests for the 2D plot renderers (bands / DOS / spectra).
 
 Covers audit findings:
-* A4-01 — DOS honours fermi_energy_ev (Fermi line / referencing) and stays
-  readable when the producer ships absolute energies with an out-of-range
-  Fermi level.
+* A4-01 / #25 — DOS preserves its Fermi-relative grid regardless of the
+  optional absolute fermi_energy_ev metadata.
 * A4-02 — bands energy axis is always eV, never mislabeled "a.u." when
   fermi == 0.0.
 * A4-03 — ECD/VCD signed (negative Cotton) bands are NOT dropped.
@@ -68,17 +67,16 @@ def test_dos_fermi_referenced_when_in_range():
         path.unlink()
 
 
-def test_dos_absolute_energies_out_of_range_fermi_stays_readable():
-    """The committed NaCl showcase ships absolute energies with E_F far
-    outside the DOS window. We must NOT shift the data off-screen; instead
-    surface E_F in the axis label."""
+def test_dos_grid_with_out_of_range_absolute_fermi_stays_readable():
+    """Absolute Fermi metadata does not change the DOS grid convention."""
     from vibeview.renderers.dos import DOSRenderer
     path = _dos_qvf(np.linspace(-2805.0, 67.0, 64), fermi=4659.0)
     try:
         reader = QVFReader(path)
         html = DOSRenderer(reader.get_section("dos_total"), reader).render_to_html()
-        assert "outside range" in html
-        assert "E − E_F" not in html  # not Fermi-referenced (would be unreadable)
+        assert "outside range" not in html
+        assert "E_F (eV)" in html
+        assert "CC3333" in html
     finally:
         path.unlink()
 

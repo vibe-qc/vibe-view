@@ -6,6 +6,10 @@
 # vibe-qc's scripts/build_site.sh (project 34), so the two publishers behave
 # identically where they can.
 #
+# Requires the `[docs]` extra on PATH: `pip install -e '.[docs]'` from the
+# repository root. That is what .gitlab-ci.yml's .docs_deps installs, so a
+# local run of this script reproduces the published build.
+#
 # Reads:
 #
 #   docs/                          -- Sphinx source

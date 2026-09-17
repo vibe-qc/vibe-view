@@ -219,8 +219,17 @@ def capture_bands(
     reader: QVFReader,
     path: str | Path,
     section_id: str | None = None,
+    *,
+    energy_window: tuple[float, float] | None = None,
+    auto_window: bool = True,
 ) -> bool:
-    """Render a band structure chart to a PNG file."""
+    """Render a band structure chart to a PNG file.
+
+    ``energy_window`` limits the energy axis to ``(min, max)`` in eV
+    relative to E_F; unset, the figure opens on the same valence window
+    the viewer uses, and ``auto_window=False`` restores the full
+    autoscale (#26).
+    """
     from vibeview.renderers.bands import BandsRenderer
 
     sid = section_id
@@ -237,7 +246,7 @@ def capture_bands(
         return False
 
     renderer = BandsRenderer(section, reader)
-    png = renderer.render_to_bytes()
+    png = renderer.render_to_bytes(energy_window=energy_window, auto_window=auto_window)
     Path(path).write_bytes(png)
     return True
 
@@ -273,8 +282,15 @@ def capture_dos(
     reader: QVFReader,
     path: str | Path,
     section_id: str | None = None,
+    *,
+    energy_window: tuple[float, float] | None = None,
+    auto_window: bool = True,
 ) -> bool:
-    """Render a DOS chart to an HTML file."""
+    """Render a DOS chart to an HTML file.
+
+    Takes the same ``energy_window`` / ``auto_window`` arguments as
+    :func:`capture_bands` (#26).
+    """
     from vibeview.renderers.dos import DOSRenderer
 
     sid = section_id
@@ -291,7 +307,7 @@ def capture_dos(
         return False
 
     renderer = DOSRenderer(section, reader)
-    html = renderer.render_to_html()
+    html = renderer.render_to_html(energy_window=energy_window, auto_window=auto_window)
     Path(path).write_text(html)
     return True
 

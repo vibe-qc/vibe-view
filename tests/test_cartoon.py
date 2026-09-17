@@ -499,7 +499,7 @@ class TestRibbonColorMode:
         dataset = _actor_dataset(next(iter(plotter.actors.values())))
         assert "cartoon_rgb" not in dataset.point_data
 
-    def test_helix_and_loop_get_different_colours(self, tmp_path):
+    def test_helix_and_terminal_strand_get_different_colours(self, tmp_path):
         import numpy as np
 
         from vibeview.renderers.structure import (
@@ -517,7 +517,7 @@ class TestRibbonColorMode:
         assert rgb is not None
         present = {tuple(c) for c in np.unique(rgb, axis=0)}
         assert _CARTOON_SS_COLOR["H"] in present
-        assert _CARTOON_SS_COLOR["C"] in present
+        assert _CARTOON_SS_COLOR["E"] in present
 
     def test_colours_are_not_smoothed(self, tmp_path):
         """Unlike the radius profile, colour must stay categorical — a
@@ -790,8 +790,8 @@ class TestRibbonPayload:
         mesh = _extrude_ribbon(
             pts, side, normal, np.full(120, 1.10), np.full(120, 0.20)
         )
-        ring = np.asarray(mesh.points).reshape(-1, _CARTOON_SIDES, 3)
-        normals = mesh.point_data["Normals"].reshape(-1, _CARTOON_SIDES, 3)
+        ring = np.asarray(mesh.points)[:-2 * _CARTOON_SIDES].reshape(-1, _CARTOON_SIDES, 3)
+        normals = mesh.point_data["Normals"][:-2 * _CARTOON_SIDES].reshape(-1, _CARTOON_SIDES, 3)
         # Direction from the path to the surface point. On an ellipse the
         # normal is not parallel to this, but it must never oppose it.
         outward = ring - pts[:, None, :]

@@ -1,5 +1,8 @@
 # Minimal makefile for Sphinx documentation.
 #
+# sphinx-build comes from the `[docs]` extra: `pip install -e '.[docs]'` from
+# the repository root installs the toolchain and the package autodoc imports.
+#
 # `make html` renders into docs/_build/html. What CI publishes is
 # `scripts/build_site.sh`, which wraps the same sphinx-build and adds
 # robots.txt / sitemap.xml / .build-info -- use that to reproduce the live

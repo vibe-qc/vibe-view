@@ -3808,6 +3808,7 @@ def test_section_restore_actually_activates():
     and presentation restore now share the same saved-view preparation step and
     all activate the section it resolves.
     """
+    import ast
     import inspect
 
     import vibeview.app as app
@@ -3824,10 +3825,20 @@ def test_section_restore_actually_activates():
     # Every restore path prepares the saved view and activates the section it
     # resolves. Pin the shared helper rather than the old direct dict indexing:
     # issue #322 deliberately centralized validation and render-hint ordering.
-    for saved_view in ("bm", "session", "slide"):
+    functions = {
+        node.name: ast.get_source_segment(src, node)
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.FunctionDef)
+    }
+    for handler, saved_view in (
+        ("apply_user_bookmark", "bm"),
+        ("load_session", "session"),
+        ("_apply_slide", "slide"),
+    ):
+        restore_source = functions[handler]
         anchor = f"_prepare_saved_view_restore({saved_view})"
-        assert anchor in src, f"missing saved-view restore wiring: {anchor}"
-    assert src.count("activate_section(section_id)") == 3
+        assert anchor in restore_source, f"missing saved-view restore wiring: {anchor}"
+        assert "activate_section(section_id)" in restore_source, handler
 
 def test_switching_sections_drops_the_other_isosurface():
     """Entering Wavefunction clears the electron density, and vice versa.

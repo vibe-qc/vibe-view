@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -189,6 +190,34 @@ def test_shell_script_has_valid_bash_syntax(script: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+# ${name[@]+"${name[@]}"} expands to nothing when the array is empty and to
+# the elements otherwise, in every Bash the scripts support.
+_GUARDED_ARRAY_EXPANSION = re.compile(r'\$\{(\w+)\[@\]\+"\$\{\1\[@\]\}"\}')
+_ARRAY_EXPANSION = re.compile(r"\$\{\w+\[@\]\}")
+
+
+def test_shell_scripts_expand_arrays_safely_for_macos_bash_3() -> None:
+    """Every array expansion survives an empty array under ``set -u``.
+
+    Stock macOS Bash 3.2 rejects a bare ``${a[@]}`` on an empty array as an
+    unbound variable; Bash 4.4 and newer expand it to nothing. CI runs
+    Linux, so it never sees the failure and only macOS developers do.
+    Guarding every expansion is cheaper than tracking which arrays the
+    control flow can leave empty.
+    """
+    offenders = []
+    for script in sorted(SCRIPT_DIR.glob("*.sh")):
+        for number, line in enumerate(script.read_text().splitlines(), 1):
+            bare = _GUARDED_ARRAY_EXPANSION.sub("", line)
+            if _ARRAY_EXPANSION.search(bare):
+                offenders.append(f"{script.name}:{number}: {line.strip()}")
+
+    assert not offenders, (
+        "expand these through ${name[@]+\"${name[@]}\"} for Bash 3.2:\n"
+        + "\n".join(offenders)
+    )
+
+
 @pytest.mark.parametrize("script", SHELL_SCRIPTS)
 def test_user_facing_shell_scripts_are_executable(script: Path) -> None:
     assert script.stat().st_mode & stat.S_IXUSR
@@ -304,6 +333,43 @@ def test_link_bin_creates_marked_launcher_and_unlink_removes_it(
     assert "Removed command link" in unlink.stdout
     assert not shim.exists()
     assert not record.exists()
+
+
+@pytest.mark.skipif(
+    not Path("/bin/bash").exists(), reason="stock macOS Bash is unavailable"
+)
+def test_bin_link_record_without_dry_run_is_bash_3_safe(tmp_path: Path) -> None:
+    """The record helper leaves its option array empty off the dry-run path.
+
+    install.sh and uninstall.sh source the helpers under ``set -u``, where
+    Bash 3.2 rejects the expansion and aborts the whole uninstall.
+    """
+    viewer = tmp_path / "vibe-view"
+    scripts = viewer / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(SCRIPT_DIR / "_venv_helpers.sh", scripts / "_venv_helpers.sh")
+    _copy_shared_lifecycle_lock(tmp_path)
+    helper = shlex.quote(str(scripts / "_venv_helpers.sh"))
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            f"set -euo pipefail; . {helper}; vibe_view_bin_link_record 0",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "unbound variable" not in result.stderr
+    key = hashlib.sha256(os.fsencode(viewer.resolve())).hexdigest()
+    record = (
+        Path(os.environ["VIBE_PRIVATE_ROOT"]) / "vibe-view" / "state" / key / "bin-links"
+    )
+    assert result.stdout.strip() == str(record)
 
 
 def test_link_bin_refuses_unmanaged_and_foreign_files(tmp_path: Path) -> None:

@@ -19,6 +19,12 @@ import numpy as np
 import plotly.graph_objects as go
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers.energy_window import (
+    EnergyWindow,
+    apply_axis_range,
+    auto_energy_window,
+    resolve_window,
+)
 
 if TYPE_CHECKING:
     from vibeview.qvf import BandsData, QVFReader, Section
@@ -124,17 +130,48 @@ class BandsRenderer(BaseRenderer):
         )
         return proj, channels
 
-    def render_to_bytes(self) -> bytes:
-        """Render the band structure to a PNG byte string (matplotlib)."""
+    def _fermi(self) -> float | None:
+        """The Fermi reference in eV, or ``None`` when the file carries none.
+
+        ``fermi == 0.0`` is the writer's no-Fermi-level sentinel (see
+        ``dos.py`` ``_bands_dos_figure``) — don't draw a spurious E_F line
+        or relabel the axis for a file that carries no Fermi energy.
+        """
+        fermi = self.load().fermi
+        return None if fermi == 0.0 else fermi
+
+    def default_energy_window(self) -> EnergyWindow | None:
+        """The valence window this band structure would open at (#26).
+
+        ``None`` when the axis should keep its full autoscale — including
+        whenever the file carries no Fermi reference, since the window is
+        defined relative to E_F.
+        """
+        fermi = self._fermi()
+        if fermi is None:
+            return None
+        return auto_energy_window(self.load().eigenvalues - float(fermi))
+
+    def render_to_bytes(
+        self,
+        *,
+        energy_window: EnergyWindow | None = None,
+        auto_window: bool = True,
+    ) -> bytes:
+        """Render the band structure to a PNG byte string (matplotlib).
+
+        ``energy_window`` limits the energy axis to ``(min, max)`` in eV
+        relative to E_F. Left unset, the chart opens on
+        :meth:`default_energy_window`; pass ``auto_window=False`` for the
+        full autoscale.
+        """
         data = self.load()
         kpath = data.kpath
         eigenvalues = data.eigenvalues
-        fermi = data.fermi
-        if fermi == 0.0:
-            # The writer's no-Fermi-level sentinel (see dos.py
-            # _bands_dos_figure) — don't draw a spurious E_F line or
-            # relabel the axis for files that carry no Fermi energy.
-            fermi = None
+        fermi = self._fermi()
+        window = resolve_window(
+            energy_window, auto=auto_window, compute=self.default_energy_window
+        )
 
         n_spin, n_kpts, n_bands = eigenvalues.shape
 
@@ -220,6 +257,9 @@ class BandsRenderer(BaseRenderer):
             ax.set_xticks(tick_positions)
             ax.set_xticklabels(tick_labels, fontsize=10)
 
+        if window is not None:
+            ax.set_ylim(window[0], window[1])
+
         # Eigenvalues are ALWAYS stored in eV (writer multiplies by
         # _HARTREE_TO_EV), so never label them "a.u." — the old `if fermi`
         # truthiness test mislabeled a fermi==0.0 file as atomic units while
@@ -236,7 +276,13 @@ class BandsRenderer(BaseRenderer):
         buf.seek(0)
         return buf.read()
 
-    def render_to_html(self, include_plotlyjs: str | bool = "cdn") -> str:
+    def render_to_html(
+        self,
+        include_plotlyjs: str | bool = "cdn",
+        *,
+        energy_window: EnergyWindow | None = None,
+        auto_window: bool = True,
+    ) -> str:
         """Render the band structure as an interactive Plotly HTML div.
 
         Features:
@@ -244,16 +290,21 @@ class BandsRenderer(BaseRenderer):
         - Fermi level reference line
         - Segment boundary markers and labels
         - Pan and zoom
+        - An energy window on the y axis (#26)
+
+        ``energy_window`` limits the energy axis to ``(min, max)`` in eV
+        relative to E_F. Left unset, the chart opens on
+        :meth:`default_energy_window`; pass ``auto_window=False`` for the
+        full autoscale. Either way the axis stays interactive — the window
+        is a starting view, and the reader can zoom out of it.
         """
         data = self.load()
         kpath = data.kpath
         eigenvalues = data.eigenvalues
-        fermi = data.fermi
-        if fermi == 0.0:
-            # The writer's no-Fermi-level sentinel (see dos.py
-            # _bands_dos_figure) — don't draw a spurious E_F line or
-            # relabel the axis for files that carry no Fermi energy.
-            fermi = None
+        fermi = self._fermi()
+        window = resolve_window(
+            energy_window, auto=auto_window, compute=self.default_energy_window
+        )
 
         n_spin, n_kpts, n_bands = eigenvalues.shape
         shift = fermi if fermi is not None else 0.0
@@ -383,7 +434,7 @@ class BandsRenderer(BaseRenderer):
             xaxis={"title": "k-point", "tickvals": tick_vals, "ticktext": tick_text}
             if tick_vals
             else {},
-            yaxis={"title": y_label},
+            yaxis=apply_axis_range({"title": y_label}, window),
             template="plotly_dark",
             hovermode="closest",
             height=450,

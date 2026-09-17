@@ -11,14 +11,98 @@ deliberately not transferred — see the [README](README.md#history).
 
 ## [Unreleased]
 
-### Changed
-- Public source is usable without private URL rewriting or omitted agent guides.
-  Site CI settings and release coordination stay outside the product repository.
-- Installer launcher records use external private state with verified migration
-  from the legacy checkout record; ordinary virtualenv locations are unchanged.
+## [v2.18.0] - 2026-09-17 - *Richardson's Robin*
 
+Periodic band-structure and DOS charts now open on the states around E_F.
+An all-electron archive puts its core shells hundreds or thousands of eV
+below the valence region -- silicon at STO-3G places its 1s at -2431 eV --
+and an axis autoscaled over all of them left the bands unreadable without a
+manual zoom. Pseudopotential archives, which have no core states, keep the
+axis they had. The Sphinx toolchain is now a declared `docs` extra instead
+of ten pins inlined in CI, so the site can be built from package metadata.
+Setup scripts run on stock macOS Bash 3.2, and a release push no longer
+repeats the gate its candidate already passed.
+
+### Added
+
+- **An energy window for the band-structure and DOS charts.** All-electron
+  periodic archives carry core states hundreds or thousands of eV below E_F —
+  silicon at STO-3G puts its 1s at -2431 eV — and an axis autoscaled over all
+  of them squeezed the valence and conduction bands into a few pixels around
+  the E_F line, so the chart could not be read without a manual drag-zoom. The
+  bands, DOS and combined panels now open on the states grouped around E_F,
+  with the core shells off the axis, and carry **E − E_F min** / **E − E_F
+  max** fields and a **Reset window** button. A spectrum with no core states is
+  not windowed at all, so pseudopotential archives keep the axis they had. A
+  producer can ship its own first view with an `energy_window` hint in
+  `viewer_defaults`, and `render_to_html` / `render_to_bytes` take
+  `energy_window=` and `auto_window=False` for scripted figures. (#26)
+
+- **A `docs` extra** declaring the Sphinx toolchain. `.gitlab-ci.yml`'s
+  `.docs_deps` pinned all of it inline, so the requirement appeared in no
+  package metadata and the only way to render the site locally was to read the
+  CI file and retype ten pins — `docs/Makefile` and `scripts/build_site.sh`
+  both assumed `sphinx-build` was already on `PATH` and said nothing about how
+  it got there. Four of those pins (`numpy`, `click`, `pydantic`, `jsonschema`)
+  were already `[project.dependencies]`, repeated only because the docs job did
+  not install the package, and would have kept an old floor after a core pin
+  moved. CI, `CONTRIBUTING.md`, `README.md`, `AGENTS.md`, the Makefile and the
+  site builder now all name `pip install -e '.[docs]'`, and
+  `tests/test_docs_toolchain.py` keeps the extra in step with `docs/conf.py`'s
+  extensions, with the core dependency list and with the CI job. (#19)
 
 ### Fixed
+
+- The setup scripts no longer abort on stock macOS Bash 3.2, which rejects
+  an empty `"${array[@]}"` as an unbound variable under `set -u`. This made
+  `uninstall.sh` fail outright on macOS. (#29)
+
+- **A release push no longer repeats the gate the candidate already passed.**
+  `test` and `qvf-conformance` carried no `rules:` of their own, so they fell
+  through to the `workflow:` admission list and ran on every ref in it. After
+  v2.16.2 that was visible: the candidate pipeline proved the exact commit,
+  then fast-forwarding `release` onto that same SHA started the identical two
+  jobs again against an identical tree, and preparing `main` needed a `ci.skip`
+  push option to get out of the way of a third copy. Both jobs now name their
+  refs — merge requests, `release-candidate/*` and manual `web` runs — which
+  is the delivery model `docs/roadmap.md` already described: work lands on
+  `main`, a candidate pipeline proves it, and `release` only fast-forwards.
+  `docs-build` still runs on `main` and `release`, because the site artifact
+  and the deployment jobs need it. The matrix is a table at the top of
+  `.gitlab-ci.yml` and in `CONTRIBUTING.md`, and `tests/test_ci_rules.py`
+  evaluates the file against it, so a job that loses its rules fails the suite
+  instead of silently inheriting every ref again. (#22)
+
+## [v2.18.0] - 2026-09-16 - *Richardson's Robin*
+
+### Added
+
+- Biomolecule residue isolation, hiding and viewport selection, with chain,
+  secondary-structure, residue-type and B-factor colours in atom and bond views.
+- PDB HELIX/SHEET annotations are retained. Optional secondary-structure subtype
+  metadata distinguishes alpha, pi and 3₁₀ helices and beta bridges in ribbons.
+- Optional dashed hydrogen-bond contact display using explicit hydrogens and
+  documented geometric criteria in the input cell.
+
+### Fixed
+
+- Restore **Re-localize with** using a separately installed vibe-qc worker.
+  A persistent backend Python setting, native capability probe and archive
+  checks enable compatible molecular methods. Exact archived occupied orbitals
+  are preserved; new RHF is an explicit option. Validated session overlays
+  include localization descriptors and IAO charges, with cancellation and
+  stale-result protection. Periodic, complex and incomplete inputs explain
+  why localization is unavailable.
+- Strands have crisp edges, correctly shaded end caps and complete terminal
+  residue assignments. Hidden ribbon spans are never connected across gaps.
+- QVF slicing preserves root, section and member metadata, prunes removed
+  viewer hints, refuses dangling section references, and validates before
+  replacing the output. (#24)
+- DOS energy grids retain their specified Fermi-relative values; combined
+  bands/DOS plots subtract only the bands' own Fermi reference, with separate
+  axes when that reference is absent. (#25)
+- Scene rebuilds and file reloads preserve the light-background choice. (#27)
+- Headless exports do not create an unawaited reset coroutine. (#21)
 
 - Installation, quickstart and desktop tutorials now begin with exact clone
   commands: deploy-key SSH access to GitLab on port 26, or the GitHub mirror.
@@ -32,6 +116,11 @@ deliberately not transferred — see the [README](README.md#history).
 
 - Desktop builds now retain artifacts locally; operators publish feeds with separate private deployment tooling.
 
+### Changed
+- Public source is usable without private URL rewriting or omitted agent guides.
+  Site CI settings and release coordination stay outside the product repository.
+- Installer launcher records use external private state with verified migration
+  from the legacy checkout record; ordinary virtualenv locations are unchanged.
 
 ### Maintenance: separate product source and private operations
 

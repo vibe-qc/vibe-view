@@ -162,7 +162,7 @@ if [ "$KEEP_DESKTOP" != "1" ]; then
     ELECTRON_ARGS=(--uninstall)
     [ "$DRY_RUN" = "1" ] && ELECTRON_ARGS+=(--dry-run)
     "$CLEANUP_PYTHON" "$VIBE_VIEW_PROJECT_DIR/electron/install-electron.py" \
-        "${ELECTRON_ARGS[@]}"
+        ${ELECTRON_ARGS[@]+"${ELECTRON_ARGS[@]}"}
 fi
 
 if [ -n "$VENV_PATH" ]; then

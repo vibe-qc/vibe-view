@@ -412,6 +412,9 @@ def _sidebar_section_title(section: dict) -> str:
                 "ibo": "IBO",
                 "boys": "Boys",
                 "pipek_mezey": "Pipek-Mezey",
+                "ibo_fresh_rhf": "IBO, new RHF",
+                "boys_fresh_rhf": "Boys, new RHF",
+                "pipek_mezey_fresh_rhf": "Pipek-Mezey, new RHF",
             }.get(criterion, criterion.replace("_", "-").title())
             return f"{label} ({pretty})" if pretty else label
         if section_id.startswith("wf_nto"):
@@ -615,6 +618,63 @@ def _clamp_viewer_replication(reader: "QVFReader", viewer_state) -> None:
     viewer_state.replication = clamp_replication(viewer_state.replication, pbc)
 
 
+def _pick_residue(structure, plotter, state, position, replication=(1, 1, 1)):
+    """Resolve a visible atom or ribbon surface hit to canonical residue identity."""
+    import numpy as np
+
+    from vibeview.renderers.structure import (
+        _selected_atom_indices,
+        _visible_atom_indices,
+        parse_residue_selection,
+    )
+
+    point = np.asarray(position, dtype=float)
+    if point.shape != (3,) or not np.isfinite(point).all():
+        return None
+    eligible = {(chain, seq) for chain, seq, _ in structure.ca_residues()}
+    membership = {index: (chain, seq) for chain, residues in structure.chains().items()
+                  for seq, indices in residues if (chain, seq) in eligible for index in indices}
+    best = (float("inf"), None)
+    if state.representation_style == "cartoon":
+        for name, actor in plotter.actors.items():
+            if not name.startswith("cartoon_chain_"):
+                continue
+            mapper = actor.GetMapper()
+            mapper.Update()
+            mesh = mapper.GetInput()
+            array = mesh.GetPointData().GetArray("residue_atom_index")
+            if array is None or not mesh.GetNumberOfPoints():
+                continue
+            index = mesh.FindPoint(point)
+            if index < 0:
+                continue
+            distance = float(np.linalg.norm(np.asarray(mesh.GetPoint(index)) - point))
+            if distance < best[0]:
+                best = (distance, int(array.GetTuple1(index)))
+    else:
+        terms, _ = parse_residue_selection(state.residue_selection or "")
+        visible = _visible_atom_indices(structure, _selected_atom_indices(structure, terms),
+                                        state.residue_visibility)
+        counts = clamp_replication(replication, structure.pbc)
+        for offset_index in np.ndindex(counts):
+            offset = (np.asarray(offset_index) @ structure.lattice_vectors
+                      if structure.lattice_vectors is not None else np.zeros(3))
+            for index in visible & membership.keys():
+                distance = float(np.linalg.norm(structure.atoms[index].position + offset - point))
+                if distance < best[0]:
+                    best = (distance, index)
+    return membership.get(best[1]) if best[0] <= 2.5 else None
+
+
+def _structure_display_options(state) -> dict:
+    """Persistent biomolecule controls shared by all scene rebuild paths."""
+    return {
+        "atom_color_mode": str(getattr(state, "atom_color_mode", "element") or "element"),
+        "residue_visibility": str(getattr(state, "residue_visibility", "all") or "all"),
+        "show_hydrogen_bonds": bool(getattr(state, "show_hydrogen_bonds", False)),
+    }
+
+
 def _build_structure_scene(
     reader: "QVFReader",
     plotter: "pv.Plotter",
@@ -661,6 +721,7 @@ def _build_structure_scene(
                 representation=representation,
                 cartoon_color_mode=cartoon_color_mode,
                 residue_selection=residue_selection,
+                **_structure_display_options(state),
             )
         except QVFError as e:
             state.status_message = f"Structure load error: {e}"
@@ -1312,6 +1373,9 @@ def create_app(readers):
     #     we can report errors through the UI status bar) ──────────────
     server = get_server(client_type="vue3")
     server.enable_module(vtk_module)
+    from vibeview.settings import load_settings
+
+    persisted_settings = load_settings()
     server.state.update(
         {
             "section_list": section_list,
@@ -1394,6 +1458,18 @@ def create_app(readers):
             "bands_image": None,
             "bands_html": None,
             "bands_title": "Band Structure",
+            # Energy window for the bands / DOS charts (#26). All-electron
+            # periodic archives carry core states thousands of eV below E_F,
+            # and an autoscaled axis flattens the valence region into a few
+            # pixels around the E_F line. The activators resolve a window —
+            # the manifest hint, else the renderer's valence default — and
+            # write it back here, so the fields always show what is drawn.
+            # `bands_window_auto` records whether that resolved window is
+            # still the default or the reader has typed one in.
+            "bands_window_available": False,
+            "bands_window_auto": True,
+            "bands_emin": None,
+            "bands_emax": None,
             "phonon_html": None,
             "phonon_title": "Phonon",
             "eos_html": None,
@@ -1502,6 +1578,18 @@ def create_app(readers):
             # localization criterion the file does not already contain.
             # ``None`` = not yet probed, mirroring ``live_opt_available``.
             "relocalize_available": None,
+            "relocalize_backend_python": persisted_settings.get("relocalize_backend_python", ""),
+            "settings_relocalize_backend_python": persisted_settings.get(
+                "relocalize_backend_python", ""
+            ),
+            "relocalize_capabilities": {},
+            "relocalize_probe_running": False,
+            "relocalize_backend_status": "Backend not checked",
+            "relocalize_source": "supplied",
+            "relocalize_reason": "Check the vibe-qc backend in Settings",
+            "relocalize_result_summary": "",
+            "relocalize_charge_rows": [],
+            "relocalize_has_overlay": False,
             "relocalize_running": False,
             "relocalize_status": "",
             "relocalize_method": "ibo",
@@ -1510,7 +1598,7 @@ def create_app(readers):
             "wf_component": "real",
             "wf_is_complex": False,
             "mo_last_component": "real",
-            "relocalize_supported": True,
+            "relocalize_supported": False,
             # Total density vs spin density (rho_alpha - rho_beta). The
             # button below drives both; spin needs an unrestricted section.
             "wf_density_spin": False,
@@ -1538,6 +1626,13 @@ def create_app(readers):
             "representation_style": _default_representation(reader),
             # Cartoon ribbon colouring: "chain" or "structure".
             "cartoon_color_mode": "chain",
+            "atom_color_mode": "element",
+            "structure_color_mode": (
+                "chain" if _default_representation(reader) == "cartoon" else "element"
+            ),
+            "residue_visibility": "all",
+            "residue_pick_mode": False,
+            "show_hydrogen_bonds": False,
             # Residue/chain selection (D4). Empty selects nothing; matching
             # residues render white over the active ribbon colour.
             "residue_selection": "",
@@ -1684,6 +1779,7 @@ def create_app(readers):
             # Display toggles
             "show_atom_labels": False,
             "dark_background": True,
+            "background_override": None,
             "raytrace_enabled": False,
             "toon_mode": False,
             # OSPRay ray tracing is only meaningful when (a) the VTK build
@@ -2007,7 +2103,7 @@ def create_app(readers):
             server.state.volume_loaded = False
             server.state.status_message = f"Auto-opened: {section_id}"
         elif section.kind == "bands":
-            _activate_bands(reader, server.state, section)
+            _activate_bands(reader, server.state, section, viewer_state)
             server.state.selected_section = section_id
         elif section.kind in _plot_spectra_kinds():
             _activate_spectra(reader, server.state, section, _all_readers)
@@ -2081,6 +2177,9 @@ def create_app(readers):
     _wf_render_epoch = 0
     _wf_anim_timer = None
     plotter._vibeview_wf_render_lock = _wf_render_lock
+    _relocalize_task = None
+    _relocalize_probe_task = None
+    _relocalize_generation = 0
 
     def _wavefunction_render_is_current(
         epoch: int,
@@ -2144,6 +2243,7 @@ def create_app(readers):
 
     def _reload_active_file(preserve_camera: bool = False):
         """Invalidate worker renders, then replace the VTK scene exclusively."""
+        _cancel_relocalization()
         _invalidate_wavefunction_renders()
         with _wf_render_lock:
             return _reload_active_file_unlocked(preserve_camera)
@@ -2180,6 +2280,8 @@ def create_app(readers):
         _replace_lazy_reader(reader)
         viewer_state = ViewerState.from_manifest(reader.viewer_defaults)
         _clamp_viewer_replication(reader, viewer_state)
+        server.state.residue_visibility = "all"
+        server.state.residue_pick_mode = False
         server.state.residue_selection_chains = _selectable_chains(reader)
         server.state.residue_selection_available = _residue_selection_available(reader)
         server.state.residue_selection_summary = _residue_selection_summary(
@@ -2334,7 +2436,7 @@ def create_app(readers):
         saved_camera = plotter.camera_position if preserve_camera else None
         _prepare_scene_actor_replacement(plotter, server.state)
         plotter.clear()
-        plotter.set_background("#1a1a2e")
+        plotter.set_background("#1a1a2e" if server.state.dark_background else "#f0f0f0")
 
         # Re-apply SSAO after plotter.clear() (VTK 9.2+) — but only if it
         # is enabled: this used to re-apply unconditionally, so switching
@@ -2520,6 +2622,10 @@ def create_app(readers):
         # explicit file switch — the watcher's hot-reload path keeps
         # whatever the user selected.
         server.state.representation_style = _default_representation(_all_readers[idx])
+        server.state.structure_color_mode = (
+            server.state.cartoon_color_mode if server.state.representation_style == "cartoon"
+            else server.state.atom_color_mode
+        )
         _reload_active_file()
         server.state.status_message = (
             f"Switched to {_job_name(reader)} (file {idx + 1}/{len(_all_readers)})"
@@ -3372,6 +3478,8 @@ def create_app(readers):
 
     def _activate_section_impl(section_id: str) -> None:
         """Invalidate worker renders, then mutate the VTK scene exclusively."""
+        if server.state.relocalize_running:
+            _cancel_relocalization()
         _invalidate_wavefunction_renders()
         with _wf_render_lock:
             _activate_section_impl_unlocked(section_id)
@@ -3477,7 +3585,7 @@ def create_app(readers):
         elif section.kind == "bands":
             if _was_atom_props:
                 _restore_cpk_atoms(reader, plotter, state)
-            _activate_bands(reader, state, section)
+            _activate_bands(reader, state, section, viewer_state)
         elif section.kind == "dos.total":
             if _was_atom_props:
                 _restore_cpk_atoms(reader, plotter, state)
@@ -3487,13 +3595,13 @@ def create_app(readers):
             # desynced the app's notion of the active section from the UI.
             bands_section = next((s for s in reader.sections if s.kind == "bands"), None)
             if bands_section is not None:
-                _activate_bands(reader, state, bands_section)
+                _activate_bands(reader, state, bands_section, viewer_state)
             else:
-                _activate_dos(reader, state, section)
+                _activate_dos(reader, state, section, viewer_state)
         elif section.kind == "dos.projected":
             if _was_atom_props:
                 _restore_cpk_atoms(reader, plotter, state)
-            _activate_dos(reader, state, section)
+            _activate_dos(reader, state, section, viewer_state)
         elif section.kind == "phonon_bands":
             if _was_atom_props:
                 _restore_cpk_atoms(reader, plotter, state)
@@ -3697,6 +3805,54 @@ def create_app(readers):
         if section is not None and section.kind in _plot_spectra_kinds():
             _activate_spectra(reader, state, section, _all_readers)
 
+    def _redraw_bands_panel() -> None:
+        """Re-run whichever activator owns the bottom panel right now."""
+        state = server.state
+        section = next(
+            (s for s in reader.sections if s.id == state.selected_section), None
+        )
+        if section is None:
+            return
+        if section.kind == "bands":
+            _activate_bands(reader, state, section, viewer_state)
+        elif section.kind == "dos.total":
+            bands_section = next((s for s in reader.sections if s.kind == "bands"), None)
+            if bands_section is not None:
+                _activate_bands(reader, state, bands_section, viewer_state)
+            else:
+                _activate_dos(reader, state, section, viewer_state)
+        elif section.kind == "dos.projected":
+            _activate_dos(reader, state, section, viewer_state)
+
+    @ctrl.set("update_bands_energy_window")
+    def update_bands_energy_window(*_ignored) -> None:
+        """Redraw the bands / DOS chart on a reader-set energy window (#26).
+
+        Called with nothing: the fields v-model straight onto state, so
+        both the Enter and the blur binding read the committed values from
+        there. A pair that does not make a range — a blank field, an
+        inverted pair, a half-typed minus sign — falls back to the
+        previous window rather than blanking the chart; that call lives in
+        ``_requested_energy_window``.
+        """
+        state = server.state
+        # VTextField with type="number" still v-models as a string.
+        state.bands_emin = _coerce_window_bound(state.bands_emin)
+        state.bands_emax = _coerce_window_bound(state.bands_emax)
+        state.bands_window_auto = True
+        if state.bands_emin is not None and state.bands_emax is not None:
+            state.bands_window_auto = False
+        _redraw_bands_panel()
+
+    @ctrl.set("reset_bands_energy_window")
+    def reset_bands_energy_window() -> None:
+        """Drop a reader-set window, back to the default view (#26)."""
+        state = server.state
+        state.bands_window_auto = True
+        state.bands_emin = None
+        state.bands_emax = None
+        _redraw_bands_panel()
+
     @ctrl.set("download_run_attachment")
     def download_run_attachment(role=None) -> None:
         """Offer one run.record attachment as a browser download.
@@ -3760,7 +3916,7 @@ def create_app(readers):
             },
         )
         state.download_history = state.download_history[:50]
-        asyncio.ensure_future(_reset_export_flag())
+        _schedule_export_reset()
 
     @ctrl.set("export_spectra_csv")
     def export_spectra_csv() -> None:
@@ -3799,7 +3955,7 @@ def create_app(readers):
             },
         )
         state.download_history = state.download_history[:50]
-        asyncio.ensure_future(_reset_export_flag())
+        _schedule_export_reset()
 
     @ctrl.set("toggle_spectra_compare")
     def toggle_spectra_compare(value=None) -> None:
@@ -4030,6 +4186,9 @@ def create_app(readers):
                 )
                 return
         server.state.representation_style = style
+        server.state.structure_color_mode = (
+            server.state.cartoon_color_mode if style == "cartoon" else server.state.atom_color_mode
+        )
         _rebuild_scene(reader, plotter, viewer_state, server.state)
 
     @ctrl.set("set_cartoon_color_mode")
@@ -4038,16 +4197,12 @@ def create_app(readers):
         residue type, or b-factor."""
         if isinstance(mode, (list, tuple)):
             mode = mode[0] if mode else None
-        if mode not in ("chain", "structure", "residue", "bfactor"):
+        if mode not in ("element", "chain", "structure", "residue", "bfactor"):
             return
         server.state.cartoon_color_mode = mode
-        # Only the cartoon reads this; rebuilding for any other
-        # representation would be a visible no-op costing a full scene.
-        rebuild_error = None
-        if server.state.representation_style == "cartoon":
-            rebuild_error = _rebuild_scene(
-                reader, plotter, viewer_state, server.state
-            )
+        server.state.atom_color_mode = mode
+        server.state.structure_color_mode = mode
+        rebuild_error = _rebuild_scene(reader, plotter, viewer_state, server.state)
         if mode == "bfactor" and rebuild_error is None:
             # The b-factor ramp is normalised over this structure, so the
             # colours mean nothing without the range they span. Say it
@@ -4083,6 +4238,8 @@ def create_app(readers):
             spec = server.state.residue_selection or ""
         spec = str(spec)
         server.state.residue_selection = spec
+        if not spec.strip():
+            server.state.residue_visibility = "all"
         server.state.residue_selection_summary = _residue_selection_summary(
             reader, spec
         )
@@ -4092,6 +4249,46 @@ def create_app(readers):
         # match any term.
         if server.state.residue_selection_available:
             _rebuild_scene(reader, plotter, viewer_state, server.state)
+
+    @ctrl.set("set_residue_visibility")
+    def set_residue_visibility(mode="all") -> None:
+        if mode not in ("all", "isolate", "hide"):
+            return
+        if mode != "all":
+            from vibeview.renderers.structure import _selected_atom_indices, parse_residue_selection
+
+            terms, _ = parse_residue_selection(server.state.residue_selection or "")
+            if not _selected_atom_indices(reader.read_structure(), terms):
+                server.state.residue_visibility = "all"
+                server.state.status_message = "Select residues before hiding or isolating them."
+                return
+        server.state.residue_visibility = mode
+        _rebuild_scene(reader, plotter, viewer_state, server.state)
+
+    @ctrl.set("set_residue_pick_mode")
+    def set_residue_pick_mode(enabled=False) -> None:
+        server.state.residue_pick_mode = bool(enabled)
+        if enabled:
+            server.state.measure_mode = False
+            server.state.edit_mode = False
+            server.state.status_message = (
+                "Click a residue to select it; use the selection field for ranges."
+            )
+        else:
+            server.state.status_message = "Residue picking off"
+
+    @ctrl.set("toggle_hydrogen_bonds")
+    def toggle_hydrogen_bonds(enabled=False) -> None:
+        server.state.show_hydrogen_bonds = bool(enabled)
+        _rebuild_scene(reader, plotter, viewer_state, server.state)
+        if enabled:
+            from vibeview.renderers.structure import hydrogen_bond_contacts
+
+            count = len(hydrogen_bond_contacts(reader.read_structure()))
+            server.state.status_message = (
+                f"{count} geometric hydrogen-bond contact(s) in the input cell; "
+                "explicit H required."
+            )
 
     @ctrl.set("set_element_color")
     def set_element_color(z=None, color=None) -> None:
@@ -4142,6 +4339,7 @@ def create_app(readers):
     def set_material_preset(name: str) -> None:
         """Apply a material preset to the scene."""
         server.state.material_preset = name
+        server.state.background_override = None
         preset = _apply_scene_appearance(plotter, server.state)
         server.state.status_message = f"Material: {preset.name}"
         ctrl.view_update()
@@ -4181,23 +4379,121 @@ def create_app(readers):
                 server.state.atom_properties_section_id = None
                 server.state.status_message = f"Charge overlay error: {e}"
 
+    def _cancel_relocalization(message="") -> None:
+        nonlocal _relocalize_generation, _relocalize_task
+        _relocalize_generation += 1
+        task, _relocalize_task = _relocalize_task, None
+        if task is not None and not task.done():
+            task.get_loop().call_soon_threadsafe(task.cancel)
+        server.state.relocalize_running = False
+        server.state.relocalize_status = message
+
+    @ctrl.set("cancel_relocalize")
+    def cancel_relocalize() -> None:
+        _cancel_relocalization("Re-localization cancelled")
+
+    @ctrl.set("clear_relocalization")
+    def clear_relocalization() -> None:
+        _cancel_relocalization()
+        _invalidate_wavefunction_renders()
+        with _wf_render_lock:
+            state = server.state
+            ids = [
+                sid for sid in reader.wavefunction_overlay_ids if sid.startswith("wf_relocalized_")
+            ]
+            source_id = None
+            if state.wf_section_id in ids:
+                source_id = _relocalize_source_section(reader, state.wf_section_id)
+                _remove_actors_by_prefix(plotter, "mo_iso_")
+                state.mo_visible = False
+                state.wf_surface_kind = None
+            reader.clear_wavefunction_overlays(ids)
+            sidebar_entries[:] = [e for e in sidebar_entries if e["id"] not in ids]
+            section_list[:] = [e for e in section_list if e["id"] not in ids]
+            state.sidebar_entries = sidebar_entries
+            state.section_list = section_list
+            state.dirty("sidebar_entries", "section_list")
+            state.relocalize_has_overlay = False
+            state.relocalize_result_summary = ""
+            state.relocalize_charge_rows = []
+            if source_id:
+                state.selected_section = source_id
+                _activate_wavefunction(reader, state, reader.get_section(source_id))
+            _push_view(plotter)
+
+    def _geometry_invalidates_relocalization() -> None:
+        clear_relocalization()
+        server.state.relocalize_supported = False
+        server.state.relocalize_reason = (
+            "Geometry edits invalidate archived orbitals; choose New RHF + localize explicitly"
+        )
+
+    plotter._vibeview_invalidate_relocalization = _geometry_invalidates_relocalization
+    plotter._vibeview_refresh_relocalization = lambda: _refresh_relocalize_state(
+        reader, server.state
+    )
+
+    @ctrl.set("check_relocalize_backend")
+    def check_relocalize_backend(**_) -> None:
+        nonlocal _relocalize_probe_task
+        from vibeview.relocalize import probe_worker
+
+        state = server.state
+        path = str(state.relocalize_backend_python or "")
+        if _relocalize_probe_task is not None and not _relocalize_probe_task.done():
+            _relocalize_probe_task.cancel()
+        state.relocalize_probe_running = True
+        state.relocalize_backend_status = "Checking native backend and localization methods…"
+        state.relocalize_available = None
+        state.relocalize_capabilities = {}
+        _refresh_relocalize_state(reader, state)
+
+        async def work():
+            try:
+                result = await probe_worker(path)
+                if (
+                    path != state.relocalize_backend_python
+                    or asyncio.current_task() is not _relocalize_probe_task
+                ):
+                    return
+                state.relocalize_available = result["available"]
+                state.relocalize_capabilities = (
+                    result["capabilities"] if result["available"] else {}
+                )
+                if result["available"]:
+                    cap = result["capabilities"]
+                    ready = [name for name, spec in cap["methods"].items() if spec.get("ready")]
+                    state.relocalize_backend_status = (
+                        f"vibe-qc {cap.get('backend_version', '')}: " + ", ".join(ready) + " ready"
+                    )
+                else:
+                    state.relocalize_backend_status = result["reason"]
+                _refresh_relocalize_state(reader, state)
+            finally:
+                if asyncio.current_task() is _relocalize_probe_task:
+                    state.relocalize_probe_running = False
+                    state.flush()
+
+        try:
+            _relocalize_probe_task = asyncio.get_running_loop().create_task(work())
+        except RuntimeError:
+            state.relocalize_probe_running = False
+            state.relocalize_backend_status = "Check the backend after the viewer starts"
+
+    ctrl.on_server_ready.add(check_relocalize_backend)
+
+    @server.state.change("relocalize_source")
+    def _relocalize_source_changed(**_):
+        _cancel_relocalization()
+        _refresh_relocalize_state(reader, server.state)
+
     @ctrl.set("run_relocalize")
     def run_relocalize() -> None:
-        """Ask vibe-qc for a localization criterion the file does not carry.
-
-        The work happens in a subprocess (:mod:`vibeview.relocalize`) so
-        vibe-qc is never imported into the viewer process. The result is
-        registered as a wavefunction overlay under a synthetic
-        ``wf_relocalized_*`` section, which then behaves like any archived
-        one -- same renderer, same picker, same isosurface path.
-        """
-        import asyncio as _asyncio
-
+        nonlocal _relocalize_task
         from vibeview.relocalize import (
             METHOD_LABELS,
-            METHODS,
             overlay_section_id,
-            probe_worker,
+            request_fingerprint,
             request_from_reader,
             run_relocalization,
             wavefunction_from_result,
@@ -4206,98 +4502,117 @@ def create_app(readers):
         state = server.state
         if state.relocalize_running:
             return
-        if state.relocalize_supported is False:
-            state.relocalize_status = (
-                "Periodic/complex re-localization is not supported in the viewer"
-            )
+        _refresh_relocalize_state(reader, state)
+        if not state.relocalize_supported:
+            state.relocalize_status = state.relocalize_reason
             return
-        method = str(state.relocalize_method or "ibo")
+        method, source = str(state.relocalize_method), str(state.relocalize_source)
+        if method not in [o["value"] for o in state.relocalize_method_options]:
+            state.relocalize_status = "Selected method is unavailable"
+            return
+        source_reader = reader
+        source_id = _relocalize_source_section(reader, state.wf_section_id)
+        canonical = reader.read_wavefunction_gto(source_id)
+        path = str(state.relocalize_backend_python or "")
+        revision = reader.geometry_revision
+        generation = _relocalize_generation
+        try:
+            request = request_from_reader(
+                reader, method, canonical_section_id=source_id, source=source
+            )
+        except (QVFError, ValueError) as exc:
+            state.relocalize_status = str(exc)
+            return
+        fingerprint = request_fingerprint(request)
+        state.relocalize_running = True
+        state.relocalize_status = (
+            "Calculating new RHF orbitals and localizing…"
+            if source == "fresh_rhf"
+            else "Re-localizing the archived occupied subspace…"
+        )
 
-        async def _work() -> None:
-            state.relocalize_running = True
+        def current():
+            return (
+                generation == _relocalize_generation
+                and reader is source_reader
+                and reader.geometry_revision == revision
+                and state.relocalize_backend_python == path
+            )
+
+        async def work():
             try:
-                if state.relocalize_available is None:
-                    state.relocalize_status = "checking vibe-qc availability …"
-                    state.flush()
-                    probed = await probe_worker()
-                    state.relocalize_available = bool(probed.get("available"))
-                    offered = [m for m in probed.get("methods", []) if m in METHODS]
-                    state.relocalize_method_options = [
-                        {"title": METHOD_LABELS.get(m, m), "value": m}
-                        for m in offered
-                    ]
-                    if not state.relocalize_available:
-                        state.relocalize_status = (
-                            "re-localization needs vibe-qc: "
-                            f"{probed.get('reason', 'unavailable')}"
-                        )
+                result = await run_relocalization(request, backend_python=path)
+                with _wf_render_lock:
+                    if not current():
                         return
-
-                request = request_from_reader(reader, method)
-                if request is None:
-                    state.relocalize_status = (
-                        "this file does not record the basis-set name, so it "
-                        "cannot be re-localized"
+                    if "error" in result:
+                        state.relocalize_status = f"Failed: {result['error']}"
+                        return
+                    latest = request_from_reader(
+                        reader, method, canonical_section_id=source_id, source=source
                     )
-                    return
-
-                state.relocalize_status = f"re-localizing ({method}) …"
-                state.flush()
-                result = await run_relocalization(request)
-                if "error" in result:
-                    state.relocalize_status = f"failed: {result['error']}"
-                    return
-
-                canonical = reader.read_wavefunction_gto("wf")
-                section_id = overlay_section_id(method)
-                reader.set_wavefunction_overlay(
-                    section_id, wavefunction_from_result(result, canonical)
-                )
-                state.relocalize_status = (
-                    f"{METHOD_LABELS.get(method, method)}: "
-                    f"{result.get('n_occ', '?')} orbitals"
-                )
-
-                # Give the overlay a sidebar row so it is reachable like any
-                # archived section. Appended rather than going through the
-                # full rebuild in _reload_active_file, which re-reads the
-                # file and would be a much larger hammer for one new row.
-                entry = {
-                    "id": section_id,
-                    "title": _sidebar_section_title(
-                        {"id": section_id, "kind": "wavefunction.gto"}
-                    ),
-                    "subtitle": "wavefunction.gto — computed in this session",
-                    "status": "ok",
-                    "supported": True,
-                    "icon": _status_icon("ok"),
-                    "kind_icon": _kind_icon("wavefunction.gto"),
-                    "warn": False,
-                    "disabled": False,
-                }
-                existing = next(
-                    (i for i, e in enumerate(sidebar_entries)
-                     if e.get("id") == section_id),
-                    None,
-                )
-                if existing is None:
-                    sidebar_entries.append(entry)
-                else:
-                    sidebar_entries[existing] = entry
-                state.sidebar_entries = sidebar_entries
-                # Closure-held list mutated in place: trame drops the push
-                # when the assigned object *is* the pushed one, so an
-                # explicit dirty() is required (same reason as section_list).
-                state.dirty("sidebar_entries")
-
-                _activate_wavefunction(reader, state, reader.get_section(section_id))
-            except Exception as exc:  # keep a viewer failure out of the UI
-                state.relocalize_status = f"failed: {type(exc).__name__}: {exc}"
+                    if request_fingerprint(latest) != fingerprint:
+                        state.relocalize_status = "Discarded result: source data changed"
+                        return
+                    overlay = wavefunction_from_result(result, canonical, request)
+                    overlay.relocalization["source_section_id"] = source_id
+                    section_id = overlay_section_id(method, source)
+                    # Never shadow a section that came from the archive.
+                    if section_id not in reader.wavefunction_overlay_ids and any(
+                        s.id == section_id for s in reader.sections
+                    ):
+                        section_id += "_" + request["id"][:8]
+                    reader.set_wavefunction_overlay(section_id, overlay)
+                    entry = {
+                        "id": section_id,
+                        "title": _sidebar_section_title(
+                            {"id": section_id, "kind": "wavefunction.gto"}
+                        ),
+                        "subtitle": "wavefunction.gto — new RHF"
+                        if source == "fresh_rhf"
+                        else "wavefunction.gto — archived subspace",
+                        "status": "ok",
+                        "supported": True,
+                        "icon": _status_icon("ok"),
+                        "kind_icon": _kind_icon("wavefunction.gto"),
+                        "warn": False,
+                        "disabled": False,
+                    }
+                    sidebar_entries[:] = [e for e in sidebar_entries if e["id"] != section_id] + [
+                        entry
+                    ]
+                    section_list[:] = [e for e in section_list if e["id"] != section_id] + [
+                        {
+                            "id": section_id,
+                            "kind": "wavefunction.gto",
+                            "status": "ok",
+                            "detail": "Session overlay",
+                            "supported": True,
+                        }
+                    ]
+                    state.sidebar_entries = sidebar_entries
+                    state.section_list = section_list
+                    state.dirty("sidebar_entries", "section_list")
+                    state.relocalize_running = False
+                    activate_section(section_id)
+                    state.relocalize_status = (
+                        f"{METHOD_LABELS[method]}: {len(result['occupations'])} localized orbitals"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if current():
+                    state.relocalize_status = f"Failed: {exc}"
             finally:
-                state.relocalize_running = False
-                state.flush()
+                if generation == _relocalize_generation:
+                    state.relocalize_running = False
+                    state.flush()
 
-        _asyncio.ensure_future(_work())
+        try:
+            _relocalize_task = asyncio.get_running_loop().create_task(work())
+        except RuntimeError:
+            state.relocalize_running = False
+            state.relocalize_status = "Start the viewer before localizing"
 
     @ctrl.set("toggle_color_by_charge")
     def toggle_color_by_charge(on: bool) -> None:
@@ -5649,11 +5964,16 @@ def create_app(readers):
             },
         )
         server.state.download_history = server.state.download_history[:50]
-        asyncio.ensure_future(_reset_export_flag())
+        _schedule_export_reset()
 
-    async def _reset_export_flag() -> None:
-        await asyncio.sleep(0.5)
-        server.state.export_ready = False
+    def _schedule_export_reset() -> None:
+        # Headless controller calls have no running loop. Do not create a
+        # coroutine that can never be awaited, and leave the download ready.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.call_later(0.5, lambda: setattr(server.state, "export_ready", False))
 
     # ── Controller: video export dialog launcher ────────────────────
     @ctrl.set("open_video_export_dialog")
@@ -6016,7 +6336,7 @@ def create_app(readers):
         state = server.state
         if not isinstance(event, dict):
             return
-        if not state.measure_mode and not state.edit_mode:
+        if not state.measure_mode and not state.edit_mode and not state.residue_pick_mode:
             return
         # Find nearest atom to click point
         wp = None
@@ -6034,6 +6354,15 @@ def create_app(readers):
         except Exception:
             return
         import numpy as _np
+
+        if not sdata.atoms:
+            return
+        if state.residue_pick_mode and not state.measure_mode and not state.edit_mode:
+            key = _pick_residue(sdata, plotter, state, wp[:3], viewer_state.replication)
+            if key is not None:
+                chain, seq = key
+                set_residue_selection(f"{chain or '*'}/{seq}")
+            return
 
         pos = _np.array([a.position for a in sdata.atoms], dtype=float)
         click = _np.array([float(c) for c in wp[:3]], dtype=float)
@@ -7349,6 +7678,7 @@ def create_app(readers):
         """Toggle between dark and light 3D viewport background."""
         dark = not server.state.dark_background
         server.state.dark_background = dark
+        server.state.background_override = "#1a1a2e" if dark else "#f0f0f0"
         plotter.set_background("#1a1a2e" if dark else "#f0f0f0")
         server.state.status_message = f"Background: {'dark' if dark else 'light'}"
         ctrl.view_update()
@@ -7504,6 +7834,7 @@ def create_app(readers):
             )
             if panel_only:
                 _cancel_live_opt_for_reader_change()
+                _cancel_relocalization()
                 if reader is active_reader:
                     reader = fresh  # handlers read the closure-captured nonlocal
                 # Panel-only reloads intentionally skip _reload_active_file,
@@ -9104,6 +9435,22 @@ def create_app(readers):
         ):
             with v.VCard():
                 v.VCardTitle("Settings")
+                v.VTextField(
+                    v_model=("settings_relocalize_backend_python",),
+                    label="vibe-qc Python executable",
+                    placeholder="/path/to/backend/bin/python",
+                    hint=("Global backend for re-localization. "
+                          "Use Python from a separate vibe-qc installation."),
+                    persistent_hint=True,
+                    classes="ma-3",
+                )
+                v.VBtn(
+                    "Save backend and check",
+                    click=ctrl.save_relocalize_backend,
+                    loading=("relocalize_probe_running",),
+                    classes="mx-3",
+                )
+                v.VAlert("{{ relocalize_backend_status }}", density="compact", classes="ma-3")
                 v.VSwitch(
                     v_model=("settings_dark_background",),
                     label="Dark background (default)",
@@ -9468,6 +9815,53 @@ def create_app(readers):
                         ),
                     ):
                         v.VCardTitle("{{ bands_title }}")
+                        # Energy window (#26). An all-electron periodic
+                        # archive puts core states thousands of eV below
+                        # E_F, so the autoscaled axis flattens the valence
+                        # region; the chart opens on a valence window and
+                        # these fields move it. Commit on Enter or on
+                        # leaving the field, not per keystroke — every
+                        # commit re-renders the whole figure.
+                        with v.VRow(
+                            dense=True,
+                            classes="px-4 align-center",
+                            style="flex: 0 0 auto;",
+                            v_if=("bands_window_available",),
+                        ):
+                            with v.VCol(cols=4):
+                                v.VTextField(
+                                    v_model=("bands_emin",),
+                                    label="E − E_F min (eV)",
+                                    aria_label="Energy window minimum in eV",
+                                    __properties=[("aria_label", "aria-label")],
+                                    type="number",
+                                    density="compact",
+                                    hide_details=True,
+                                    __events=["blur", ("keyup_enter", "keyup.enter")],
+                                    keyup_enter=ctrl.update_bands_energy_window,
+                                    blur=ctrl.update_bands_energy_window,
+                                )
+                            with v.VCol(cols=4):
+                                v.VTextField(
+                                    v_model=("bands_emax",),
+                                    label="E − E_F max (eV)",
+                                    aria_label="Energy window maximum in eV",
+                                    __properties=[("aria_label", "aria-label")],
+                                    type="number",
+                                    density="compact",
+                                    hide_details=True,
+                                    __events=["blur", ("keyup_enter", "keyup.enter")],
+                                    keyup_enter=ctrl.update_bands_energy_window,
+                                    blur=ctrl.update_bands_energy_window,
+                                )
+                            with v.VCol(cols=4):
+                                v.VBtn(
+                                    "Reset window",
+                                    size="small",
+                                    variant="text",
+                                    disabled=("bands_window_auto",),
+                                    click=ctrl.reset_bands_energy_window,
+                                )
                         html.Iframe(
                             srcdoc=("bands_html",),
                             style=(
@@ -9934,16 +10328,41 @@ def create_app(readers):
             pass  # Silently skip if file can't be written
 
     # ── Controller: persistent settings ────────────────────────────
+    @ctrl.set("save_relocalize_backend")
+    def save_relocalize_backend() -> bool:
+        from vibeview.settings import set_setting
+
+        state = server.state
+        path = str(state.settings_relocalize_backend_python or "").strip()
+        if path and not Path(path).expanduser().is_absolute():
+            state.relocalize_backend_status = "The backend Python path must be absolute"
+            return False
+        try:
+            set_setting("relocalize_backend_python", path)
+        except OSError as exc:
+            state.relocalize_backend_status = f"Could not save backend setting: {exc}"
+            return False
+        _cancel_relocalization()
+        state.relocalize_backend_python = path
+        check_relocalize_backend()
+        return True
+
     @ctrl.set("save_settings")
     def save_settings() -> None:
         """Persist user settings to disk."""
+        from vibeview.settings import load_settings
         from vibeview.settings import save_settings as _save
 
-        settings = {
-            "dark_background": server.state.settings_dark_background,
-            "material_preset": server.state.settings_material_preset,
-            "auto_save_interval": int(server.state.settings_auto_save_interval or 60),
-        }
+        if not save_relocalize_backend():
+            return
+        settings = load_settings()
+        settings.update(
+            {
+                "dark_background": server.state.settings_dark_background,
+                "material_preset": server.state.settings_material_preset,
+                "auto_save_interval": int(server.state.settings_auto_save_interval or 60),
+            }
+        )
         _save(settings)
         server.state.settings_dialog = False
         server.state.status_message = "Settings saved"
@@ -9951,6 +10370,9 @@ def create_app(readers):
         # Apply immediately
         if server.state.settings_dark_background != server.state.dark_background:
             server.state.dark_background = server.state.settings_dark_background
+            server.state.background_override = (
+                "#1a1a2e" if server.state.dark_background else "#f0f0f0"
+            )
             plotter.set_background(
                 "#1a1a2e" if server.state.settings_dark_background else "#f0f0f0"
             )
@@ -10113,13 +10535,13 @@ def _build_controls(server, ctrl) -> None:
             hide_details=True,
             update_modelValue=(ctrl.set_representation_style, "[$event]"),
         )
-        # Cartoon-only: what the ribbon is coloured by. Hidden for every
-        # other representation, where it would do nothing.
+        # One palette control across atom, bond and cartoon representations.
         v.VSelect(
-            v_model=("cartoon_color_mode",),
+            v_model=("structure_color_mode",),
             items=(
                 "cartoon_color_mode_options",
                 [
+                    {"title": "Element (cartoon: chain)", "value": "element"},
                     {"title": "Chain", "value": "chain"},
                     {"title": "Secondary structure", "value": "structure"},
                     {"title": "Residue type", "value": "residue"},
@@ -10128,10 +10550,10 @@ def _build_controls(server, ctrl) -> None:
             ),
             item_title="title",
             item_value="value",
-            label="Ribbon colour",
+            label="Biomolecule colour",
             density="compact",
             hide_details=True,
-            v_if=("representation_style === 'cartoon'",),
+            v_if=("residue_selection_available",),
             update_modelValue=(ctrl.set_cartoon_color_mode, "[$event]"),
         )
         # Residue/chain selection (D4), shared by every representation and
@@ -10160,6 +10582,27 @@ def _build_controls(server, ctrl) -> None:
             "{{ residue_selection_summary }}",
             classes="text-caption text-medium-emphasis mb-1 px-1",
             v_if=("residue_selection_available && residue_selection_summary",),
+        )
+        v.VSelect(
+            v_model=("residue_visibility",),
+            items=("residue_visibility_options", [
+                {"title": "Show all", "value": "all"},
+                {"title": "Isolate selection", "value": "isolate"},
+                {"title": "Hide selection", "value": "hide"},
+            ]),
+            item_title="title", item_value="value", label="Residue visibility",
+            density="compact", hide_details=True, v_if=("residue_selection_available",),
+            update_modelValue=(ctrl.set_residue_visibility, "[$event]"),
+        )
+        v.VSwitch(
+            v_model=("residue_pick_mode",), label="Pick residues in viewport",
+            density="compact", hide_details=True, v_if=("residue_selection_available",),
+            update_modelValue=(ctrl.set_residue_pick_mode, "[$event]"),
+        )
+        v.VSwitch(
+            v_model=("show_hydrogen_bonds",), label="Hydrogen-bond contacts (explicit H)",
+            density="compact", hide_details=True,
+            update_modelValue=(ctrl.toggle_hydrogen_bonds, "[$event]"),
         )
         # ── Material presets (v1.6) ──
         v.VSelect(
@@ -11102,26 +11545,37 @@ def _build_controls(server, ctrl) -> None:
         )
         # Re-localize: ask vibe-qc for a criterion this file does not carry.
         # Runs in a subprocess; the result lands as its own sidebar section.
+        v.VSelect(
+            v_model=("relocalize_source",),
+            items=(
+                "[{title:'Archived occupied orbitals',value:'supplied'},"
+                "{title:'New RHF + localize',value:'fresh_rhf'}]",
+            ),
+            label="Orbital source",
+            density="compact",
+        )
+        v.VAlert(
+            "Runs a new molecular RHF calculation using the current geometry and archived basis. "
+            "This is a new state.",
+            v_if=("relocalize_source === 'fresh_rhf'",),
+            density="compact",
+            type="info",
+        )
         with v.VRow(dense=True, classes="mt-2", align="center"):
             with v.VCol(cols=7, classes="py-0"):
                 v.VSelect(
                     v_model=("relocalize_method",),
-                    items=(
-                        "relocalize_method_options.length "
-                        "? relocalize_method_options "
-                        ": [{title:'IBO (intrinsic bond orbitals)',value:'ibo'},"
-                        "{title:'Foster-Boys',value:'boys'},"
-                        "{title:'Pipek-Mezey',value:'pipek-mezey'}]",
-                    ),
+                    items=("relocalize_method_options",),
                     item_title="title",
                     item_value="value",
                     label="Re-localize with",
+                    disabled=("!relocalize_supported || relocalize_running",),
                     density="compact",
                     hide_details=True,
                 )
             with v.VCol(cols=5, classes="py-0"):
                 v.VBtn(
-                    "Localize",
+                    "{{ relocalize_source === 'fresh_rhf' ? 'Calculate' : 'Localize' }}",
                     click=ctrl.run_relocalize,
                     loading=("relocalize_running",),
                     disabled=(
@@ -11131,19 +11585,58 @@ def _build_controls(server, ctrl) -> None:
                     size="small",
                     block=True,
                 )
+        with v.VRow(dense=True, classes="ma-1"):
+            v.VBtn(
+                "Check backend",
+                click=ctrl.check_relocalize_backend,
+                loading=("relocalize_probe_running",),
+                size="small",
+            )
+            v.VBtn("Backend settings", click="settings_dialog = true", size="small")
+            v.VBtn(
+                "Cancel", click=ctrl.cancel_relocalize, v_if=("relocalize_running",), size="small"
+            )
+            v.VBtn(
+                "Clear re-localized overlays",
+                click=ctrl.clear_relocalization,
+                v_if=("relocalize_has_overlay",),
+                size="small",
+            )
+        v.VAlert(
+            "{{ relocalize_reason }}",
+            v_if=("relocalize_reason",),
+            density="compact",
+            variant="tonal",
+            type="info",
+        )
+        v.VAlert("{{ relocalize_backend_status }}", density="compact", variant="tonal")
         v.VAlert(
             "{{ relocalize_status }}",
             v_if=("relocalize_status",),
             density="compact",
             variant="tonal",
             type=(
-                "relocalize_status.startsWith('failed') "
+                "relocalize_status.startsWith('Failed') "
                 "|| relocalize_status.includes('cannot') "
                 "|| relocalize_status.includes('needs vibe-qc') "
                 "? 'warning' : 'info'",
             ),
             classes="mt-1 text-caption",
         )
+        v.VAlert(
+            "{{ relocalize_result_summary }}",
+            v_if=("relocalize_result_summary",),
+            density="compact",
+            variant="tonal",
+            classes="mt-1 text-caption",
+        )
+        with html.Table(v_if=("relocalize_charge_rows.length",), classes="text-caption"):
+            with html.Thead(), html.Tr():
+                html.Th("Atom")
+                html.Th("IAO charge (e)")
+            with html.Tbody(), html.Tr(v_for="row in relocalize_charge_rows", key="row.atom"):
+                html.Td("{{ row.atom }}")
+                html.Td("{{ row.charge }}")
         with v.VRow(dense=True, classes="mt-1"):
             v.VBtn(
                 icon="mdi-skip-previous",
@@ -11791,6 +12284,11 @@ def _clear_output_panels(state) -> None:
     state.active_volume_id = None
     state.volume_loaded = False
     state.bands_html = None
+    # A window typed for one section must not carry into the next (#26).
+    state.bands_window_available = False
+    state.bands_window_auto = True
+    state.bands_emin = None
+    state.bands_emax = None
     state.phonon_html = None
     state.eos_html = None
     state.fermi_band_options = []
@@ -11818,6 +12316,11 @@ def _clear_output_panels(state) -> None:
     # switch staleness) so the dropdown can't list a stale wavefunction.
     state.wf_section_id = None
     state.wf_mo_rows = []
+    state.relocalize_supported = False
+    state.relocalize_method_options = []
+    state.relocalize_has_overlay = False
+    state.relocalize_result_summary = ""
+    state.relocalize_charge_rows = []
     # Computed surfaces are scoped to that wavefunction section. Ordinary
     # same-file scene rebuilds preserve this recipe; section and file switches
     # deliberately discard it here.
@@ -12571,6 +13074,7 @@ def _activate_density_diff(plotter, viewer_state, state, readers, idx_a, idx_b) 
                     getattr(state, "cartoon_color_mode", "chain")
                 ),
                 residue_selection=str(getattr(state, "residue_selection", "") or ""),
+                **_structure_display_options(state),
             )
         except QVFError:
             pass
@@ -12722,52 +13226,130 @@ def _build_signed_contour(
     return contour
 
 
-def _activate_bands(reader: QVFReader, state, section) -> None:
+def _coerce_window_bound(value):
+    """A number from an energy-window field, or ``None`` when it is blank.
+
+    A ``type="number"`` VTextField still v-models as a string, and a
+    cleared field arrives as ``""``. Anything that is not a finite number
+    reads as "not set" — the caller then keeps the previous window.
+    """
+    import math
+
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _requested_energy_window(state, viewer_state, *section_ids: str):
+    """The energy window the reader or the producer asked for (#26).
+
+    A window the reader typed into the panel controls wins; failing that,
+    a ``viewer_defaults`` hint on any of ``section_ids``. ``None`` leaves
+    the renderer on its own valence default.
+    """
+    from vibeview.renderers.energy_window import parse_energy_window
+
+    if not getattr(state, "bands_window_auto", True):
+        window = parse_energy_window(
+            [getattr(state, "bands_emin", None), getattr(state, "bands_emax", None)]
+        )
+        if window is not None:
+            return window
+    if viewer_state is not None:
+        return viewer_state.get_energy_window(*section_ids)
+    return None
+
+
+def _publish_energy_window(state, window, compute_default) -> None:
+    """Show the window a chart was actually drawn with in the panel controls.
+
+    When the caller passed no window the renderer used its own default, so
+    ask for the same value rather than leaving the fields blank — they are
+    the reader's starting point for a manual adjustment. Blank fields mean
+    the chart really is on full autoscale.
+    """
+    state.bands_window_available = True
+    if window is None:
+        try:
+            window = compute_default()
+        except Exception:
+            window = None
+    if window is None:
+        state.bands_emin = None
+        state.bands_emax = None
+    else:
+        state.bands_emin = float(window[0])
+        state.bands_emax = float(window[1])
+
+
+def _activate_bands(reader: QVFReader, state, section, viewer_state=None) -> None:
     """Lazy activation of a bands section.
 
     When the archive also carries a ``dos.total`` section, the bands
     and DOS are rendered side-by-side in a single combined panel.
+
+    Either form opens on an energy window (#26): the reader's own min/max,
+    else a ``viewer_defaults`` hint, else the renderer's valence default.
+    Without one, an all-electron archive's core states dominate the
+    autoscale and squeeze the valence region into a few pixels.
     """
     from vibeview.renderers.bands import BandsRenderer
 
     renderer = BandsRenderer(section, reader)
+    # Check for a companion DOS section.
+    dos_section = next((s for s in reader.sections if s.kind == "dos.total"), None)
+    ids = [section.id] + ([dos_section.id] if dos_section is not None else [])
+    window = _requested_energy_window(state, viewer_state, *ids)
     try:
-        bands_html = renderer.render_to_html()
+        bands_html = renderer.render_to_html(energy_window=window)
     except QVFError as e:
         state.status_message = f"Error loading bands: {e}"
         return
 
-    # Check for a companion DOS section.
-    dos_section = next((s for s in reader.sections if s.kind == "dos.total"), None)
     if dos_section is not None:
         try:
-            from vibeview.renderers.dos import DOSRenderer, render_bands_dos_combined
+            from vibeview.renderers.dos import (
+                DOSRenderer,
+                bands_dos_energy_window,
+                render_bands_dos_combined,
+            )
 
             dos_renderer = DOSRenderer(dos_section, reader)
             # Single figure with a shared energy axis (bands left, DOS rotated
             # right) — the standard solid-state plot (A4-04).
             state.bands_html = render_bands_dos_combined(
-                renderer, dos_renderer, title="Band Structure & DOS"
+                renderer,
+                dos_renderer,
+                title="Band Structure & DOS",
+                energy_window=window,
             )
             state.bands_title = "Band Structure & DOS"
             state.status_message = f"Loaded bands + DOS: {section.id}, {dos_section.id}"
+            _publish_energy_window(
+                state, window, lambda: bands_dos_energy_window(renderer, dos_renderer)
+            )
+            return
         except Exception as e:
-            state.bands_html = bands_html
-            state.bands_title = "Band Structure"
             state.status_message = f"Loaded bands: {section.id} (DOS unavailable: {e})"
     else:
-        state.bands_html = bands_html
-        state.bands_title = "Band Structure"
         state.status_message = f"Loaded bands: {section.id}"
+    state.bands_html = bands_html
+    state.bands_title = "Band Structure"
+    _publish_energy_window(state, window, renderer.default_energy_window)
 
 
-def _activate_dos(reader: QVFReader, state, section) -> None:
+def _activate_dos(reader: QVFReader, state, section, viewer_state=None) -> None:
     """Lazy activation of a standalone DOS section (no bands available)."""
     from vibeview.renderers.dos import DOSRenderer
 
     renderer = DOSRenderer(section, reader)
+    window = _requested_energy_window(state, viewer_state, section.id)
     try:
-        state.bands_html = renderer.render_to_html()
+        state.bands_html = renderer.render_to_html(energy_window=window)
         # The bands_html slot is shared with the (absent) bands panel; title it
         # for what's actually shown so a DOS-only view isn't mislabeled
         # "Band Structure" (live-review finding).
@@ -12775,6 +13357,7 @@ def _activate_dos(reader: QVFReader, state, section) -> None:
             "Projected DOS" if section.kind == "dos.projected" else "Density of States"
         )
         state.status_message = f"Loaded DOS: {section.id}"
+        _publish_energy_window(state, window, renderer.default_energy_window)
     except Exception as e:
         state.status_message = f"Error loading DOS: {e}"
 
@@ -13013,6 +13596,7 @@ def _rollback_atom_properties_overlay(
                 residue_selection=str(
                     getattr(state, "residue_selection", "") or ""
                 ),
+                **_structure_display_options(state),
             )
         except Exception:  # noqa: BLE001 — leave no partial fallback
             _remove_static_structure(plotter)
@@ -13158,6 +13742,7 @@ def _render_atom_properties_overlay_impl(
             cartoon_color_mode=str(getattr(state, "cartoon_color_mode", "chain")),
             residue_selection=str(getattr(state, "residue_selection", "") or ""),
             atom_colors=atom_colors,
+            **_structure_display_options(state),
         )
 
         # Structure replacement removes the previous charge labels along with
@@ -13247,6 +13832,7 @@ def _restore_cpk_atoms(reader: QVFReader, plotter: pv.Plotter, state) -> None:
         representation=str(getattr(state, "representation_style", "ball_and_stick")),
         cartoon_color_mode=str(getattr(state, "cartoon_color_mode", "chain")),
         residue_selection=str(getattr(state, "residue_selection", "") or ""),
+        **_structure_display_options(state),
     )
     _apply_scene_appearance(plotter, state)
 
@@ -13504,13 +14090,18 @@ def _apply_scene_appearance(plotter: pv.Plotter, state):
         disable_toon_rendering(plotter)
 
     preset = get_preset(str(getattr(state, "material_preset", "cpk_glossy")))
-    background = preset.background_color
+    override = getattr(state, "background_override", None)
+    background = override if override is not None else preset.background_color
     plotter.set_background(background)
-    state.dark_background = sum(background) < 1.5
+    state.dark_background = sum(pv.Color(background).float_rgb) < 1.5
 
     # Preserve scalar/CPK colours. Without base_color the material helper
     # deliberately supplies neutral grey, which is not what a scene-wide
     # appearance replay wants.
+    preserve_residue_bonds = (
+        getattr(state, "atom_color_mode", "element") in ("chain", "structure", "residue", "bfactor")
+        or bool(getattr(state, "residue_selection", ""))
+    )
     for actor_name, actor in getattr(plotter, "actors", {}).items():
         try:
             prop = actor.GetProperty() if hasattr(actor, "GetProperty") else None
@@ -13523,7 +14114,7 @@ def _apply_scene_appearance(plotter: pv.Plotter, state):
                 actor,
                 preset,
                 base_color=current,
-                is_bond=str(actor_name).startswith("bond"),
+                is_bond=str(actor_name).startswith("bond") and not preserve_residue_bonds,
             )
         except Exception:
             pass
@@ -13661,7 +14252,7 @@ def _rebuild_scene_unlocked(
     rebuild_error = None
     _prepare_scene_actor_replacement(plotter, state)
     plotter.clear()
-    plotter.set_background("#1a1a2e")
+    plotter.set_background("#1a1a2e" if getattr(state, "dark_background", True) else "#f0f0f0")
 
     # Keep the renderer pass aligned with the switch. PyVista clear() retains
     # an existing pass, while other render setup can replace it, so handle
@@ -13693,6 +14284,7 @@ def _rebuild_scene_unlocked(
                 representation=str(getattr(state, "representation_style", "ball_and_stick")),
                 cartoon_color_mode=str(getattr(state, "cartoon_color_mode", "chain")),
                 residue_selection=str(getattr(state, "residue_selection", "") or ""),
+                **_structure_display_options(state),
             )
         except Exception as e:
             rebuild_error = f"Structure rebuild error: {e}"
@@ -13826,6 +14418,7 @@ def _remove_static_structure(plotter: pv.Plotter) -> None:
         "bond_",
         "bonds_",
         "cartoon_",
+        "hydrogen_bond_",
         "cell_",
         "structure_",
     ):
@@ -13967,6 +14560,9 @@ def _rebuild_structure_from_positions(
     from vibeview.renderers.structure import _draw_unit_cell, cpk_color, cpk_radius
 
     # Remove old structure actors (original and any previous edit-mode actors)
+    invalidate = getattr(plotter, "_vibeview_invalidate_relocalization", None)
+    if invalidate is not None:
+        invalidate()
     for prefix in ("atom_", "bond_", "cell_", "structure_"):
         _remove_actors_by_prefix(plotter, prefix)
 
@@ -13999,6 +14595,9 @@ def _rebuild_structure_from_positions(
             symbols_list,
             lattice_vectors=lattice_vectors,
         )
+    refresh = getattr(plotter, "_vibeview_refresh_relocalization", None)
+    if refresh is not None:
+        refresh()
 
     for i, (symbol, pos) in enumerate(zip(symbols_list, positions)):
         z = _SYMBOL_TO_Z.get(symbol, 6)
@@ -14363,6 +14962,33 @@ def _activate_reaction_waypoints(reader: QVFReader, state, section) -> None:
     _update_trajectory_plot(reader, state)
 
 
+def _relocalize_source_section(reader, section_id):
+    wf = reader.read_wavefunction_gto(section_id)
+    return (wf.relocalization or {}).get("source_section_id", section_id)
+
+
+def _refresh_relocalize_state(reader, state) -> None:
+    from vibeview.relocalize import method_options
+
+    options, reason = [], "Select a wavefunction with archived occupied coefficients"
+    if state.wf_section_id:
+        try:
+            sid = _relocalize_source_section(reader, state.wf_section_id)
+            options, reason = method_options(
+                reader,
+                state.relocalize_capabilities,
+                sid,
+                source=state.relocalize_source or "supplied",
+            )
+        except (QVFError, ValueError) as exc:
+            reason = str(exc)
+    state.relocalize_method_options = options
+    state.relocalize_supported = bool(options)
+    state.relocalize_reason = reason
+    if options and state.relocalize_method not in [o["value"] for o in options]:
+        state.relocalize_method = options[0]["value"]
+
+
 def _activate_wavefunction(reader: QVFReader, state, section) -> None:
     """Lazy activation of a wavefunction.gto section."""
     from vibeview.renderers.wavefunction import WavefunctionRenderer
@@ -14378,13 +15004,30 @@ def _activate_wavefunction(reader: QVFReader, state, section) -> None:
             c is not None and np.iscomplexobj(c)
             for c in (wf.mo_coefficients, wf.mo_coefficients_alpha, wf.mo_coefficients_beta)
         )
-        state.relocalize_supported = not bool(state.is_periodic) and not state.wf_is_complex
-        state.relocalize_status = (
-            "Periodic/complex re-localization is not supported in the viewer; "
-            "generate localized orbitals with the periodic calculation and open its QVF."
-            if not state.relocalize_supported
-            else ""
-        )
+        _refresh_relocalize_state(reader, state)
+        metadata = wf.relocalization or {}
+        state.relocalize_has_overlay = bool(metadata)
+        state.relocalize_result_summary = ""
+        state.relocalize_charge_rows = []
+        if metadata:
+            source_label = (
+                "New RHF calculation"
+                if metadata.get("scf_performed")
+                else "Archived occupied subspace"
+            )
+            audit = metadata.get("validation", {})
+            state.relocalize_result_summary = (
+                f"{source_label}. Charges/populations: {metadata.get('population_model')}. "
+                f"Orthonormality error: {audit.get('orthonormality_error', 0):.2g}; "
+                f"subspace residual: {audit.get('subspace_residual', 0):.2g}. "
+                "Localization convergence is not certified by the kernel. "
+                + " ".join(metadata.get("warnings") or [])
+            )
+            atoms = reader.read_structure(wf.structure_ref).atoms
+            state.relocalize_charge_rows = [
+                {"atom": f"{i + 1} {a.symbol}", "charge": f"{q:+.6f}"}
+                for i, (a, q) in enumerate(zip(atoms, metadata["charges"], strict=True))
+            ]
         state.wf_mo_rows = rows
         # Default the picker to the HOMO (most-requested orbital), keyed on
         # the composite "{spin}:{index}" value the dropdown now uses.

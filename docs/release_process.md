@@ -25,6 +25,15 @@ jobs. Site-specific commands, accounts, destinations and gate-operation
 runbooks are maintained in the private operations repository. Contributor
 source archives do not contain or install those operational scripts.
 
+The gate runs once, on the candidate. A `release-candidate/*` pipeline proves
+the exact commit a tag will name; `release` then fast-forwards onto that same
+commit, and its own pipeline builds and publishes the documentation rather
+than repeating the suite against an identical tree. A ref that needs proving
+again — because the candidate predates a settings change, or because an
+operator wants the evidence fresh — gets a manual `web` pipeline, which runs
+every job on whatever ref it is started from. `CONTRIBUTING.md` has the full
+rule matrix.
+
 A public source snapshot has its own commit identity and records the original
 source revision and per-file checksums. It contains no private development
 ancestry. A correction is published as a new snapshot or patch release;

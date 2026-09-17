@@ -127,8 +127,8 @@ An illustrative band/DOS fixture demonstrates the combined panel; these curves a
 
 | Kind | What you get |
 |---|---|
-| `bands` | Electronic band structure, interactive, with the Fermi level marked |
-| `dos.total`, `dos.projected` | Total and projected density of states |
+| `bands` | Electronic band structure, interactive, with the Fermi level marked and an adjustable energy window |
+| `dos.total`, `dos.projected` | Total and projected density of states, on the same energy window |
 | `dos.coop`, `dos.cohp` | Crystal orbital overlap / Hamilton populations |
 | `phonon_bands`, `phonon_dos` | Phonon dispersion and density of states |
 | `fermi_surface` | The Fermi surface in reciprocal space |

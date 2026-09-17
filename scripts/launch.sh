@@ -81,10 +81,11 @@ has_flag() {
     return 1
 }
 
-if [[ ${#EXTRA_ARGS[@]} -eq 0 ]] || ! has_flag --port "${EXTRA_ARGS[@]}"; then
+if ! has_flag --port ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; then
     EXTRA_ARGS+=(--port "$PORT")
 fi
-if [[ -n "${VIBE_VIEW_LOG_FILE:-}" ]] && ! has_flag --log-file "${EXTRA_ARGS[@]}"; then
+if [[ -n "${VIBE_VIEW_LOG_FILE:-}" ]] \
+    && ! has_flag --log-file ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; then
     EXTRA_ARGS+=(--log-file "$VIBE_VIEW_LOG_FILE")
 fi
 
@@ -95,4 +96,4 @@ QVF_ABS="$( cd "$( dirname "$QVF" )" && pwd )/$( basename "$QVF" )"
 echo "vibe-view-launch: venv=$VENV"
 echo "vibe-view-launch: opening $QVF_ABS"
 
-exec "$VENV/bin/vibe-view" open "$QVF_ABS" "${EXTRA_ARGS[@]}"
+exec "$VENV/bin/vibe-view" open "$QVF_ABS" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}

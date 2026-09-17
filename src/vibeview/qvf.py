@@ -595,7 +595,7 @@ def _assign_secondary_structure(trace: np.ndarray) -> list[str]:
     core = list(labels)
     spread = list(labels)
     for i, label in enumerate(core):
-        reach = {"H": 4, "E": 3}.get(label)
+        reach = {"H": 4, "E": 4}.get(label)
         if reach is None:
             continue
         for k in range(i + 1, min(i + reach, n)):
@@ -891,7 +891,7 @@ class StructureData:
             return np.zeros((0, 3), dtype=np.float64)
         return np.asarray(picked, dtype=np.float64)
 
-    def _supplied_labels(self, chain: str) -> list[str] | None:
+    def _supplied_labels(self, chain: str, *, detailed: bool = False) -> list[str] | None:
         """Per-CA labels for ``chain`` from the supplied ranges, or None.
 
         None when nothing was supplied for this chain, so the caller falls
@@ -912,6 +912,14 @@ class StructureData:
             if start is None or end is None:
                 continue
             label = _SS_TYPE_TO_LABEL.get(str(entry.get("type", "")), "C")
+            if detailed:
+                # Optional viewer extension within the schema's open range
+                # object. Keep the normative helix/sheet/coil type unchanged.
+                subtype = str(entry.get("subtype", ""))
+                if label == "H":
+                    label = {"alpha": "H", "pi": "I", "3_10": "G"}.get(subtype, "H")
+                elif label == "E" and subtype == "bridge":
+                    label = "B"
             ranges.append((min(start, end), max(start, end), label))
         if not ranges:
             return None
@@ -925,13 +933,19 @@ class StructureData:
             out.append(label)
         return out
 
-    def secondary_structure(self, chain_id: str | None = None) -> list[str]:
+    def secondary_structure(
+        self, chain_id: str | None = None, *, detailed: bool = False
+    ) -> list[str]:
         """Per-alpha-carbon secondary structure, aligned with
         :meth:`backbone_trace`.
 
         One character per CA: ``"H"`` helix, ``"E"`` extended strand,
         ``"C"`` coil. The list is always the same length as the trace for
         the same ``chain_id``, so a renderer can zip the two.
+
+        With ``detailed=True``, supplied subtype annotations additionally
+        return ``G`` (3-10 helix), ``I`` (pi helix) and ``B`` (beta bridge).
+        Geometric assignment always returns the coarse H/E/C labels.
 
         A producer-supplied ``secondary_structure`` range list wins, per
         chain, over the geometric assignment described below (spec § 5.1
@@ -972,7 +986,7 @@ class StructureData:
         for chain in chains:
             if chain_id is not None and chain != chain_id:
                 continue
-            supplied = self._supplied_labels(chain)
+            supplied = self._supplied_labels(chain, detailed=detailed)
             if supplied is not None:
                 out.extend(supplied)
                 continue
@@ -1268,6 +1282,8 @@ class WavefunctionGTOData:
     occupation_semantics: str | None = None
     # Explicit Bloch wavevector metadata; None retains legacy cluster semantics.
     k_point: np.ndarray | None = None
+    # Session-only provenance/descriptors returned by the external worker.
+    relocalization: dict[str, Any] | None = None
 
 
 @dataclass
@@ -1641,6 +1657,7 @@ class QVFReader:
         # (:mod:`vibeview.relocalize`), which asks vibe-qc for a
         # localization criterion the file does not contain.
         self._wavefunction_overlays: dict[str, WavefunctionGTOData] = {}
+        self.geometry_revision = 0
 
     @property
     def manifest(self) -> Manifest:
@@ -1910,6 +1927,10 @@ class QVFReader:
             for sym, pos in zip(symbols, positions, strict=True)
         ]
         self._edit_overlay = atoms
+        self.geometry_revision += 1
+        self.clear_wavefunction_overlays(
+            [sid for sid in self.wavefunction_overlay_ids if sid.startswith("wf_relocalized_")]
+        )
         if lattice is not None:
             self._edit_lattice_overlay = lattice.copy()
 
@@ -1917,6 +1938,10 @@ class QVFReader:
         """Drop viewer-side edits; read_structure() returns the file again."""
         self._edit_overlay = None
         self._edit_lattice_overlay = None
+        self.geometry_revision += 1
+        self.clear_wavefunction_overlays(
+            [sid for sid in self.wavefunction_overlay_ids if sid.startswith("wf_relocalized_")]
+        )
 
     @property
     def has_edit_overlay(self) -> bool:
@@ -1942,13 +1967,15 @@ class QVFReader:
             self._section_by_id[section_id] = section
             self._manifest.sections.append(section)
 
-    def clear_wavefunction_overlays(self) -> None:
-        """Drop every viewer-computed wavefunction and its synthetic section."""
-        for section_id in list(self._wavefunction_overlays):
+    def clear_wavefunction_overlays(self, section_ids: list[str] | None = None) -> None:
+        """Drop selected (or all) viewer-computed wavefunctions and their sections."""
+        for section_id in list(self._wavefunction_overlays) if section_ids is None else section_ids:
+            if section_id not in self._wavefunction_overlays:
+                continue
             section = self._section_by_id.pop(section_id, None)
             if section is not None and section in self._manifest.sections:
                 self._manifest.sections.remove(section)
-        self._wavefunction_overlays.clear()
+            self._wavefunction_overlays.pop(section_id)
 
     @property
     def wavefunction_overlay_ids(self) -> list[str]:

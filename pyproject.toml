@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeview"
-version = "2.17.1"
+version = "2.18.0"
 description = "GPU-accelerated interactive 3D viewer for quantum-chemistry structures and results"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -118,7 +118,10 @@ queue = ["vq>=0.25"]
 # Tests drive the interactive app (create_app / trame), so pull the viewer.
 # scipy: the live-opt worker's L-BFGS-B loop (normally supplied by the
 # vibe-qc install, which is absent on the vibe-view CI gate).
-test = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[jupyter]", "pytest>=8", "scipy>=1.11"]
+# pyyaml: tests/test_ci_rules.py parses .gitlab-ci.yml. trame happens to
+# require it too, but a guard that works by accident is a guard that goes
+# inert the day that changes -- so it is declared here, where it is used.
+test = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[jupyter]", "pytest>=8", "scipy>=1.11", "pyyaml>=6"]
 all = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[smiles]", "ipython", "ipywidgets", "psutil"]
 dev = ["ruff", "mypy"]
 # Release-artifact tooling. scripts/build_release_artifacts.py builds the wheel
@@ -130,6 +133,25 @@ dev = ["ruff", "mypy"]
 # The distribution names are kept in step with the script's own
 # RELEASE_BUILD_TOOLS by tests/test_release_artifacts.py.
 release = ["build>=1.2,<2", "twine>=6,<7"]
+# Documentation site: scripts/build_site.sh and docs/Makefile render docs/ with
+# Sphinx, and neither says how sphinx-build reached PATH because until now the
+# only answer was ".gitlab-ci.yml, retyped by hand".
+#
+# `pip install -e '.[docs]'` is the whole setup. The editable install is what
+# makes autodoc import the real package, so numpy/click/pydantic/jsonschema
+# come from [project.dependencies] rather than from a second set of floors
+# that would silently keep the old values when a core pin moves. The pins here
+# are the toolchain's own, and tests/test_docs_toolchain.py keeps them in step
+# with docs/conf.py's extensions and with the CI job that installs them.
+docs = [
+    "vibeview",
+    "sphinx>=7.4",
+    "myst-parser>=4.0",
+    "linkify-it-py>=2",
+    "furo>=2024.5",
+    "sphinx-copybutton>=0.5",
+    "sphinx-design>=0.6",
+]
 
 [project.urls]
 # the archived monorepo is the pre-split monorepo, frozen as an archive since 2026-09

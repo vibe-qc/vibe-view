@@ -85,13 +85,7 @@ fi
 
 export VIBE_VIEW_REINSTALL_WRAPPER=1
 if [ "$WITH_DESKTOP" = "1" ]; then
-    if [ "${#ARGS[@]}" -gt 0 ]; then
-        exec "$SCRIPT_DIR/update.sh" --skip-git --recreate-venv --desktop \
-            "${ARGS[@]}"
-    fi
-    exec "$SCRIPT_DIR/update.sh" --skip-git --recreate-venv --desktop
+    exec "$SCRIPT_DIR/update.sh" --skip-git --recreate-venv --desktop \
+        ${ARGS[@]+"${ARGS[@]}"}
 fi
-if [ "${#ARGS[@]}" -gt 0 ]; then
-    exec "$SCRIPT_DIR/install.sh" --force "${ARGS[@]}"
-fi
-exec "$SCRIPT_DIR/install.sh" --force
+exec "$SCRIPT_DIR/install.sh" --force ${ARGS[@]+"${ARGS[@]}"}

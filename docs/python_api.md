@@ -172,6 +172,12 @@ out = slice_qvf("analysis.qvf", "structure_only.qvf", keep=["structure"])
 slice_qvf("analysis.qvf", "no-volumes.qvf", drop=["volume.density"])
 ```
 
+Slicing preserves scientific metadata and kept member bytes. It prunes viewer
+hints for removed sections and refuses to drop a section still referenced by a
+kept section. The output is validated before it replaces the destination;
+`keep` and `drop` are mutually exclusive.
+
+
 `keep` and `drop` take section ids or kinds, and the function returns the
 output path. This is the cheap way to hand a colleague a 2 MB structure out
 of a 400 MB archive.

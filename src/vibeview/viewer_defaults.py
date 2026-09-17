@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from vibeview.qvf import ViewerDefaults
+from vibeview.renderers.energy_window import parse_energy_window
 
 
 @dataclass
@@ -100,6 +101,11 @@ class ViewerState:
     _provided_hint_keys: dict[str, set[str]] = field(default_factory=dict)
     camera: dict[str, Any] | None = None
     bookmarks: list[Bookmark] = field(default_factory=list)
+    # Per-section ``energy_window`` hints for the bands / DOS charts, as
+    # (min, max) in eV relative to E_F (#26). A producer that knows which
+    # part of its spectrum matters can ship a sensible first view; the
+    # viewer's own controls override it like any other hint.
+    energy_windows: dict[str, tuple[float, float]] = field(default_factory=dict)
     crossfade_blend: float = 0.5
     crossfade_volumes: tuple[str, str] | None = None
 
@@ -213,6 +219,9 @@ class ViewerState:
                 state._provided_hint_keys[section_id] = {
                     k for k in ("isovalue", "colormap", "opacity") if k in hints
                 }
+                window = parse_energy_window(hints.get("energy_window"))
+                if window is not None:
+                    state.energy_windows[section_id] = window
                 # Global replication hint (last one wins, or use the first)
                 if "replication" in hints:
                     rep = hints["replication"]
@@ -220,6 +229,18 @@ class ViewerState:
                         state.replication = (int(rep[0]), int(rep[1]), int(rep[2]))
 
         return state
+
+    def get_energy_window(self, *section_ids: str) -> tuple[float, float] | None:
+        """The manifest's energy-window hint for the first section that has one.
+
+        The combined bands+DOS panel draws two sections on one axis, so it
+        asks for both ids and takes whichever the producer hinted.
+        """
+        for section_id in section_ids:
+            window = self.energy_windows.get(section_id)
+            if window is not None:
+                return window
+        return None
 
     def get_volume_hints(self, section_id: str, kind: str = "") -> VolumeHints:
         """Get hints for a volume section, with kind-specific defaults for

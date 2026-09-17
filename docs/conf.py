@@ -44,11 +44,11 @@ copyright = f"{datetime.date.today().year}, {author}"
 def _read_release() -> str:
     """Version of the documented tree.
 
-    Prefer the installed distribution metadata, so a docs build inside a
-    developer's environment reports what that environment actually has. Fall
-    back to parsing ``pyproject.toml`` from the source tree, which is what
-    the CI docs build uses: it runs in a bare ``python:3.13-slim`` container
-    with only Sphinx installed, and does not install vibeview itself.
+    Prefer the installed distribution metadata, so a docs build reports what
+    its environment actually has -- which is what both a developer's venv and
+    the CI docs job give it, since the ``[docs]`` extra installs the package.
+    Fall back to parsing ``pyproject.toml`` from the source tree, so a bare
+    ``sphinx-build`` in a checkout without that install still renders.
     """
     try:
         from importlib.metadata import PackageNotFoundError
@@ -112,9 +112,10 @@ myst_heading_anchors = 3
 #
 # The catalogue is canonical in ``vibeview.codenames`` so the CLI banner, the
 # desktop About box and this site share one source of truth. Load that module
-# standalone rather than importing the ``vibeview`` package: the CI docs
-# container installs Sphinx only, and ``import vibeview`` would pull pyvista,
-# plotly and matplotlib for the sake of one dict.
+# standalone rather than importing the ``vibeview`` package: a bare
+# ``sphinx-build`` in a checkout without the ``[docs]`` install must still
+# render the site, and ``import vibeview`` would need the whole runtime for
+# the sake of one dict.
 def _load_codenames_module():
     import importlib.util
 

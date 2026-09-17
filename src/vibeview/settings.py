@@ -30,6 +30,7 @@ DEFAULTS: dict[str, Any] = {
     "auto_save_interval": 60,
     "recent_files": [],
     "max_recent_files": 20,
+    "relocalize_backend_python": "",
 }
 
 

@@ -130,7 +130,9 @@ _SYMBOL_TO_Z: dict[str, int] = {
 _Z_TO_SYMBOL: dict[int, str] = {z: sym for sym, z in _SYMBOL_TO_Z.items()}
 
 
-def _make_qvf_zip(structure_json: bytes, source_label: str) -> io.BytesIO:
+def _make_qvf_zip(
+    structure_json: bytes, source_label: str, *, secondary_structure: list[dict] | None = None
+) -> io.BytesIO:
     """Pack a structure JSON payload into a minimal valid .qvf zip."""
     manifest = {
         "qvf_version": 1,
@@ -153,6 +155,8 @@ def _make_qvf_zip(structure_json: bytes, source_label: str) -> io.BytesIO:
             }
         ],
     }
+    if secondary_structure:
+        manifest["sections"][0]["secondary_structure"] = secondary_structure
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest))
@@ -736,7 +740,32 @@ def pdb_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
     a_val = b_val = c_val = None
     alpha = beta = gamma = None
 
+    secondary_structure = []
     for line in text.splitlines():
+        # wwPDB format 3.3, Secondary Structure Section: HELIX class 1/3/5
+        # denotes alpha/pi/3-10. Insertion-code ranges cannot be represented
+        # by our integer residue keys; do not silently assign them incorrectly.
+        if line.startswith(("HELIX ", "SHEET ")):
+            helix = line.startswith("HELIX ")
+            chain = line[19:20] if helix else line[21:22]
+            end_chain = line[31:32] if helix else line[32:33]
+            start_code = line[25:26] if helix else line[26:27]
+            if chain != end_chain or start_code.strip() or line[37:38].strip():
+                continue
+            try:
+                start = int(line[21:25] if helix else line[22:26])
+                end = int(line[33:37])
+                entry = {"type": "helix" if helix else "sheet", "chain": chain.strip(),
+                         "start_seq": start, "end_seq": end}
+                if helix:
+                    subtype = {1: "alpha", 3: "pi", 5: "3_10"}.get(int(line[38:40].strip() or "0"))
+                    if subtype:
+                        entry["subtype"] = subtype
+                secondary_structure.append(entry)
+            except ValueError:
+                pass
+            continue
+
         if line.startswith("CRYST1"):
             try:
                 a_val = float(line[6:15])
@@ -824,7 +853,7 @@ def pdb_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
         indent=2,
     ).encode()
     name = Path(source).stem if isinstance(source, (str, Path)) else "pdb"
-    return _make_qvf_zip(struct, f"pdb:{name}")
+    return _make_qvf_zip(struct, f"pdb:{name}", secondary_structure=secondary_structure)
 
 
 def mol2_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:

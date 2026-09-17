@@ -19,6 +19,58 @@ variables:
   QVF_TAG: "v0.1.0"
 
 
+# --------------------------------------------------------------------
+# The rule matrix.
+#
+# `workflow:` below is the admission list -- which refs get a pipeline at
+# all. It is not the gate. Which jobs that pipeline then runs is decided
+# per job, by the `.rules_*` anchors under it and by `docs-build`'s own
+# list, and nowhere else.
+#
+#   ref / source          test  qvf-conformance  docs-build   deploy
+#   --------------------  ----  ---------------  ----------  --------
+#   merge request          yes        yes         on change     no
+#   release-candidate/*    yes        yes            yes        no
+#   web (manual)           yes        yes            yes      manual
+#   main                    no         no            yes        no
+#   release                 no         no            yes       yes
+#
+# The deploy column is the external include's, listed so the table is the
+# whole picture; this file does not define those jobs.
+#
+# `test` and `qvf-conformance` used to carry no rules of their own, so they
+# fell through to the admission list and ran on every ref in it. On
+# `release` that repeated, at an identical tree, the gate the candidate
+# branch had just passed at the same SHA.
+#
+# Why the two `no` columns:
+#
+# * `main` is where work lands, not a gate. A commit on it was proved by
+#   the merge request that landed it, and the branch is proved as a whole
+#   by the `release-candidate/*` pipeline before a tag is spent -- the
+#   delivery model in docs/roadmap.md and docs/release_process.md. Running
+#   the suite here re-proves the merge request, and release preparation had
+#   to push with `ci.skip` to get out of its way.
+# * `release` only ever fast-forwards onto a commit whose candidate
+#   pipeline is already green. `docs-build` stays, because the deployment
+#   jobs in the external include publish the `public/` it produces.
+#
+#   One consequence to know about: `test` is also what builds the wheel and
+#   sdist into `dist/`, so a `release` pipeline no longer carries them. The
+#   candidate pipeline at the identical SHA does, and that is the build to
+#   publish -- one canonical set of artifacts per release rather than two.
+#
+# Two deliberate exceptions:
+#
+# * `web` runs everything, on any admitted ref. It is the operator's way to
+#   re-prove `main` or `release` on demand without inventing a branch.
+# * merge requests build the docs only when the change touches something
+#   the site renders; `docs-build`'s `changes:` list is that filter.
+#
+# tests/test_ci_rules.py evaluates this file against the table above, so a
+# job that loses its rules cannot go back to inheriting the admission list.
+# --------------------------------------------------------------------
+
 workflow:
   auto_cancel:
     on_new_commit: conservative
@@ -29,6 +81,16 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - when: never
+
+
+# The per-change product gate. `main` and `release` are absent on purpose;
+# both jobs that use this must agree on the refs they gate, so they share
+# one list rather than two that can drift apart.
+.rules_product_gate:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH =~ /^release-candidate\//'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 
 test:
@@ -88,6 +150,8 @@ test:
       - dist/*.whl
       - dist/*.tar.gz
       - dist/SHA256SUMS
+  rules:
+    - !reference [.rules_product_gate, rules]
 
 # The consumer half of the QVF contract.
 #
@@ -116,6 +180,8 @@ qvf-conformance:
     - pip install -e '.[ase]' jsonschema
   script:
     - python scripts/check_qvf_conformance.py --qvf-root /tmp/qvf
+  rules:
+    - !reference [.rules_product_gate, rules]
 
 # --------------------------------------------------------------------
 # Shared docs environment + dependency install.
@@ -156,17 +222,13 @@ qvf-conformance:
     # invocation fail with 'detected dubious ownership'.
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
     - python -V
-    - pip install --quiet
-      'sphinx>=7.4'
-      'myst-parser>=4.0'
-      'linkify-it-py>=2'
-      'furo>=2024.5'
-      'sphinx-copybutton>=0.5'
-      'sphinx-design>=0.6'
-      'numpy>=1.26'
-      'click>=8.0'
-      'pydantic>=2.0'
-      'jsonschema>=4.20'
+    # The toolchain is declared in pyproject.toml's [docs] extra, not here:
+    # pinning it inline left the requirement in no package metadata, so the
+    # only way to render the site locally was to retype this list. The extra
+    # installs the package too, which is where numpy/click/pydantic/jsonschema
+    # come from -- they used to be repeated here and could keep an old floor
+    # after [project.dependencies] moved.
+    - pip install --quiet -e '.[docs]'
 
 # --------------------------------------------------------------------
 # docs-build -- render the Sphinx site into public/. Publishes nothing;
@@ -192,6 +254,10 @@ docs-build:
     expire_in: 2 weeks
     paths:
       - public/
+  # Not .rules_product_gate: this is the one job that also runs on `main`
+  # (the downloadable site artifact) and on `release` (the deployment jobs
+  # in the external include publish the `public/` built here), and the one
+  # that narrows merge requests to changes the site actually renders.
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_BRANCH == "release"'

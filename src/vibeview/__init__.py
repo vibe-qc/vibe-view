@@ -20,7 +20,7 @@ binary file-like:
 
 from __future__ import annotations
 
-__version__ = "2.17.1"  # Lorensen's Loon -- see vibeview.codenames,
+__version__ = "2.18.0"  # Richardson's Robin -- see vibeview.codenames,
 #                        which is the catalogue every surface reads. This
 #                        comment is a convenience, and the drift test in
 #                        tests/test_release_codenames.py keeps it honest.

@@ -142,8 +142,8 @@ open `QVFReader` and auto-detect the section when none is named:
 |---|---|
 | `capture_structure(reader, path, ...)` | PNG |
 | `capture_volume(reader, section_id, path, ...)` | PNG |
-| `capture_bands(reader, path)` | PNG |
-| `capture_dos(reader, path)` | HTML |
+| `capture_bands(reader, path, ...)` | PNG |
+| `capture_dos(reader, path, ...)` | HTML |
 | `capture_spectra(reader, path)` | HTML |
 | `capture_scf_history(reader, path)` | HTML |
 | `capture_bond_orders(reader, path)` | HTML |
@@ -158,6 +158,17 @@ with QVFReader("crystal.qvf") as r:
     capture_bands(r, "bands.png")
     capture_dos(r, "dos.html")
     capture_scf_history(r, "scf.html")
+```
+
+`capture_bands` and `capture_dos` frame the energy axis the way the viewer
+does: an all-electron archive opens on its valence states rather than
+autoscaling over core levels thousands of eV below E_F. Pass
+`energy_window=(min, max)` in eV relative to E_F for a specific window, or
+`auto_window=False` for the full range. See
+{ref}`the bands and DOS panels <bands-dos-panel>`.
+
+```python
+capture_bands(r, "bands.png", energy_window=(-15.0, 10.0))
 ```
 
 The chart kinds other than bands write interactive HTML through Plotly; for

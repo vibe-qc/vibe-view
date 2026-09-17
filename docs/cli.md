@@ -73,7 +73,7 @@ setting one up, and `show` is the fallback when there is none.
 | Command | What it does |
 |---|---|
 | `import INPUT...` | Convert loose files into persistent archives. One input writes a sibling `.qvf`; several, or a directory searched recursively, write one archive per source into `./vibe-view-imports` or `-o DIR`. `--from FORMAT` forces an importer; `--force` replaces outputs. See [Input formats](formats.md). |
-| `slice FILE` | Keep (`-k`) or drop (`-d`) sections by id or kind into a new archive. The way to make a large archive small enough to send. |
+| `slice FILE` | Keep (`-k`) or drop (`-d`) sections by id or kind into a new archive. Preserves metadata and validates the output before replacing it; removed viewer hints are pruned and dangling section references are refused. |
 | `merge FILE...` | Combine sections from several archives. Structure and provenance come from the first; duplicate ids are renamed. |
 | `supercell FILE` | Replicate a periodic structure `--nx --ny --nz` times. |
 | `h-add FILE` | Saturate open valences with hydrogens; writes `<stem>_h.qvf` unless `-o`. |
