@@ -12,6 +12,7 @@ in the meantime, so the caller never blocks on VTK cold-start.
 
 from __future__ import annotations
 
+import contextlib
 import html
 import http.server
 import json
@@ -21,9 +22,9 @@ import subprocess
 import sys
 import threading
 import urllib.parse
-import webbrowser
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 _DIR_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -63,7 +64,8 @@ _DIR_TEMPLATE = """<!DOCTYPE html>
 {welcome}
 <div class="parent">{parent_link}</div>
 <table>
-<tr><th>File</th><th>Calculation</th><th>Energy (Eh)</th><th>Sections</th><th>Size</th><th>Modified</th></tr>
+<tr><th>File</th><th>Calculation</th><th>Energy (Eh)</th>
+<th>Sections</th><th>Size</th><th>Modified</th></tr>
 {rows}
 </table>
 <div class="footer">vibe-view {version} — {n_files} file(s)</div>
@@ -75,14 +77,17 @@ _WELCOME_CARD = """<div class="welcome">
 <h2>👋 Welcome to vibe-view</h2>
 Click a <b>.qvf</b> file below to open it in the interactive 3D viewer.
 <ul>
-<li><b>Open a file</b> — File → Open (Cmd+O in the desktop app), or drag &amp; drop a .qvf onto the window</li>
+<li><b>Open a file</b> — File → Open (Cmd+O in the desktop app),
+or drag &amp; drop a .qvf onto the window</li>
 <li><b>Start from scratch</b> — ➕ New structure (above) creates an editable file:
 press <code>e</code> for edit mode, sketch with clicks / Add Hydrogens / fragments,
 then build the input from the Calculate dialog</li>
-<li><b>Change folder</b> — File → Open Folder… (Cmd+Shift+O), or the ⬆ Parent / ⌂ Home links above the listing</li>
+<li><b>Change folder</b> — File → Open Folder… (Cmd+Shift+O),
+or the ⬆ Parent / ⌂ Home links above the listing</li>
 <li><b>Structure</b> — atoms and bonds in 3D; rotate with the mouse</li>
 <li><b>Molecular orbitals</b> — HOMO, LUMO and friends as isosurfaces</li>
-<li><b>Keyboard</b> — press <code>?</code> in the viewer for shortcuts (e=edit, m=measure, r=reset, s=screenshot)</li>
+<li><b>Keyboard</b> — press <code>?</code> in the viewer for shortcuts
+(e=edit, m=measure, r=reset, s=screenshot)</li>
 </ul>
 </div>"""
 
@@ -233,6 +238,8 @@ def _browse_recursive(dir_path: Path) -> str:
             size = _human_size(entry.stat().st_size)
         except OSError:
             continue
+        calc: str
+        n_sec: int | str
         if time.monotonic() > meta_deadline:
             meta_skipped = True
             calc, n_sec = "", ""
@@ -290,11 +297,12 @@ def _browse_recursive(dir_path: Path) -> str:
 
 
 def _human_size(size_bytes: int) -> str:
+    size = float(size_bytes)
     for unit in ("B", "KB", "MB", "GB"):
-        if abs(size_bytes) < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
+        if abs(size) < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
 
 
 def _browse_dir(dir_path: Path, rel_path: str = "", show_welcome: bool | None = None) -> str:
@@ -519,7 +527,7 @@ def _view_page(qvf_rel: str, dir_path: Path) -> str:
 # ``?file=`` request gets its own viewer process on its own port; this
 # registry reuses live viewers and reaps dead ones.
 
-_viewers: dict[str, dict] = {}  # resolved path → {"port": int, "proc": Popen}
+_viewers: dict[str, dict[str, Any]] = {}  # resolved path → {"port": int, "proc": Popen}
 _viewers_lock = threading.Lock()
 
 
@@ -565,7 +573,7 @@ def _ensure_viewer(file_path: Path, base_port: int, host: str = "127.0.0.1") -> 
         entry = _viewers.get(key)
         if entry is not None:
             if entry["proc"].poll() is None:
-                return entry["port"]
+                return int(entry["port"])
             del _viewers[key]  # viewer died — respawn below
 
         port = _find_free_port(base_port + 1, host)
@@ -616,7 +624,8 @@ _LOADING_TEMPLATE = """<!DOCTYPE html>
 <body>
 <div class="spinner"></div>
 <h1>Opening {name}…</h1>
-<div class="hint">Starting the 3D viewer — the first open can take up to a minute while VTK loads</div>
+<div class="hint">Starting the 3D viewer — the first open can take up to
+a minute while VTK loads</div>
 <script>
   const poll = () => fetch({status_url})
     .then(r => r.json())
@@ -652,7 +661,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
     base_port = port
 
     class QVFHandler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, directory=str(dir_path), **kwargs)
 
         def _file_query(self, query: str) -> Path | None:
@@ -682,7 +691,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
             status_url = "/open-status?file=" + urllib.parse.quote(str(target.resolve()))
             self._serve_html(_loading_page(target.name, status_url))
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self) -> None:  # noqa: N802
             parsed = urllib.parse.urlsplit(self.path)
             path = parsed.path.rstrip("/") or "/"
             query = parsed.query
@@ -756,11 +765,11 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
                 else:
                     self.send_error(404)
             elif path == "/open-status":
-                target = self._file_query(query)
-                if target is None:
+                status_target = self._file_query(query)
+                if status_target is None:
                     self._serve_json({"ready": False, "error": "unknown file"})
                     return
-                viewer_port = _ensure_viewer(target, base_port)
+                viewer_port = _ensure_viewer(status_target, base_port)
                 self._serve_json(
                     {
                         "ready": _port_responding(viewer_port),
@@ -794,7 +803,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
             self.end_headers()
             self.wfile.write(data)
 
-        def _serve_json(self, obj: dict) -> None:
+        def _serve_json(self, obj: dict[str, Any]) -> None:
             data = json.dumps(obj).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -802,20 +811,19 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
             self.end_headers()
             self.wfile.write(data)
 
-        def log_message(self, format, *args):
+        def log_message(self, format: str, *args: Any) -> None:
             pass  # Suppress access logs
 
     # The Electron shell stops us with SIGTERM on quit; route that into
     # the KeyboardInterrupt path so the viewer children get reaped too.
     import signal
 
-    def _terminate(signum, frame):  # noqa: ARG001
+    def _terminate(signum: int, frame: Any) -> None:  # noqa: ARG001
         raise KeyboardInterrupt
 
-    try:
+    # ValueError: not the main thread (e.g. tests) — skip.
+    with contextlib.suppress(ValueError):
         signal.signal(signal.SIGTERM, _terminate)
-    except ValueError:
-        pass  # not the main thread (e.g. tests) — skip
 
     # Threading server: /open requests spawn viewer subprocesses and the
     # loading page polls /open-status concurrently — a single-threaded
@@ -824,7 +832,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
     url = f"http://{host}:{port}"
     print(f"vibe-view serve: {dir_path}")
     print(f"  Browse: {url}")
-    print(f"  Press Ctrl+C to stop.")
+    print("  Press Ctrl+C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

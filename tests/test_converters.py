@@ -60,7 +60,10 @@ class TestDetectFormat:
 
 class TestXYZConverter:
     def test_water(self) -> None:
-        xyz = "3\nwater\nO   0.000   0.000   0.117\nH   0.757   0.000  -0.469\nH  -0.757   0.000  -0.469\n"
+        xyz = (
+            "3\nwater\nO   0.000   0.000   0.117\n"
+            "H   0.757   0.000  -0.469\nH  -0.757   0.000  -0.469\n"
+        )
         buf = xyz_to_qvf(xyz.encode())
         reader = QVFReader(buf)
         struct = reader.read_structure()

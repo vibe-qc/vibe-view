@@ -6,12 +6,8 @@ visualizing a reaction coordinate at a glance.
 
 from __future__ import annotations
 
-import base64
-import io
 from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 # Confidence levels whose names are safe to put on a thumbnail. "low" is the
 # namer's own signal that it could not assemble a well-formed name — it is what
@@ -42,7 +38,7 @@ def _iupac_label(structure: Any) -> str | None:
         return None
     if not result.name or result.confidence.value not in _TRUSTED_CONFIDENCE:
         return None
-    return result.name
+    return str(result.name)
 
 
 def render_dashboard(
@@ -81,9 +77,11 @@ def render_dashboard(
     str
         Path to the generated image.
     """
+    import numpy as np
     import pyvista as pv
     from PIL import Image, ImageDraw
 
+    from vibeview.plotter_compat import view_isometric
     from vibeview.qvf import QVFReader
     from vibeview.renderers.structure import StructureRenderer
 
@@ -120,18 +118,18 @@ def render_dashboard(
 
             name = _iupac_label(reader.read_structure()) if labels else None
 
-            plotter = pv.Plotter(off_screen=True, window_size=(cell_w, cell_h))
+            plotter = pv.Plotter(off_screen=True, window_size=[cell_w, cell_h])
             try:
                 renderer = StructureRenderer(sec, reader)
                 renderer.add_to_plotter(plotter)
-                plotter.view_isometric()
+                view_isometric(plotter)
                 plotter.render()
                 thumb = plotter.screenshot(return_img=True)
             finally:
                 plotter.close()
                 reader.close()
 
-            thumb_img = Image.fromarray(thumb).resize((cell_w - 4, cell_h - 4))
+            thumb_img = Image.fromarray(np.asarray(thumb)).resize((cell_w - 4, cell_h - 4))
 
             # Paste into canvas with a border
             x = col * cell_w + 2
@@ -234,7 +232,8 @@ def dashboard_to_html(
 <style>
 body {{ font-family: sans-serif; margin: 20px; background: #f5f5f5; }}
 .grid {{ display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }}
-.cell {{ border: 1px solid #ddd; border-radius: 8px; overflow: hidden; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+.cell {{ border: 1px solid #ddd; border-radius: 8px; overflow: hidden;
+        background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
 .label {{ padding: 8px; text-align: center; background: #fafafa; }}
 .name {{ font-size: 13px; color: #222; }}
 .file {{ font-size: 11px; color: #999; margin-top: 2px; }}

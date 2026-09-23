@@ -57,7 +57,7 @@ def _project_2d(positions: np.ndarray) -> np.ndarray:
 
 
 def export_svg(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     width: int = 800,
@@ -94,7 +94,10 @@ def export_svg(
     except Exception:
         svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
         svg += f'<rect width="100%" height="100%" fill="{background}"/>'
-        svg += '<text x="50%" y="50%" text-anchor="middle" font-family="sans-serif">No structure data</text>'
+        svg += (
+            '<text x="50%" y="50%" text-anchor="middle" '
+            'font-family="sans-serif">No structure data</text>'
+        )
         svg += "</svg>"
         Path(output_path).write_text(svg)
         return svg
@@ -153,7 +156,7 @@ def export_svg(
         (height - 2 * padding) / span[1],
     )
 
-    def _to_svg(p):
+    def _to_svg(p: np.ndarray) -> tuple[float, float]:
         x = padding + (p[0] - min_vals[0]) * scale_factor
         y = height - padding - (p[1] - min_vals[1]) * scale_factor
         return x, y
@@ -204,7 +207,7 @@ def export_svg(
                     )
 
     # Draw atoms
-    for i, (symbol, pos) in enumerate(zip(symbols, coords2d)):
+    for symbol, pos in zip(symbols, coords2d, strict=True):
         x, y = _to_svg(pos)
         r = radii.get(symbol, scale_factor * 0.2)
         color = _CPK.get(symbol, "#888888")

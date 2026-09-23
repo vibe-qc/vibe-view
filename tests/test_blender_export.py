@@ -8,7 +8,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 
@@ -30,8 +29,10 @@ def _make_qvf(
         },
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         if files:
             for path, data in files.items():

@@ -21,7 +21,8 @@ def _file_url_path(url: str) -> Path:
     try:
         # Python 3.14+ accepts the complete URL and handles drive letters,
         # escaping, localhost, and UNC authorities for the host platform.
-        converted = url2pathname(url, require_scheme=True)
+        converted = url2pathname(url, require_scheme=True)  # type: ignore[call-arg]
+        # ^ the keyword is 3.14+; the except TypeError below is the 3.11-3.13 path
     except TypeError:
         # Python 3.11-3.13 take only the URL path. Preserve a non-local
         # authority as the leading component of a UNC/network path.

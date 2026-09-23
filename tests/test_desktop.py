@@ -5,16 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 
 class TestDesktop:
     def test_import(self):
         from vibeview.desktop import (
-            generate_electron_main_js,
             generate_electron_package_json,
-            generate_electron_preload_js,
-            get_system_info,
         )
 
         assert callable(generate_electron_package_json)

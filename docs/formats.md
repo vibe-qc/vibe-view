@@ -5,6 +5,9 @@ vibe-qc, and the file does not have to be a QVF. Common structure and volume
 files open directly, and any of them can be turned into a persistent,
 checksummed archive.
 
+For a complete import with a bundled XYZ input, expected section inventory
+and exports, follow [the worked workflow](workflows.md).
+
 ## Open now, or import once
 
 Use `open` when you only want to look:

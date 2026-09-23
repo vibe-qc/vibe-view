@@ -15,11 +15,19 @@ axis.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from vibeview.tui.braille import CellGrid, pixel_size
+
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader, Section
+
+RGB = tuple[int, int, int]
+ArrayLike = np.ndarray | Sequence[float]
 
 _AXIS = (120, 126, 140)
 _LABEL = (196, 202, 214)
@@ -69,7 +77,14 @@ class Plot:
     margin_left: int = 10
     background: tuple[int, int, int] = (0, 0, 0)
 
-    def add(self, x, y, color=None, label="", style="line") -> None:
+    def add(
+        self,
+        x: ArrayLike,
+        y: ArrayLike,
+        color: RGB | None = None,
+        label: str = "",
+        style: str = "line",
+    ) -> None:
         idx = len(self.series)
         self.series.append(
             Series(
@@ -83,7 +98,7 @@ class Plot:
 
     # ── scaling ───────────────────────────────────────────────────────────
 
-    def _data_range(self):
+    def _data_range(self) -> tuple[tuple[float, float], tuple[float, float]]:
         """``((xlo, xhi), (ylo, yhi))`` with y already in *plotting* space.
 
         On a log axis the limits are derived after the transform, never
@@ -110,7 +125,11 @@ class Plot:
             if hline_values:
                 transformed = np.concatenate([transformed, self._to_log(hline_values)])
             ylo, yhi = float(transformed.min()), float(transformed.max())
-            limits = (self._to_log(self.ylim[0]), self._to_log(self.ylim[1])) if self.ylim else None
+            limits = (
+                (float(self._to_log(self.ylim[0])), float(self._to_log(self.ylim[1])))
+                if self.ylim
+                else None
+            )
         else:
             ylo, yhi = float(y_all.min()), float(y_all.max())
             for value in hline_values:
@@ -157,7 +176,7 @@ class Plot:
         if yhi_t - ylo_t < 1e-12:
             yhi_t = ylo_t + 1.0
 
-        def to_px(x, y):
+        def to_px(x: ArrayLike, y: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
             fx = (np.asarray(x, dtype=np.float64) - xlo) / (xhi - xlo)
             yy = self._to_log(np.asarray(y, dtype=np.float64)) if self.ylog else np.asarray(y)
             fy = (yy - ylo_t) / (yhi_t - ylo_t)
@@ -173,9 +192,9 @@ class Plot:
             fx = (float(value) - xlo) / (xhi - xlo) if xhi > xlo else 0.0
             self._dashed_col(pixels, covered, fx * (width - 1), color)
 
-        baseline_px = None
+        baseline_px: float | None = None
         if self.ylog:
-            baseline_px = height - 1
+            baseline_px = float(height - 1)
         else:
             _, zero_y = to_px(np.array([xlo]), np.array([0.0]))
             baseline_px = float(np.clip(zero_y[0], 0, height - 1))
@@ -213,13 +232,22 @@ class Plot:
         return grid
 
     @staticmethod
-    def _to_log(values):
+    def _to_log(values: ArrayLike | float) -> np.ndarray:
         """Log10 with a floor, so a converged |ΔE| of exactly 0 still plots."""
         arr = np.asarray(values, dtype=np.float64)
-        return np.log10(np.maximum(np.abs(arr), 1e-16))
+        logged: np.ndarray = np.log10(np.maximum(np.abs(arr), 1e-16))
+        return logged
 
     @staticmethod
-    def _plot_segments(pixels, covered, x0, y0, x1, y1, color):
+    def _plot_segments(
+        pixels: np.ndarray,
+        covered: np.ndarray,
+        x0: np.ndarray,
+        y0: np.ndarray,
+        x1: np.ndarray,
+        y1: np.ndarray,
+        color: RGB,
+    ) -> None:
         """Rasterize a batch of line segments in one vectorized pass.
 
         Each segment gets as many samples as its longer pixel span, produced
@@ -249,13 +277,17 @@ class Plot:
         Plot._paint(pixels, covered, px, py, color)
 
     @staticmethod
-    def _plot_points(pixels, covered, px, py, color):
+    def _plot_points(
+        pixels: np.ndarray, covered: np.ndarray, px: np.ndarray, py: np.ndarray, color: RGB
+    ) -> None:
         Plot._paint(
             pixels, covered, np.round(px).astype(np.int64), np.round(py).astype(np.int64), color
         )
 
     @staticmethod
-    def _paint(pixels, covered, px, py, color):
+    def _paint(
+        pixels: np.ndarray, covered: np.ndarray, px: np.ndarray, py: np.ndarray, color: RGB
+    ) -> None:
         h, w = covered.shape
         keep = (px >= 0) & (px < w) & (py >= 0) & (py < h)
         if not keep.any():
@@ -265,7 +297,7 @@ class Plot:
         covered[py, px] = True
 
     @staticmethod
-    def _dashed_row(pixels, covered, py, color):
+    def _dashed_row(pixels: np.ndarray, covered: np.ndarray, py: float, color: RGB) -> None:
         h, w = covered.shape
         row = int(round(py))
         if 0 <= row < h:
@@ -274,7 +306,7 @@ class Plot:
             covered[row, cols] = True
 
     @staticmethod
-    def _dashed_col(pixels, covered, px, color):
+    def _dashed_col(pixels: np.ndarray, covered: np.ndarray, px: float, color: RGB) -> None:
         h, w = covered.shape
         col = int(round(px))
         if 0 <= col < w:
@@ -282,7 +314,7 @@ class Plot:
             pixels[rows, col] = color
             covered[rows, col] = True
 
-    def _draw_frame(self, grid, top, plot_rows, plot_cols):
+    def _draw_frame(self, grid: CellGrid, top: int, plot_rows: int, plot_cols: int) -> None:
         axis_col = self.margin_left - 1
         for r in range(top, top + plot_rows):
             grid.text(r, axis_col, "│", _AXIS)
@@ -290,7 +322,9 @@ class Plot:
         for c in range(self.margin_left, self.margin_left + plot_cols):
             grid.text(top + plot_rows, c, "─", _AXIS)
 
-    def _draw_yticks(self, grid, top, plot_rows, ylo_t, yhi_t):
+    def _draw_yticks(
+        self, grid: CellGrid, top: int, plot_rows: int, ylo_t: float, yhi_t: float
+    ) -> None:
         n_ticks = max(2, min(6, plot_rows // 2))
         for i in range(n_ticks):
             frac = i / (n_ticks - 1)
@@ -302,7 +336,9 @@ class Plot:
             text = _fmt(10.0**value) if self.ylog else _fmt(value)
             grid.text_right(row, self.margin_left - 2, text[: self.margin_left - 1], _LABEL)
 
-    def _draw_xticks(self, grid, row, plot_cols, xlo, xhi):
+    def _draw_xticks(
+        self, grid: CellGrid, row: int, plot_cols: int, xlo: float, xhi: float
+    ) -> None:
         if self.xticks is not None:
             # Categorical ticks (band-structure high-symmetry points): place
             # each label at its own data position and drop any that would
@@ -330,7 +366,7 @@ class Plot:
             grid.text(row + 1, start, text, _LABEL)
             grid.text(row, center, "┴", _AXIS)
 
-    def _draw_legend(self, grid, row):
+    def _draw_legend(self, grid: CellGrid, row: int) -> None:
         col = self.margin_left
         for item in self.series:
             if not item.label:
@@ -364,7 +400,7 @@ def _fmt(value: float) -> str:
     return f"{value:.2f}"
 
 
-def _section_meta(section, key, default=None):
+def _section_meta(section: Section, key: str, default: Any = None) -> Any:
     """Section-level JSON keys land in Pydantic's ``model_extra``.
 
     ``getattr(section, key)`` silently misses them — the same trap the DOS
@@ -377,7 +413,7 @@ def _section_meta(section, key, default=None):
 # ── per-kind builders ─────────────────────────────────────────────────────
 
 
-def bands_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def bands_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     """Band structure along the k-path, Fermi-referenced when in range."""
     from vibeview.renderers.bands import _band_axis_ticks
 
@@ -414,13 +450,13 @@ def bands_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
 
     positions, labels, _boundaries = _band_axis_ticks(data.kpath, n_k)
     if positions:
-        plot.xticks = [(float(p), lbl) for p, lbl in zip(positions, labels)]
+        plot.xticks = [(float(p), lbl) for p, lbl in zip(positions, labels, strict=True)]
     else:
         plot.xlabel = "k-point index"
     return plot
 
 
-def dos_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def dos_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     """Total or projected density of states."""
     section = reader.get_section(section_id)
     energies = np.asarray(
@@ -462,7 +498,9 @@ def dos_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
     return plot
 
 
-def spectra_plot(reader, section_id: str, cols: int, rows: int, broaden: bool = True) -> Plot:
+def spectra_plot(
+    reader: QVFReader, section_id: str, cols: int, rows: int, broaden: bool = True
+) -> Plot:
     """Stick spectrum, optionally with a Lorentzian envelope.
 
     The sticks are the computed transitions; the envelope is a display
@@ -502,7 +540,7 @@ def spectra_plot(reader, section_id: str, cols: int, rows: int, broaden: bool = 
     return plot
 
 
-def scf_history_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def scf_history_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     """SCF convergence: |ΔE| and the DIIS error on a shared log axis."""
     data = reader.read_scf_history(section_id)
     iters = data.iterations or []
@@ -528,7 +566,7 @@ def scf_history_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
     return plot
 
 
-def eos_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def eos_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     """Equation of state: computed points plus the fitted curve."""
     data = reader.read_equation_of_state(section_id)
     volumes = np.asarray(data.volumes, dtype=np.float64)
@@ -550,7 +588,7 @@ def eos_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
     return plot
 
 
-def phonon_bands_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def phonon_bands_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     """Phonon dispersion, with the ω=0 line marked."""
     from vibeview.renderers.bands import _band_axis_ticks
 
@@ -566,20 +604,20 @@ def phonon_bands_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
     plot.hlines.append((0.0, _FERMI, "ω=0"))
     positions, labels, _b = _band_axis_ticks(data.qpath, n_q)
     if positions:
-        plot.xticks = [(float(p), lbl) for p, lbl in zip(positions, labels)]
+        plot.xticks = [(float(p), lbl) for p, lbl in zip(positions, labels, strict=True)]
     else:
         plot.xlabel = "q-point index"
     return plot
 
 
-def phonon_dos_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def phonon_dos_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     data = reader.read_phonon_dos(section_id)
     plot = Plot(cols, rows, title="Phonon DOS", xlabel="ω (cm⁻¹)", ylabel="g(ω)")
     plot.add(np.asarray(data.frequencies), np.asarray(data.dos), SERIES_COLORS[0])
     return plot
 
 
-def coop_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def coop_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     """COOP / COHP bonding analysis, one trace per atom pair."""
     section = reader.get_section(section_id)
     data = reader.read_dos_coop(section_id)
@@ -587,12 +625,14 @@ def coop_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
     projections = np.asarray(data.projections, dtype=np.float64)
     if projections.ndim == 1:
         projections = projections[None, :]
-    labels = data.meta.get("pair_labels", []) if isinstance(data.meta, dict) else []
+    raw_labels = data.meta.get("pair_labels", []) if isinstance(data.meta, dict) else []
+    labels = list(raw_labels) if isinstance(raw_labels, list | tuple) else []
 
     xlabel = "Energy (eV)"
-    fermi = data.meta.get("fermi_energy_ev") if isinstance(data.meta, dict) else None
-    if fermi is not None and energies.size and energies.min() <= float(fermi) <= energies.max():
-        energies = energies - float(fermi)
+    raw_fermi = data.meta.get("fermi_energy_ev") if isinstance(data.meta, dict) else None
+    fermi = float(raw_fermi) if isinstance(raw_fermi, int | float) else None
+    if fermi is not None and energies.size and energies.min() <= fermi <= energies.max():
+        energies = energies - fermi
         xlabel = "E − E_F (eV)"
 
     plot = Plot(cols, rows, title=section.kind, xlabel=xlabel, ylabel=section.kind.split(".")[-1])
@@ -603,13 +643,12 @@ def coop_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
     return plot
 
 
-def reaction_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def reaction_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     """Energy profile along a reaction path, with waypoints marked."""
     data = reader.read_reaction_path(section_id)
-    energies = data.energies
-    if not energies:
+    if not data.energies:
         return Plot(cols, rows, title="Reaction path (no energies)")
-    energies = np.asarray(energies, dtype=np.float64)
+    energies = np.asarray(data.energies, dtype=np.float64)
     # Relative to the first frame in kcal/mol: an absolute Hartree total on
     # the y-axis hides the barrier in the noise of the leading digits.
     relative = (energies - energies[0]) * 627.509474
@@ -632,7 +671,7 @@ def reaction_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
     return plot
 
 
-def trajectory_energy_plot(reader, section_id: str, cols: int, rows: int) -> Plot:
+def trajectory_energy_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> Plot:
     """Per-frame energy of a trajectory.
 
     Returns an empty, titled plot rather than None when the archive carries
@@ -649,7 +688,7 @@ def trajectory_energy_plot(reader, section_id: str, cols: int, rows: int) -> Plo
     return plot
 
 
-def scan_surface_plot(reader, section_id: str, cols: int, rows: int) -> CellGrid:
+def scan_surface_plot(reader: QVFReader, section_id: str, cols: int, rows: int) -> CellGrid:
     """2D relaxed scan as a colour heat map.
 
     Rendered in half-block mode rather than braille: a surface carries its
@@ -701,10 +740,12 @@ def scan_surface_plot(reader, section_id: str, cols: int, rows: int) -> CellGrid
     return grid
 
 
-def _num(value) -> float:
+def _num(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return float("nan")
     try:
         out = float(value)
-    except (TypeError, ValueError):
+    except ValueError:
         return float("nan")
     return out
 

@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-import pytest
-
 
 class TestFinalEdgeCases:
     def test_reader_manifest_to_dict(self, sample_qvf):

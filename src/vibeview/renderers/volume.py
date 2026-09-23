@@ -8,6 +8,7 @@ component selection for orbital sections.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -52,8 +53,8 @@ def _circular_centroid_index(weight_1d: np.ndarray) -> tuple[float | None, float
 
 def wrap_grid_to_center(
     data: np.ndarray,
-    grid: "GridData",
-    pbc,
+    grid: GridData,
+    pbc: Sequence[bool],
     lattice_vectors: np.ndarray,
     *,
     min_resultant: float = 0.05,
@@ -108,7 +109,7 @@ def build_isosurface_mesh(
     replication: tuple[int, int, int] = (1, 1, 1),
     lattice_vectors: np.ndarray | None = None,
     wrap_to_center: bool = False,
-    pbc=None,
+    pbc: Sequence[bool] | None = None,
 ) -> pv.PolyData | None:
     """Marching-cubes isosurface for a scalar field on a grid.
 
@@ -172,7 +173,7 @@ def build_isosurface_mesh(
             origin=tuple(origin_xyz),
         )
         mesh.point_data["values"] = oriented.ravel(order="F")
-        contour = mesh.contour(isosurfaces=[isovalue], scalars="values")
+        contour: pv.PolyData = mesh.contour(isosurfaces=[isovalue], scalars="values")
     else:
         ii, jj, kk = np.meshgrid(
             np.arange(nx, dtype=np.float64),
@@ -192,16 +193,12 @@ def build_isosurface_mesh(
     # non-periodic axes. Replicating a surface along one of those directions
     # detaches it from the atoms into vacuum, while structure rendering stays
     # in the physical dimensions. Apply the same PBC mask when it is known.
-    effective_replication = tuple(max(1, int(r)) for r in replication)
+    counts = [max(1, int(r)) for r in replication]
     if pbc is not None:
-        effective_replication = tuple(
-            count if bool(flag) else 1
-            for count, flag in zip(effective_replication, pbc, strict=True)
-        )
+        counts = [count if bool(flag) else 1 for count, flag in zip(counts, pbc, strict=True)]
+    effective_replication = (counts[0], counts[1], counts[2])
     if lattice_vectors is not None and any(r > 1 for r in effective_replication):
-        contour = _replicate_mesh(
-            contour, lattice_vectors, effective_replication
-        )
+        contour = _replicate_mesh(contour, lattice_vectors, effective_replication)
 
     return contour
 
@@ -252,7 +249,7 @@ class VolumeRenderer(BaseRenderer):
         replication: tuple[int, int, int] = (1, 1, 1),
         lattice_vectors: np.ndarray | None = None,
         wrap_to_center: bool = False,
-        pbc=None,
+        pbc: Sequence[bool] | None = None,
     ) -> pv.PolyData | None:
         """Build an isosurface mesh from the volumetric data.
 
@@ -345,15 +342,16 @@ def _replicate_mesh(
 
     if len(replicas) == 1:
         return replicas[0]
-    return replicas[0].merge(replicas[1:])
+    merged: pv.PolyData = replicas[0].merge(replicas[1:])
+    return merged
 
 
 def replicate_volume_for_periodic(
     data: np.ndarray,
-    grid: "GridData",
+    grid: GridData,
     lattice_vectors: np.ndarray,
     replication: tuple[int, int, int] = (1, 1, 1),
-) -> tuple[np.ndarray, "GridData"]:
+) -> tuple[np.ndarray, GridData]:
     """Replicate a volume grid across unit cell translations.
 
     For periodic systems, orbital isosurfaces should repeat across
@@ -458,7 +456,7 @@ def replicate_volume_for_periodic(
     new_grid = _GridData(
         origin=new_origin,
         voxel_vectors=voxel.copy(),
-        shape=tuple(int(s) for s in new_shape),
+        shape=(int(new_shape[0]), int(new_shape[1]), int(new_shape[2])),
     )
 
     return new_data, new_grid

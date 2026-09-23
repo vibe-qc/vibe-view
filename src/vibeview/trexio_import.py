@@ -66,7 +66,7 @@ class _Dataset:
         return value
 
 
-def _structure(data: _Dataset) -> dict:
+def _structure(data: _Dataset) -> dict[str, Any]:
     from vibeview.converters import _SYMBOL_TO_Z, _Z_TO_SYMBOL
 
     count = data.count("nucleus_num")
@@ -117,7 +117,9 @@ def _structure(data: _Dataset) -> dict:
     return structure
 
 
-def _wavefunction(data: _Dataset, atom_count: int, periodic: bool) -> tuple[dict, dict, dict]:
+def _wavefunction(
+    data: _Dataset, atom_count: int, periodic: bool
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     if periodic or data.has("mo_k_point") or data.has("pbc_k_point"):
         raise ValueError("TREXIO periodic/k-point orbitals are not supported; export a cube volume")
     if data.read("basis_type").lower() != "gaussian":
@@ -205,7 +207,7 @@ def _wavefunction(data: _Dataset, atom_count: int, periodic: bool) -> tuple[dict
 
     mo_type = str(data.optional("mo_type", "canonical")).lower()
     kind = "natural" if "natural" in mo_type else "localized" if "local" in mo_type else "canonical"
-    metadata: dict = {"n_ao": n_ao, "orbital_kind": kind}
+    metadata: dict[str, Any] = {"n_ao": n_ao, "orbital_kind": kind}
     if kind == "natural":
         metadata["occupation_semantics"] = "electron_occupation"
     values = {}
@@ -243,7 +245,7 @@ def _convert_path(path: Path, api: Any) -> io.BytesIO:
     members: dict[str, bytes] = {}
     sections = []
 
-    def add_section(section_id: str, kind: str, payloads: dict) -> None:
+    def add_section(section_id: str, kind: str, payloads: dict[str, Any]) -> None:
         descriptions = {}
         for name, value in payloads.items():
             binary = isinstance(value, np.ndarray)
@@ -253,7 +255,7 @@ def _convert_path(path: Path, api: Any) -> io.BytesIO:
                 if binary
                 else json.dumps(value, allow_nan=False).encode()
             )
-            description = {
+            description: dict[str, Any] = {
                 "path": member_path,
                 "format": "binary" if binary else "json",
                 "sha256": hashlib.sha256(payload).hexdigest(),

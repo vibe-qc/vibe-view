@@ -1,6 +1,7 @@
 # Python SDK
 
-Everything the CLI does is available programmatically. The supported
+The supported SDK covers archive inspection, validation, geometry, tables,
+rendering and launch. The supported
 surface is what the package root re-exports, so `from vibeview import ...`
 is the whole import story:
 
@@ -27,6 +28,9 @@ pin the version you script against when you use one.
 The core install covers this entire page except `launch_qvf`, which needs
 the `[viewer]` extra. Reading, inspecting, comparing, slicing and headless
 PNG capture need no extra at all.
+
+For a complete script with a bundled input and expected output, follow
+[the worked workflow](workflows.md#4-inspect-the-same-archive-from-python).
 
 ## One argument type for every function
 
@@ -66,10 +70,11 @@ validate("analysis.qvf")
 # {'valid': True, 'n_sections': 4, 'n_members': 5}
 ```
 
-`validate` hashes every member and reports `valid: False` rather than
-raising, so it is safe to run over a directory. It is the same check the
-viewer applies before rendering anything: no section is drawn from bytes
-that failed their own digest.
+`validate` hashes every member and reports `valid: False` for integrity
+failures. Opening an unreadable archive can still raise `QVFOpenError`, and
+an invalid manifest is rejected before member validation begins. Handle
+opening errors as well as checking the returned `valid` flag when processing
+a directory. No section is drawn from bytes that failed their own digest.
 
 ## The structure
 
@@ -171,6 +176,12 @@ from vibeview import slice_qvf
 out = slice_qvf("analysis.qvf", "structure_only.qvf", keep=["structure"])
 slice_qvf("analysis.qvf", "no-volumes.qvf", drop=["volume.density"])
 ```
+
+Slicing preserves scientific metadata and kept member bytes. It prunes viewer
+hints for removed sections and refuses to drop a section still referenced by a
+kept section. The output is validated before it replaces the destination;
+`keep` and `drop` are mutually exclusive.
+
 
 `keep` and `drop` take section ids or kinds, and the function returns the
 output path. This is the cheap way to hand a colleague a 2 MB structure out

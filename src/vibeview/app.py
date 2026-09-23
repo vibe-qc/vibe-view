@@ -18,20 +18,38 @@ import base64
 import contextlib
 import math
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import pyvista as pv
 from pyvista.plotting.colors import get_cmap_safe
 
 from vibeview.kinds import classify_section
+from vibeview.plotter_compat import (
+    cmap_argument,
+    remove_actor,
+    reset_camera,
+    set_background,
+    show_grid,
+    view_isometric,
+    view_xy,
+    view_xz,
+    view_yz,
+)
 from vibeview.qvf import QVFError, clamp_replication
 from vibeview.viewer_defaults import ViewerState
 
 if TYPE_CHECKING:
-    from vibeview.qvf import QVFReader
+    from collections.abc import Callable
+
+    from vibeview.lazy_loader import QVFLazyReader
+    from vibeview.material_presets import MaterialPreset
+    from vibeview.qvf import GridData, QVFReader, Section, StructureData
+    from vibeview.renderers.volume import VolumeRenderer
 
 
 # Friendly display titles for the sidebar — raw section.kind strings are
@@ -384,7 +402,7 @@ def _gui_directory_scan_notice(result: _GuiDirectoryScanResult) -> str:
     return "; ".join(notes)
 
 
-def _sidebar_section_title(section: dict) -> str:
+def _sidebar_section_title(section: dict[str, Any]) -> str:
     """Sidebar title for one section.
 
     Mostly a ``_KIND_TITLES`` lookup, but several sections legitimately share
@@ -412,6 +430,9 @@ def _sidebar_section_title(section: dict) -> str:
                 "ibo": "IBO",
                 "boys": "Boys",
                 "pipek_mezey": "Pipek-Mezey",
+                "ibo_fresh_rhf": "IBO, new RHF",
+                "boys_fresh_rhf": "Boys, new RHF",
+                "pipek_mezey_fresh_rhf": "Pipek-Mezey, new RHF",
             }.get(criterion, criterion.replace("_", "-").title())
             return f"{label} ({pretty})" if pretty else label
         if section_id.startswith("wf_nto"):
@@ -420,7 +441,7 @@ def _sidebar_section_title(section: dict) -> str:
             if section_id.endswith("_electron"):
                 return "NTO (electron)"
             return "Natural Transition Orbitals"
-    return _KIND_TITLES.get(kind, kind)
+    return str(_KIND_TITLES.get(kind, kind))
 
 
 def _kind_icon(kind: str) -> str:
@@ -466,7 +487,7 @@ def _vibeqc_importable() -> bool:
         return False
 
 
-def build_pending_container(sdata, params: dict, stem):
+def build_pending_container(sdata: StructureData, params: dict[str, Any], stem: str) -> Path:
     """Write a pending QVF job container for a viewer structure.
 
     Returns the archive path. Raises if vibeqc is unavailable or the
@@ -511,13 +532,18 @@ def build_pending_container(sdata, params: dict, stem):
             charge=int(params.get("charge", 0)),
             multiplicity=int(params.get("multiplicity", 1)),
         )
-    return _vq.write_pending_qvf(
+    return Path(_vq.write_pending_qvf(
         system,
         stem,
         method=params.get("method") or None,
         basis=params.get("basis") or None,
         functional=params.get("functional") or None,
-    )
+    ))
+
+
+def _triple(values: Sequence[int] | Sequence[float]) -> tuple[int, int, int]:
+    """A replication request as the fixed-size tuple the renderers take."""
+    return (int(values[0]), int(values[1]), int(values[2]))
 
 
 # Units hint for the isovalue slider, per volume kind.
@@ -557,7 +583,7 @@ def _orbital_group_sidebar_title(n_orbital_sections: int, is_periodic: bool) -> 
     return f"{_orbital_label(is_periodic, plural=True)} ({n_orbital_sections})"
 
 
-def _qa_validate(reader: "QVFReader") -> list[str]:
+def _qa_validate(reader: QVFReader) -> list[str]:
     """Check the QVF for common issues and return warning messages.
 
     Checks: SCF convergence, negative total energy (impossible),
@@ -576,10 +602,7 @@ def _qa_validate(reader: "QVFReader") -> list[str]:
 
     # Energy sanity checks.
     energy = prov.get("scf_energy")
-    if isinstance(energy, dict):
-        energy_val = energy.get("value")
-    else:
-        energy_val = energy
+    energy_val = energy.get("value") if isinstance(energy, dict) else energy
     if energy_val is not None:
         try:
             e = float(energy_val)
@@ -600,7 +623,7 @@ def _qa_validate(reader: "QVFReader") -> list[str]:
     return warnings
 
 
-def _clamp_viewer_replication(reader: "QVFReader", viewer_state) -> None:
+def _clamp_viewer_replication(reader: QVFReader, viewer_state: ViewerState) -> None:
     """Clamp a file's replication hint to its periodic axes, in place.
 
     A QVF may carry a ``replication`` viewer hint, and it lands in
@@ -615,16 +638,79 @@ def _clamp_viewer_replication(reader: "QVFReader", viewer_state) -> None:
     viewer_state.replication = clamp_replication(viewer_state.replication, pbc)
 
 
+def _pick_residue(
+    structure: StructureData,
+    plotter: pv.Plotter,
+    state: Any,
+    position: Any,
+    replication: tuple[int, int, int] = (1, 1, 1),
+) -> tuple[Any, Any] | None:
+    """Resolve a visible atom or ribbon surface hit to canonical residue identity."""
+    import numpy as np
+
+    from vibeview.renderers.structure import (
+        _selected_atom_indices,
+        _visible_atom_indices,
+        parse_residue_selection,
+    )
+
+    point = np.asarray(position, dtype=float)
+    if point.shape != (3,) or not np.isfinite(point).all():
+        return None
+    eligible = {(chain, seq) for chain, seq, _ in structure.ca_residues()}
+    membership = {index: (chain, seq) for chain, residues in structure.chains().items()
+                  for seq, indices in residues if (chain, seq) in eligible for index in indices}
+    best: tuple[float, int | None] = (float("inf"), None)
+    if state.representation_style == "cartoon":
+        for name, actor in plotter.actors.items():
+            if not name.startswith("cartoon_chain_"):
+                continue
+            mapper = actor.GetMapper()
+            mapper.Update()
+            mesh = mapper.GetInput()
+            array = mesh.GetPointData().GetArray("residue_atom_index")
+            if array is None or not mesh.GetNumberOfPoints():
+                continue
+            index = mesh.FindPoint(point)
+            if index < 0:
+                continue
+            distance = float(np.linalg.norm(np.asarray(mesh.GetPoint(index)) - point))
+            if distance < best[0]:
+                best = (distance, int(array.GetTuple1(index)))
+    else:
+        terms, _ = parse_residue_selection(state.residue_selection or "")
+        visible = _visible_atom_indices(structure, _selected_atom_indices(structure, terms),
+                                        state.residue_visibility)
+        counts = clamp_replication(replication, structure.pbc)
+        for offset_index in np.ndindex(counts):
+            offset = (np.asarray(offset_index) @ structure.lattice_vectors
+                      if structure.lattice_vectors is not None else np.zeros(3))
+            for index in visible & membership.keys():
+                distance = float(np.linalg.norm(structure.atoms[index].position + offset - point))
+                if distance < best[0]:
+                    best = (distance, index)
+    return membership.get(best[1]) if best[1] is not None and best[0] <= 2.5 else None
+
+
+def _structure_display_options(state: Any) -> dict[str, Any]:
+    """Persistent biomolecule controls shared by all scene rebuild paths."""
+    return {
+        "atom_color_mode": str(getattr(state, "atom_color_mode", "element") or "element"),
+        "residue_visibility": str(getattr(state, "residue_visibility", "all") or "all"),
+        "show_hydrogen_bonds": bool(getattr(state, "show_hydrogen_bonds", False)),
+    }
+
+
 def _build_structure_scene(
-    reader: "QVFReader",
-    plotter: "pv.Plotter",
-    state,
+    reader: QVFReader,
+    plotter: pv.Plotter,
+    state: Any,
     replication: tuple[int, int, int],
     show_labels: bool,
     representation: str = "ball_and_stick",
     cartoon_color_mode: str = "chain",
     residue_selection: str = "",
-) -> "tuple[object | None, bool]":
+) -> tuple[object | None, bool]:
     """Render the structure into ``plotter`` and set periodic flags.
 
     Returns ``(structure_renderer, is_periodic)``.  The caller must
@@ -661,6 +747,7 @@ def _build_structure_scene(
                 representation=representation,
                 cartoon_color_mode=cartoon_color_mode,
                 residue_selection=residue_selection,
+                **_structure_display_options(state),
             )
         except QVFError as e:
             state.status_message = f"Structure load error: {e}"
@@ -721,7 +808,7 @@ def _build_structure_scene(
     return renderer, is_periodic
 
 
-def _draw_wannier_overlay(reader: "QVFReader", plotter, show: bool) -> int:
+def _draw_wannier_overlay(reader: QVFReader, plotter: pv.Plotter, show: bool) -> int:
     """Draw (or clear) the Wannier-centre markers overlay.
 
     Returns the number of centres drawn. Always clears the previous actor
@@ -744,7 +831,7 @@ def _draw_wannier_overlay(reader: "QVFReader", plotter, show: bool) -> int:
         return 0
 
 
-def serve(app, *, host: str = "127.0.0.1", port: int = 8080) -> None:
+def serve(app: Any, *, host: str = "127.0.0.1", port: int = 8080) -> None:
     """Start the Trame server. Called from the CLI after the app is built.
 
     ``app`` is the Trame ``Server`` object returned by :func:`create_app`,
@@ -793,7 +880,7 @@ def _smiles_available() -> bool:
     return True
 
 
-def _builder_name(reader: "QVFReader") -> "str | None":
+def _builder_name(reader: QVFReader) -> str | None:
     """The molecule name a builder-made archive was created from, else None.
 
     ``converters.atoms_to_qvf`` tags these ``builder:<name>`` in
@@ -830,7 +917,7 @@ def _naming_available() -> bool:
         return False
 
 
-def _iupac_name_entry(reader: "QVFReader") -> "dict | None":
+def _iupac_name_entry(reader: QVFReader) -> dict[str, Any] | None:
     """Optional IUPAC-name header entry for the top of the section sidebar.
 
     Uses the standalone, pure-Python ``vibeqc_naming`` package (no C++
@@ -934,7 +1021,7 @@ def _iupac_name_entry(reader: "QVFReader") -> "dict | None":
         return None  # naming is optional — the sidebar works fine without it
 
 
-def _bfactor_range_message(reader) -> str:
+def _bfactor_range_message(reader: QVFReader) -> str:
     """What the b-factor ramp spans for this file, as a status line.
 
     The ramp is normalised per structure (b-factors from different
@@ -948,7 +1035,7 @@ def _bfactor_range_message(reader) -> str:
     except Exception:  # noqa: BLE001 — a status line must never be the thing that raises
         return "B-factor colouring: no structure to read."
     measured = [
-        a.b_factor for a in structure.atoms if getattr(a, "b_factor", None) is not None
+        float(b) for a in structure.atoms if (b := getattr(a, "b_factor", None)) is not None
     ]
     if not measured:
         return (
@@ -962,7 +1049,7 @@ def _bfactor_range_message(reader) -> str:
     )
 
 
-def _default_representation(reader) -> str:
+def _default_representation(reader: QVFReader) -> str:
     """Pick the representation a file should open in.
 
     Ball-and-stick is the right default for a molecule and the wrong one
@@ -990,7 +1077,7 @@ def _default_representation(reader) -> str:
     return "ball_and_stick"
 
 
-def _selectable_chains(reader) -> list[str]:
+def _selectable_chains(reader: QVFReader) -> list[str]:
     """Chain ids a residue selection can name, for the UI's hint text.
 
     A chainless PDB groups under the empty chain id, which cannot be typed,
@@ -1009,7 +1096,7 @@ def _selectable_chains(reader) -> list[str]:
         return []
 
 
-def _residue_selection_available(reader) -> bool:
+def _residue_selection_available(reader: QVFReader) -> bool:
     """Whether the loaded structure has at least one selectable CA residue."""
     try:
         return bool(reader.read_structure().ca_residues())
@@ -1017,7 +1104,7 @@ def _residue_selection_available(reader) -> bool:
         return False
 
 
-def _residue_selection_summary(reader, spec: str) -> str:
+def _residue_selection_summary(reader: QVFReader, spec: str) -> str:
     """Human-readable result of applying a residue selection to ``reader``."""
     if not spec.strip():
         return ""
@@ -1112,7 +1199,7 @@ def _dialog_focus_restore(label: str) -> str:
     return f"window._vvRestoreDialogFocus && window._vvRestoreDialogFocus('{label}')"
 
 
-def create_app(readers):
+def create_app(readers: QVFReader | Sequence[QVFReader]) -> Any:
     """Build the Trame application.
 
     Parameters
@@ -1133,7 +1220,7 @@ def create_app(readers):
     reader = _all_readers[0]  # rebindable via nonlocal in switch_file below
 
     # ── Wrap with lazy loader for performance ──────────────────────
-    def _open_lazy_reader(active_reader):
+    def _open_lazy_reader(active_reader: QVFReader) -> QVFLazyReader | None:
         if active_reader.path is None:
             return None
         try:
@@ -1145,7 +1232,7 @@ def create_app(readers):
 
     lazy_reader = _open_lazy_reader(reader)
 
-    def _replace_lazy_reader(active_reader) -> None:
+    def _replace_lazy_reader(active_reader: QVFReader) -> None:
         """Bind lazy-backed controllers to ``active_reader`` and retire the old one."""
         nonlocal lazy_reader
 
@@ -1180,7 +1267,7 @@ def create_app(readers):
     replication = list(viewer_state.replication)
 
     # Prepare section list for the sidebar
-    section_list: list[dict] = []
+    section_list: list[dict[str, Any]] = []
     for s in reader.sections:
         status, detail = classify_section(s.kind)
         err = reader.section_error(s.id)
@@ -1223,7 +1310,7 @@ def create_app(readers):
         except Exception:
             is_periodic = False
 
-    sidebar_entries: list[dict] = []
+    sidebar_entries: list[dict[str, Any]] = []
     # IUPAC molecule name header (optional; standalone vibeqc_naming). Prepend
     # so it is the first entry, before Structure.
     _iupac_entry = _iupac_name_entry(reader)
@@ -1293,8 +1380,8 @@ def create_app(readers):
     ao_options = [{"title": s["id"], "value": s["id"]} for s in basis_ao_sections]
 
     # ── Build PyVista scene ────────────────────────────────────────────
-    plotter = pv.Plotter(off_screen=True, window_size=(900, 600))
-    plotter.set_background("#1a1a2e")
+    plotter = pv.Plotter(off_screen=True, window_size=[900, 600])
+    set_background(plotter, "#1a1a2e")
 
     # ── SSAO for server-side renders (screenshots, video frames) ──
     # A renderer pass never reaches the client's live viewport — vtk.js
@@ -1312,6 +1399,9 @@ def create_app(readers):
     #     we can report errors through the UI status bar) ──────────────
     server = get_server(client_type="vue3")
     server.enable_module(vtk_module)
+    from vibeview.settings import load_settings
+
+    persisted_settings = load_settings()
     server.state.update(
         {
             "section_list": section_list,
@@ -1394,6 +1484,18 @@ def create_app(readers):
             "bands_image": None,
             "bands_html": None,
             "bands_title": "Band Structure",
+            # Energy window for the bands / DOS charts (#26). All-electron
+            # periodic archives carry core states thousands of eV below E_F,
+            # and an autoscaled axis flattens the valence region into a few
+            # pixels around the E_F line. The activators resolve a window —
+            # the manifest hint, else the renderer's valence default — and
+            # write it back here, so the fields always show what is drawn.
+            # `bands_window_auto` records whether that resolved window is
+            # still the default or the reader has typed one in.
+            "bands_window_available": False,
+            "bands_window_auto": True,
+            "bands_emin": None,
+            "bands_emax": None,
             "phonon_html": None,
             "phonon_title": "Phonon",
             "eos_html": None,
@@ -1502,6 +1604,18 @@ def create_app(readers):
             # localization criterion the file does not already contain.
             # ``None`` = not yet probed, mirroring ``live_opt_available``.
             "relocalize_available": None,
+            "relocalize_backend_python": persisted_settings.get("relocalize_backend_python", ""),
+            "settings_relocalize_backend_python": persisted_settings.get(
+                "relocalize_backend_python", ""
+            ),
+            "relocalize_capabilities": {},
+            "relocalize_probe_running": False,
+            "relocalize_backend_status": "Backend not checked",
+            "relocalize_source": "supplied",
+            "relocalize_reason": "Check the vibe-qc backend in Settings",
+            "relocalize_result_summary": "",
+            "relocalize_charge_rows": [],
+            "relocalize_has_overlay": False,
             "relocalize_running": False,
             "relocalize_status": "",
             "relocalize_method": "ibo",
@@ -1510,7 +1624,7 @@ def create_app(readers):
             "wf_component": "real",
             "wf_is_complex": False,
             "mo_last_component": "real",
-            "relocalize_supported": True,
+            "relocalize_supported": False,
             # Total density vs spin density (rho_alpha - rho_beta). The
             # button below drives both; spin needs an unrestricted section.
             "wf_density_spin": False,
@@ -1538,6 +1652,13 @@ def create_app(readers):
             "representation_style": _default_representation(reader),
             # Cartoon ribbon colouring: "chain" or "structure".
             "cartoon_color_mode": "chain",
+            "atom_color_mode": "element",
+            "structure_color_mode": (
+                "chain" if _default_representation(reader) == "cartoon" else "element"
+            ),
+            "residue_visibility": "all",
+            "residue_pick_mode": False,
+            "show_hydrogen_bonds": False,
             # Residue/chain selection (D4). Empty selects nothing; matching
             # residues render white over the active ribbon colour.
             "residue_selection": "",
@@ -1684,6 +1805,7 @@ def create_app(readers):
             # Display toggles
             "show_atom_labels": False,
             "dark_background": True,
+            "background_override": None,
             "raytrace_enabled": False,
             "toon_mode": False,
             # OSPRay ray tracing is only meaningful when (a) the VTK build
@@ -1953,7 +2075,7 @@ def create_app(readers):
         reader,
         plotter,
         server.state,
-        replication=tuple(replication),
+        replication=_triple(replication),
         show_labels=bool(server.state.show_atom_labels),
         representation=str(getattr(server.state, "representation_style", "ball_and_stick")),
         cartoon_color_mode=str(getattr(server.state, "cartoon_color_mode", "chain")),
@@ -1967,8 +2089,8 @@ def create_app(readers):
         if not server.state.status_message:
             server.state.status_message = qa_warnings[0]
 
-    plotter.view_isometric()
-    plotter.show_grid()
+    view_isometric(plotter)
+    show_grid(plotter)
 
     # ── Apply camera bookmark from viewer_defaults ────────────────
     _apply_camera(plotter, viewer_state.camera)
@@ -2007,7 +2129,7 @@ def create_app(readers):
             server.state.volume_loaded = False
             server.state.status_message = f"Auto-opened: {section_id}"
         elif section.kind == "bands":
-            _activate_bands(reader, server.state, section)
+            _activate_bands(reader, server.state, section, viewer_state)
             server.state.selected_section = section_id
         elif section.kind in _plot_spectra_kinds():
             _activate_spectra(reader, server.state, section, _all_readers)
@@ -2081,11 +2203,14 @@ def create_app(readers):
     _wf_render_epoch = 0
     _wf_anim_timer = None
     plotter._vibeview_wf_render_lock = _wf_render_lock
+    _relocalize_task = None
+    _relocalize_probe_task = None
+    _relocalize_generation = 0
 
     def _wavefunction_render_is_current(
         epoch: int,
         section_id: str,
-        source_reader,
+        source_reader: QVFReader | None,
     ) -> bool:
         with _wf_epoch_lock:
             return (
@@ -2136,19 +2261,20 @@ def create_app(readers):
         _ctx_menu_target.update(world=None, atom_idx=-1)
         _hover_state.update(world=None, atom_idx=-1, at=float("-inf"))
 
-    def _update_live_status(r) -> None:
+    def _update_live_status(r: QVFReader) -> None:
         """Reflect a streaming checkpoint's provenance in the app bar."""
         status, text = _checkpoint_summary(r)
         server.state.live_run_status = status
         server.state.live_checkpoint_text = text
 
-    def _reload_active_file(preserve_camera: bool = False):
+    def _reload_active_file(preserve_camera: bool = False) -> None:
         """Invalidate worker renders, then replace the VTK scene exclusively."""
+        _cancel_relocalization()
         _invalidate_wavefunction_renders()
         with _wf_render_lock:
             return _reload_active_file_unlocked(preserve_camera)
 
-    def _reload_active_file_unlocked(preserve_camera: bool = False):
+    def _reload_active_file_unlocked(preserve_camera: bool = False) -> None:
         """Rebuild the entire UI for the currently-active reader.
 
         Called once during initialisation (index 0) and again whenever
@@ -2180,6 +2306,8 @@ def create_app(readers):
         _replace_lazy_reader(reader)
         viewer_state = ViewerState.from_manifest(reader.viewer_defaults)
         _clamp_viewer_replication(reader, viewer_state)
+        server.state.residue_visibility = "all"
+        server.state.residue_pick_mode = False
         server.state.residue_selection_chains = _selectable_chains(reader)
         server.state.residue_selection_available = _residue_selection_available(reader)
         server.state.residue_selection_summary = _residue_selection_summary(
@@ -2334,7 +2462,7 @@ def create_app(readers):
         saved_camera = plotter.camera_position if preserve_camera else None
         _prepare_scene_actor_replacement(plotter, server.state)
         plotter.clear()
-        plotter.set_background("#1a1a2e")
+        set_background(plotter, "#1a1a2e" if server.state.dark_background else "#f0f0f0")
 
         # Re-apply SSAO after plotter.clear() (VTK 9.2+) — but only if it
         # is enabled: this used to re-apply unconditionally, so switching
@@ -2352,7 +2480,7 @@ def create_app(readers):
             reader,
             plotter,
             server.state,
-            replication=tuple(replication),
+            replication=_triple(replication),
             show_labels=bool(server.state.show_atom_labels),
             representation=str(getattr(server.state, "representation_style", "ball_and_stick")),
             cartoon_color_mode=str(
@@ -2370,12 +2498,12 @@ def create_app(readers):
             if not server.state.status_message:
                 server.state.status_message = qa_warnings[0]
 
-        plotter.show_grid()
+        show_grid(plotter)
         _apply_scene_appearance(plotter, server.state)
         if saved_camera is not None:
             plotter.camera_position = saved_camera
         else:
-            plotter.view_isometric()
+            view_isometric(plotter)
             # Apply the camera BEFORE pushing so the new file's bookmark
             # reaches the client (previously the push happened first, so the
             # camera was set server-side but never sent — A1-04).
@@ -2504,7 +2632,7 @@ def create_app(readers):
         )
 
     @ctrl.set("switch_file")
-    def switch_file(file_idx: int) -> None:
+    def switch_file(file_idx: Any) -> None:
         """Switch the active file when the user picks from the Files dropdown."""
         # Robust to either an integer index or a filename string.
         try:
@@ -2520,13 +2648,17 @@ def create_app(readers):
         # explicit file switch — the watcher's hot-reload path keeps
         # whatever the user selected.
         server.state.representation_style = _default_representation(_all_readers[idx])
+        server.state.structure_color_mode = (
+            server.state.cartoon_color_mode if server.state.representation_style == "cartoon"
+            else server.state.atom_color_mode
+        )
         _reload_active_file()
         server.state.status_message = (
             f"Switched to {_job_name(reader)} (file {idx + 1}/{len(_all_readers)})"
         )
 
     @ctrl.set("toggle_compare_mode")
-    def toggle_compare_mode(on=None) -> None:
+    def toggle_compare_mode(on: bool | None = None) -> None:
         """Phase D1: overlay all loaded structures, colour-coded by file.
 
         Called from the switch (``[$event]`` → the new bool) or with no arg to
@@ -2547,8 +2679,8 @@ def create_app(readers):
                 align=state.compare_align,
                 highlight=state.compare_highlight,
             )
-            plotter.view_isometric()
-            plotter.reset_camera()
+            view_isometric(plotter)
+            reset_camera(plotter)
             state.status_message = f"Compare mode: {len(state.compare_legend)} structures overlaid"
         else:
             _remove_actors_by_prefix(plotter, "cmp_")
@@ -2562,7 +2694,7 @@ def create_app(readers):
         _push_view(plotter)
 
     @ctrl.set("toggle_compare_align")
-    def toggle_compare_align(on=None) -> None:
+    def toggle_compare_align(on: bool | None = None) -> None:
         """Phase D4: toggle Kabsch RMSD-fit alignment of the overlaid structures
         onto the first file; re-renders the overlay when compare mode is active.
         """
@@ -2579,7 +2711,7 @@ def create_app(readers):
             _push_view(plotter)
 
     @ctrl.set("set_compare_highlight")
-    def set_compare_highlight(idx) -> None:
+    def set_compare_highlight(idx: Any) -> None:
         """Highlight a specific file in compare mode, dimming the rest."""
         if isinstance(idx, (list, tuple)):
             idx = idx[0] if idx else None
@@ -2653,9 +2785,9 @@ def create_app(readers):
                     mol2_to_qvf,
                     pdb_to_qvf,
                     sdf_to_qvf,
-                    trexio_to_qvf,
                     xyz_to_qvf,
                 )
+                from vibeview.trexio_import import trexio_to_qvf
 
                 _CONV = {
                     "xyz": xyz_to_qvf,
@@ -2694,7 +2826,7 @@ def create_app(readers):
         server.state.file_picker_value = None  # reset so same file can be re-selected
 
     @ctrl.set("file_picker_value")
-    def on_file_picked(files) -> None:
+    def on_file_picked(files: Any) -> None:
         """Handle browser file-picker: Trame's VFileInput sends
         [{name, size, content}] with content as base64 bytes."""
         import logging
@@ -2849,12 +2981,12 @@ def create_app(readers):
         "interrupted": "error",
     }
 
-    def _vq_elapsed(spec) -> str:
+    def _vq_elapsed(spec: Any) -> str:
         """Human elapsed time for a job: running → since start; terminal →
         start→finish; else blank. Robust to missing/one-off timestamps."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        def _parse(ts):
+        def _parse(ts: Any) -> datetime | None:
             if not ts:
                 return None
             try:
@@ -2869,7 +3001,7 @@ def create_app(readers):
         if end is None:
             if spec.state.value != "running":
                 return ""
-            end = datetime.now(timezone.utc)
+            end = datetime.now(UTC)
         secs = max(0, int((end - start).total_seconds()))
         if secs < 60:
             return f"{secs}s"
@@ -2877,7 +3009,7 @@ def create_app(readers):
             return f"{secs // 60}m {secs % 60}s"
         return f"{secs // 3600}h {(secs % 3600) // 60}m"
 
-    def _vq_job_dict(spec) -> dict:
+    def _vq_job_dict(spec: Any) -> dict[str, Any]:
         """Rich per-job row for the Job Manager UI."""
         st = spec.state.value
         name = spec.job_name or spec.id[:12]
@@ -2897,7 +3029,7 @@ def create_app(readers):
             "submitted_at": getattr(spec, "submitted_at", "") or "",
         }
 
-    def _vq_collect_jobs(all_states: bool):
+    def _vq_collect_jobs(all_states: bool) -> tuple[list[dict[str, Any]], str]:
         """Return (items, error). ``items`` is a list of job dicts newest-first;
         ``error`` is a user-facing string or None. Never raises."""
         try:
@@ -2926,7 +3058,7 @@ def create_app(readers):
             ),
             reverse=True,
         )
-        return [_vq_job_dict(s) for s in specs[:100]], None
+        return [_vq_job_dict(s) for s in specs[:100]], ""
 
     @ctrl.set("list_vq_jobs")
     def list_vq_jobs() -> None:
@@ -3107,7 +3239,7 @@ def create_app(readers):
                 container_dir = tempfile.mkdtemp(prefix="vq_container_")
                 input_path = str(
                     build_pending_container(
-                        sdata, params, Path(container_dir) / job_name
+                        sdata, params, str(Path(container_dir) / job_name)
                     )
                 )
             else:
@@ -3202,10 +3334,8 @@ def create_app(readers):
         finally:
             state.vq_submitting = False
             if input_path:
-                try:
+                with contextlib.suppress(Exception):
                     Path(input_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
 
     def _vq_load_overview() -> None:
         """Populate the queue-overview strip (host / daemon / capacity /
@@ -3312,11 +3442,11 @@ def create_app(readers):
     _vq_monitor_task = None
 
     @server.state.change("vq_monitor_active")
-    def _on_vq_monitor_toggle(vq_monitor_active, **kwargs):
+    def _on_vq_monitor_toggle(vq_monitor_active: bool, **kwargs: Any) -> None:
         nonlocal _vq_monitor_task
         if vq_monitor_active:
 
-            async def _poll():
+            async def _poll() -> None:
                 # Poll until the switch is turned off or the panel closes.
                 while server.state.vq_monitor_active and server.state.vq_panel_open:
                     await asyncio.sleep(5)
@@ -3355,7 +3485,7 @@ def create_app(readers):
                 reader,
                 plotter,
                 server.state,
-                replication=tuple(viewer_state.replication),
+                replication=_triple(viewer_state.replication),
                 show_labels=bool(server.state.show_atom_labels),
                 representation=str(
                     getattr(server.state, "representation_style", "ball_and_stick")
@@ -3372,6 +3502,8 @@ def create_app(readers):
 
     def _activate_section_impl(section_id: str) -> None:
         """Invalidate worker renders, then mutate the VTK scene exclusively."""
+        if server.state.relocalize_running:
+            _cancel_relocalization()
         _invalidate_wavefunction_renders()
         with _wf_render_lock:
             _activate_section_impl_unlocked(section_id)
@@ -3477,7 +3609,7 @@ def create_app(readers):
         elif section.kind == "bands":
             if _was_atom_props:
                 _restore_cpk_atoms(reader, plotter, state)
-            _activate_bands(reader, state, section)
+            _activate_bands(reader, state, section, viewer_state)
         elif section.kind == "dos.total":
             if _was_atom_props:
                 _restore_cpk_atoms(reader, plotter, state)
@@ -3487,13 +3619,13 @@ def create_app(readers):
             # desynced the app's notion of the active section from the UI.
             bands_section = next((s for s in reader.sections if s.kind == "bands"), None)
             if bands_section is not None:
-                _activate_bands(reader, state, bands_section)
+                _activate_bands(reader, state, bands_section, viewer_state)
             else:
-                _activate_dos(reader, state, section)
+                _activate_dos(reader, state, section, viewer_state)
         elif section.kind == "dos.projected":
             if _was_atom_props:
                 _restore_cpk_atoms(reader, plotter, state)
-            _activate_dos(reader, state, section)
+            _activate_dos(reader, state, section, viewer_state)
         elif section.kind == "phonon_bands":
             if _was_atom_props:
                 _restore_cpk_atoms(reader, plotter, state)
@@ -3633,7 +3765,7 @@ def create_app(readers):
             _rebuild_volume(reader, plotter, viewer_state, state, vol_id)
 
     @ctrl.set("update_fermi_bands")
-    def update_fermi_bands(selected) -> None:
+    def update_fermi_bands(selected: Any) -> None:
         """Re-render the Fermi surface showing only the selected band indices."""
         state = server.state
         state.fermi_selected_bands = list(selected) if selected else []
@@ -3652,7 +3784,7 @@ def create_app(readers):
             _rebuild_volume(reader, plotter, viewer_state, state, vol_id)
 
     @ctrl.set("toggle_scf_skip_guess")
-    def toggle_scf_skip_guess(value=None) -> None:
+    def toggle_scf_skip_guess(value: Any = None) -> None:
         """Re-render the SCF convergence plot with/without the initial guess."""
         state = server.state
         state.scf_skip_guess = (
@@ -3665,7 +3797,7 @@ def create_app(readers):
             _activate_scf_history(reader, state, section)
 
     @ctrl.set("toggle_scf_log_energy")
-    def toggle_scf_log_energy(value=None) -> None:
+    def toggle_scf_log_energy(value: Any = None) -> None:
         """Re-render the SCF plot on a linear or log |E − E_final| axis."""
         state = server.state
         state.scf_log_energy = (
@@ -3679,7 +3811,10 @@ def create_app(readers):
 
     @ctrl.set("update_spectra_view")
     def update_spectra_view(
-        gamma_scale=None, normalize=None, x_unit=None, display=None
+        gamma_scale: Any = None,
+        normalize: Any = None,
+        x_unit: Any = None,
+        display: Any = None,
     ) -> None:
         """Re-render the active spectrum after a display-control change."""
         state = server.state
@@ -3697,8 +3832,56 @@ def create_app(readers):
         if section is not None and section.kind in _plot_spectra_kinds():
             _activate_spectra(reader, state, section, _all_readers)
 
+    def _redraw_bands_panel() -> None:
+        """Re-run whichever activator owns the bottom panel right now."""
+        state = server.state
+        section = next(
+            (s for s in reader.sections if s.id == state.selected_section), None
+        )
+        if section is None:
+            return
+        if section.kind == "bands":
+            _activate_bands(reader, state, section, viewer_state)
+        elif section.kind == "dos.total":
+            bands_section = next((s for s in reader.sections if s.kind == "bands"), None)
+            if bands_section is not None:
+                _activate_bands(reader, state, bands_section, viewer_state)
+            else:
+                _activate_dos(reader, state, section, viewer_state)
+        elif section.kind == "dos.projected":
+            _activate_dos(reader, state, section, viewer_state)
+
+    @ctrl.set("update_bands_energy_window")
+    def update_bands_energy_window(*_ignored: Any) -> None:
+        """Redraw the bands / DOS chart on a reader-set energy window (#26).
+
+        Called with nothing: the fields v-model straight onto state, so
+        both the Enter and the blur binding read the committed values from
+        there. A pair that does not make a range — a blank field, an
+        inverted pair, a half-typed minus sign — falls back to the
+        previous window rather than blanking the chart; that call lives in
+        ``_requested_energy_window``.
+        """
+        state = server.state
+        # VTextField with type="number" still v-models as a string.
+        state.bands_emin = _coerce_window_bound(state.bands_emin)
+        state.bands_emax = _coerce_window_bound(state.bands_emax)
+        state.bands_window_auto = True
+        if state.bands_emin is not None and state.bands_emax is not None:
+            state.bands_window_auto = False
+        _redraw_bands_panel()
+
+    @ctrl.set("reset_bands_energy_window")
+    def reset_bands_energy_window() -> None:
+        """Drop a reader-set window, back to the default view (#26)."""
+        state = server.state
+        state.bands_window_auto = True
+        state.bands_emin = None
+        state.bands_emax = None
+        _redraw_bands_panel()
+
     @ctrl.set("download_run_attachment")
-    def download_run_attachment(role=None) -> None:
+    def download_run_attachment(role: str | None = None) -> None:
         """Offer one run.record attachment as a browser download.
 
         Attachments are arbitrary bytes by spec, so they are never
@@ -3760,7 +3943,7 @@ def create_app(readers):
             },
         )
         state.download_history = state.download_history[:50]
-        asyncio.ensure_future(_reset_export_flag())
+        _schedule_export_reset()
 
     @ctrl.set("export_spectra_csv")
     def export_spectra_csv() -> None:
@@ -3799,10 +3982,10 @@ def create_app(readers):
             },
         )
         state.download_history = state.download_history[:50]
-        asyncio.ensure_future(_reset_export_flag())
+        _schedule_export_reset()
 
     @ctrl.set("toggle_spectra_compare")
-    def toggle_spectra_compare(value=None) -> None:
+    def toggle_spectra_compare(value: Any = None) -> None:
         """Re-render the active spectrum with/without the multi-file overlay."""
         state = server.state
         state.spectra_compare = (
@@ -3815,7 +3998,7 @@ def create_app(readers):
             _activate_spectra(reader, state, section, _all_readers)
 
     @ctrl.set("toggle_color_by_esp")
-    def toggle_color_by_esp(on=None) -> None:
+    def toggle_color_by_esp(on: bool | None = None) -> None:
         """Enable/disable ESP colour-mapping on the density isosurface."""
         state = server.state
         state.color_by_esp = (not state.color_by_esp) if on is None else bool(on)
@@ -3826,7 +4009,7 @@ def create_app(readers):
             _rebuild_volume(reader, plotter, viewer_state, state, vol_id)
 
     @ctrl.set("toggle_reduce_detail")
-    def toggle_reduce_detail(on=None) -> None:
+    def toggle_reduce_detail(on: bool | None = None) -> None:
         """Toggle LOD subsampling for large volume grids."""
         state = server.state
         state.reduce_detail = (not state.reduce_detail) if on is None else bool(on)
@@ -3895,7 +4078,7 @@ def create_app(readers):
             _push_view(plotter)
 
     @ctrl.set("set_periodic_replication")
-    def set_periodic_replication(value) -> None:
+    def set_periodic_replication(value: Any) -> None:
         """Set grid-level periodic orbital replication.
 
         When > 0 the volume grid is tiled N×N×N into a (2N+1)³
@@ -3910,7 +4093,7 @@ def create_app(readers):
         state.status_message = f"Cell replication: {state.periodic_replication}"
 
     @ctrl.set("toggle_wrap_periodic")
-    def toggle_wrap_periodic(on=None) -> None:
+    def toggle_wrap_periodic(on: bool | None = None) -> None:
         """Toggle minimum-image recentre of the active periodic orbital.
 
         Rolls a face-straddling orbital / Wannier function whole into the
@@ -3931,7 +4114,7 @@ def create_app(readers):
         )
 
     @ctrl.set("toggle_wannier_centers")
-    def toggle_wannier_centers(on=None) -> None:
+    def toggle_wannier_centers(on: bool | None = None) -> None:
         """Show/hide the Wannier-centre marker overlay."""
         state = server.state
         state.show_wannier_centers = (
@@ -3982,13 +4165,11 @@ def create_app(readers):
         # replicated crystal renders as a few clipped giant atoms). The
         # server-side reset in camera_preset('reset') doesn't reach the
         # local view; local_view.reset_camera does.
-        try:
+        with contextlib.suppress(Exception):
             ctrl.view_reset_camera()
-        except Exception:
-            pass
 
     @ctrl.set("toggle_atom_labels")
-    def toggle_atom_labels(show=None) -> None:
+    def toggle_atom_labels(show: bool | None = None) -> None:
         # Called with an explicit bool from the right-panel switch
         # (update_modelValue → [$event]) and with no args from the app-bar
         # icon button. The latter flips the current state.
@@ -4030,6 +4211,9 @@ def create_app(readers):
                 )
                 return
         server.state.representation_style = style
+        server.state.structure_color_mode = (
+            server.state.cartoon_color_mode if style == "cartoon" else server.state.atom_color_mode
+        )
         _rebuild_scene(reader, plotter, viewer_state, server.state)
 
     @ctrl.set("set_cartoon_color_mode")
@@ -4038,16 +4222,12 @@ def create_app(readers):
         residue type, or b-factor."""
         if isinstance(mode, (list, tuple)):
             mode = mode[0] if mode else None
-        if mode not in ("chain", "structure", "residue", "bfactor"):
+        if mode not in ("element", "chain", "structure", "residue", "bfactor"):
             return
         server.state.cartoon_color_mode = mode
-        # Only the cartoon reads this; rebuilding for any other
-        # representation would be a visible no-op costing a full scene.
-        rebuild_error = None
-        if server.state.representation_style == "cartoon":
-            rebuild_error = _rebuild_scene(
-                reader, plotter, viewer_state, server.state
-            )
+        server.state.atom_color_mode = mode
+        server.state.structure_color_mode = mode
+        rebuild_error = _rebuild_scene(reader, plotter, viewer_state, server.state)
         if mode == "bfactor" and rebuild_error is None:
             # The b-factor ramp is normalised over this structure, so the
             # colours mean nothing without the range they span. Say it
@@ -4061,7 +4241,7 @@ def create_app(readers):
             server.state.status_message = _bfactor_range_message(reader)
 
     @ctrl.set("set_residue_selection")
-    def set_residue_selection(spec=None, *_ignored) -> None:
+    def set_residue_selection(spec: Any = None, *_ignored: Any) -> None:
         """Select residues or chains in every structure representation (D4).
 
         Takes a selection string — ``A``, ``A/24-38``, ``*/24-38``, comma
@@ -4083,6 +4263,8 @@ def create_app(readers):
             spec = server.state.residue_selection or ""
         spec = str(spec)
         server.state.residue_selection = spec
+        if not spec.strip():
+            server.state.residue_visibility = "all"
         server.state.residue_selection_summary = _residue_selection_summary(
             reader, spec
         )
@@ -4093,8 +4275,48 @@ def create_app(readers):
         if server.state.residue_selection_available:
             _rebuild_scene(reader, plotter, viewer_state, server.state)
 
+    @ctrl.set("set_residue_visibility")
+    def set_residue_visibility(mode: str = "all") -> None:
+        if mode not in ("all", "isolate", "hide"):
+            return
+        if mode != "all":
+            from vibeview.renderers.structure import _selected_atom_indices, parse_residue_selection
+
+            terms, _ = parse_residue_selection(server.state.residue_selection or "")
+            if not _selected_atom_indices(reader.read_structure(), terms):
+                server.state.residue_visibility = "all"
+                server.state.status_message = "Select residues before hiding or isolating them."
+                return
+        server.state.residue_visibility = mode
+        _rebuild_scene(reader, plotter, viewer_state, server.state)
+
+    @ctrl.set("set_residue_pick_mode")
+    def set_residue_pick_mode(enabled: bool = False) -> None:
+        server.state.residue_pick_mode = bool(enabled)
+        if enabled:
+            server.state.measure_mode = False
+            server.state.edit_mode = False
+            server.state.status_message = (
+                "Click a residue to select it; use the selection field for ranges."
+            )
+        else:
+            server.state.status_message = "Residue picking off"
+
+    @ctrl.set("toggle_hydrogen_bonds")
+    def toggle_hydrogen_bonds(enabled: bool = False) -> None:
+        server.state.show_hydrogen_bonds = bool(enabled)
+        _rebuild_scene(reader, plotter, viewer_state, server.state)
+        if enabled:
+            from vibeview.renderers.structure import hydrogen_bond_contacts
+
+            count = len(hydrogen_bond_contacts(reader.read_structure()))
+            server.state.status_message = (
+                f"{count} geometric hydrogen-bond contact(s) in the input cell; "
+                "explicit H required."
+            )
+
     @ctrl.set("set_element_color")
-    def set_element_color(z=None, color=None) -> None:
+    def set_element_color(z: Any = None, color: Any = None) -> None:
         """Override the render colour of one element (design refresh 2026).
 
         Keyed by atomic number; ``set_color_overrides`` feeds cpk_color(), so
@@ -4142,6 +4364,7 @@ def create_app(readers):
     def set_material_preset(name: str) -> None:
         """Apply a material preset to the scene."""
         server.state.material_preset = name
+        server.state.background_override = None
         preset = _apply_scene_appearance(plotter, server.state)
         server.state.status_message = f"Material: {preset.name}"
         ctrl.view_update()
@@ -4160,7 +4383,7 @@ def create_app(readers):
                 from vibeview.renderers.atom_properties import AtomPropertiesRenderer
 
                 renderer = AtomPropertiesRenderer(section, reader)
-                try:
+                with contextlib.suppress(QVFError):
                     server.state.properties_html = renderer.render_to_html(
                         charge_kind=(
                             server.state.charge_kind
@@ -4168,8 +4391,6 @@ def create_app(readers):
                             else None
                         )
                     )
-                except QVFError:
-                    pass
                 overlay_attempted = True
                 _render_atom_properties_overlay(reader, plotter, server.state)
             except Exception as e:  # noqa: BLE001 — keep UI state truthful
@@ -4181,23 +4402,121 @@ def create_app(readers):
                 server.state.atom_properties_section_id = None
                 server.state.status_message = f"Charge overlay error: {e}"
 
+    def _cancel_relocalization(message: str = "") -> None:
+        nonlocal _relocalize_generation, _relocalize_task
+        _relocalize_generation += 1
+        task, _relocalize_task = _relocalize_task, None
+        if task is not None and not task.done():
+            task.get_loop().call_soon_threadsafe(task.cancel)
+        server.state.relocalize_running = False
+        server.state.relocalize_status = message
+
+    @ctrl.set("cancel_relocalize")
+    def cancel_relocalize() -> None:
+        _cancel_relocalization("Re-localization cancelled")
+
+    @ctrl.set("clear_relocalization")
+    def clear_relocalization() -> None:
+        _cancel_relocalization()
+        _invalidate_wavefunction_renders()
+        with _wf_render_lock:
+            state = server.state
+            ids = [
+                sid for sid in reader.wavefunction_overlay_ids if sid.startswith("wf_relocalized_")
+            ]
+            source_id = None
+            if state.wf_section_id in ids:
+                source_id = _relocalize_source_section(reader, state.wf_section_id)
+                _remove_actors_by_prefix(plotter, "mo_iso_")
+                state.mo_visible = False
+                state.wf_surface_kind = None
+            reader.clear_wavefunction_overlays(ids)
+            sidebar_entries[:] = [e for e in sidebar_entries if e["id"] not in ids]
+            section_list[:] = [e for e in section_list if e["id"] not in ids]
+            state.sidebar_entries = sidebar_entries
+            state.section_list = section_list
+            state.dirty("sidebar_entries", "section_list")
+            state.relocalize_has_overlay = False
+            state.relocalize_result_summary = ""
+            state.relocalize_charge_rows = []
+            if source_id:
+                state.selected_section = source_id
+                _activate_wavefunction(reader, state, reader.get_section(source_id))
+            _push_view(plotter)
+
+    def _geometry_invalidates_relocalization() -> None:
+        clear_relocalization()
+        server.state.relocalize_supported = False
+        server.state.relocalize_reason = (
+            "Geometry edits invalidate archived orbitals; choose New RHF + localize explicitly"
+        )
+
+    plotter._vibeview_invalidate_relocalization = _geometry_invalidates_relocalization
+    plotter._vibeview_refresh_relocalization = lambda: _refresh_relocalize_state(
+        reader, server.state
+    )
+
+    @ctrl.set("check_relocalize_backend")
+    def check_relocalize_backend(**_: Any) -> None:
+        nonlocal _relocalize_probe_task
+        from vibeview.relocalize import probe_worker
+
+        state = server.state
+        path = str(state.relocalize_backend_python or "")
+        if _relocalize_probe_task is not None and not _relocalize_probe_task.done():
+            _relocalize_probe_task.cancel()
+        state.relocalize_probe_running = True
+        state.relocalize_backend_status = "Checking native backend and localization methods…"
+        state.relocalize_available = None
+        state.relocalize_capabilities = {}
+        _refresh_relocalize_state(reader, state)
+
+        async def work() -> None:
+            try:
+                result = await probe_worker(path)
+                if (
+                    path != state.relocalize_backend_python
+                    or asyncio.current_task() is not _relocalize_probe_task
+                ):
+                    return
+                state.relocalize_available = result["available"]
+                state.relocalize_capabilities = (
+                    result["capabilities"] if result["available"] else {}
+                )
+                if result["available"]:
+                    cap = result["capabilities"]
+                    ready = [name for name, spec in cap["methods"].items() if spec.get("ready")]
+                    state.relocalize_backend_status = (
+                        f"vibe-qc {cap.get('backend_version', '')}: " + ", ".join(ready) + " ready"
+                    )
+                else:
+                    state.relocalize_backend_status = result["reason"]
+                _refresh_relocalize_state(reader, state)
+            finally:
+                if asyncio.current_task() is _relocalize_probe_task:
+                    state.relocalize_probe_running = False
+                    state.flush()
+
+        try:
+            _relocalize_probe_task = asyncio.get_running_loop().create_task(work())
+        except RuntimeError:
+            state.relocalize_probe_running = False
+            state.relocalize_backend_status = "Check the backend after the viewer starts"
+
+    ctrl.on_server_ready.add(check_relocalize_backend)
+
+    @server.state.change("relocalize_source")
+    def _relocalize_source_changed(**_: Any) -> None:
+        _cancel_relocalization()
+        _refresh_relocalize_state(reader, server.state)
+
     @ctrl.set("run_relocalize")
     def run_relocalize() -> None:
-        """Ask vibe-qc for a localization criterion the file does not carry.
-
-        The work happens in a subprocess (:mod:`vibeview.relocalize`) so
-        vibe-qc is never imported into the viewer process. The result is
-        registered as a wavefunction overlay under a synthetic
-        ``wf_relocalized_*`` section, which then behaves like any archived
-        one -- same renderer, same picker, same isosurface path.
-        """
-        import asyncio as _asyncio
-
+        nonlocal _relocalize_task
         from vibeview.relocalize import (
             METHOD_LABELS,
-            METHODS,
             overlay_section_id,
-            probe_worker,
+            request_fingerprint,
             request_from_reader,
             run_relocalization,
             wavefunction_from_result,
@@ -4206,98 +4525,117 @@ def create_app(readers):
         state = server.state
         if state.relocalize_running:
             return
-        if state.relocalize_supported is False:
-            state.relocalize_status = (
-                "Periodic/complex re-localization is not supported in the viewer"
-            )
+        _refresh_relocalize_state(reader, state)
+        if not state.relocalize_supported:
+            state.relocalize_status = state.relocalize_reason
             return
-        method = str(state.relocalize_method or "ibo")
+        method, source = str(state.relocalize_method), str(state.relocalize_source)
+        if method not in [o["value"] for o in state.relocalize_method_options]:
+            state.relocalize_status = "Selected method is unavailable"
+            return
+        source_reader = reader
+        source_id = _relocalize_source_section(reader, state.wf_section_id)
+        canonical = reader.read_wavefunction_gto(source_id)
+        path = str(state.relocalize_backend_python or "")
+        revision = reader.geometry_revision
+        generation = _relocalize_generation
+        try:
+            request = request_from_reader(
+                reader, method, canonical_section_id=source_id, source=source
+            )
+        except (QVFError, ValueError) as exc:
+            state.relocalize_status = str(exc)
+            return
+        fingerprint = request_fingerprint(request)
+        state.relocalize_running = True
+        state.relocalize_status = (
+            "Calculating new RHF orbitals and localizing…"
+            if source == "fresh_rhf"
+            else "Re-localizing the archived occupied subspace…"
+        )
 
-        async def _work() -> None:
-            state.relocalize_running = True
+        def current() -> bool:
+            return bool(
+                generation == _relocalize_generation
+                and reader is source_reader
+                and reader.geometry_revision == revision
+                and state.relocalize_backend_python == path
+            )
+
+        async def work() -> None:
             try:
-                if state.relocalize_available is None:
-                    state.relocalize_status = "checking vibe-qc availability …"
-                    state.flush()
-                    probed = await probe_worker()
-                    state.relocalize_available = bool(probed.get("available"))
-                    offered = [m for m in probed.get("methods", []) if m in METHODS]
-                    state.relocalize_method_options = [
-                        {"title": METHOD_LABELS.get(m, m), "value": m}
-                        for m in offered
-                    ]
-                    if not state.relocalize_available:
-                        state.relocalize_status = (
-                            "re-localization needs vibe-qc: "
-                            f"{probed.get('reason', 'unavailable')}"
-                        )
+                result = await run_relocalization(request, backend_python=path)
+                with _wf_render_lock:
+                    if not current():
                         return
-
-                request = request_from_reader(reader, method)
-                if request is None:
-                    state.relocalize_status = (
-                        "this file does not record the basis-set name, so it "
-                        "cannot be re-localized"
+                    if "error" in result:
+                        state.relocalize_status = f"Failed: {result['error']}"
+                        return
+                    latest = request_from_reader(
+                        reader, method, canonical_section_id=source_id, source=source
                     )
-                    return
-
-                state.relocalize_status = f"re-localizing ({method}) …"
-                state.flush()
-                result = await run_relocalization(request)
-                if "error" in result:
-                    state.relocalize_status = f"failed: {result['error']}"
-                    return
-
-                canonical = reader.read_wavefunction_gto("wf")
-                section_id = overlay_section_id(method)
-                reader.set_wavefunction_overlay(
-                    section_id, wavefunction_from_result(result, canonical)
-                )
-                state.relocalize_status = (
-                    f"{METHOD_LABELS.get(method, method)}: "
-                    f"{result.get('n_occ', '?')} orbitals"
-                )
-
-                # Give the overlay a sidebar row so it is reachable like any
-                # archived section. Appended rather than going through the
-                # full rebuild in _reload_active_file, which re-reads the
-                # file and would be a much larger hammer for one new row.
-                entry = {
-                    "id": section_id,
-                    "title": _sidebar_section_title(
-                        {"id": section_id, "kind": "wavefunction.gto"}
-                    ),
-                    "subtitle": "wavefunction.gto — computed in this session",
-                    "status": "ok",
-                    "supported": True,
-                    "icon": _status_icon("ok"),
-                    "kind_icon": _kind_icon("wavefunction.gto"),
-                    "warn": False,
-                    "disabled": False,
-                }
-                existing = next(
-                    (i for i, e in enumerate(sidebar_entries)
-                     if e.get("id") == section_id),
-                    None,
-                )
-                if existing is None:
-                    sidebar_entries.append(entry)
-                else:
-                    sidebar_entries[existing] = entry
-                state.sidebar_entries = sidebar_entries
-                # Closure-held list mutated in place: trame drops the push
-                # when the assigned object *is* the pushed one, so an
-                # explicit dirty() is required (same reason as section_list).
-                state.dirty("sidebar_entries")
-
-                _activate_wavefunction(reader, state, reader.get_section(section_id))
-            except Exception as exc:  # keep a viewer failure out of the UI
-                state.relocalize_status = f"failed: {type(exc).__name__}: {exc}"
+                    if request_fingerprint(latest) != fingerprint:
+                        state.relocalize_status = "Discarded result: source data changed"
+                        return
+                    overlay = wavefunction_from_result(result, canonical, request)
+                    overlay.relocalization["source_section_id"] = source_id
+                    section_id = overlay_section_id(method, source)
+                    # Never shadow a section that came from the archive.
+                    if section_id not in reader.wavefunction_overlay_ids and any(
+                        s.id == section_id for s in reader.sections
+                    ):
+                        section_id += "_" + request["id"][:8]
+                    reader.set_wavefunction_overlay(section_id, overlay)
+                    entry = {
+                        "id": section_id,
+                        "title": _sidebar_section_title(
+                            {"id": section_id, "kind": "wavefunction.gto"}
+                        ),
+                        "subtitle": "wavefunction.gto — new RHF"
+                        if source == "fresh_rhf"
+                        else "wavefunction.gto — archived subspace",
+                        "status": "ok",
+                        "supported": True,
+                        "icon": _status_icon("ok"),
+                        "kind_icon": _kind_icon("wavefunction.gto"),
+                        "warn": False,
+                        "disabled": False,
+                    }
+                    sidebar_entries[:] = [e for e in sidebar_entries if e["id"] != section_id] + [
+                        entry
+                    ]
+                    section_list[:] = [e for e in section_list if e["id"] != section_id] + [
+                        {
+                            "id": section_id,
+                            "kind": "wavefunction.gto",
+                            "status": "ok",
+                            "detail": "Session overlay",
+                            "supported": True,
+                        }
+                    ]
+                    state.sidebar_entries = sidebar_entries
+                    state.section_list = section_list
+                    state.dirty("sidebar_entries", "section_list")
+                    state.relocalize_running = False
+                    activate_section(section_id)
+                    state.relocalize_status = (
+                        f"{METHOD_LABELS[method]}: {len(result['occupations'])} localized orbitals"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if current():
+                    state.relocalize_status = f"Failed: {exc}"
             finally:
-                state.relocalize_running = False
-                state.flush()
+                if generation == _relocalize_generation:
+                    state.relocalize_running = False
+                    state.flush()
 
-        _asyncio.ensure_future(_work())
+        try:
+            _relocalize_task = asyncio.get_running_loop().create_task(work())
+        except RuntimeError:
+            state.relocalize_running = False
+            state.relocalize_status = "Start the viewer before localizing"
 
     @ctrl.set("toggle_color_by_charge")
     def toggle_color_by_charge(on: bool) -> None:
@@ -4343,13 +4681,13 @@ def create_app(readers):
     _anim_epoch = 0  # bumped on every play/stop; stale iterations bail (audit L3)
 
     @server.state.change("trajectory_playing")
-    def _on_play_toggle(trajectory_playing, **kwargs):
+    def _on_play_toggle(trajectory_playing: bool, **kwargs: Any) -> None:
         nonlocal _anim_task, _anim_epoch
         _anim_epoch += 1
         if trajectory_playing:
             my_epoch = _anim_epoch
 
-            async def _loop():
+            async def _loop() -> None:
                 while server.state.trajectory_playing:
                     await asyncio.sleep(0.2)
                     # A section switch / reset can flip playing off and rebuild
@@ -4381,13 +4719,13 @@ def create_app(readers):
     _vib_epoch = 0  # bumped on every play/stop; stale iterations bail (audit L3)
 
     @server.state.change("vibration_playing")
-    def _on_vibration_play_toggle(vibration_playing, **kwargs):
+    def _on_vibration_play_toggle(vibration_playing: bool, **kwargs: Any) -> None:
         nonlocal _vib_anim_task, _vib_epoch
         _vib_epoch += 1
         if vibration_playing:
             my_epoch = _vib_epoch
 
-            async def _vib_loop():
+            async def _vib_loop() -> None:
                 import math
 
                 phase = 0.0
@@ -4418,7 +4756,7 @@ def create_app(readers):
         _render_vibration_atoms(reader, plotter, state)
 
     @ctrl.set("render_mo")
-    def render_mo(mo_key, _expected_epoch: int | None = None) -> None:
+    def render_mo(mo_key: Any, _expected_epoch: int | None = None) -> None:
         state = server.state
         section_id = state.wf_section_id
         if not section_id:
@@ -4535,7 +4873,7 @@ def create_app(readers):
                         _fail_wavefunction_surface(plotter, state, message)
 
     @ctrl.set("render_frontier")
-    def render_frontier(which) -> None:
+    def render_frontier(which: str) -> None:
         """One-click HOMO/LUMO render: pick the marked row and render it."""
         if isinstance(which, (list, tuple)):
             which = which[0]
@@ -4552,7 +4890,7 @@ def create_app(readers):
         render_mo(row["value"])
 
     @server.state.change("mo_click_request")
-    def _on_mo_click_request(mo_click_request=None, **_kwargs) -> None:
+    def _on_mo_click_request(mo_click_request: Any = None, **_kwargs: Any) -> None:
         """Render the MO clicked in the orbital energy diagram.
 
         The value is ``"{spin}:{index}@{nonce}"``; the nonce only forces the
@@ -4630,7 +4968,7 @@ def create_app(readers):
                             _finalize_wavefunction_surface_appearance(plotter, state)
                         state.status_message = "MO animation stopped"
                     else:
-                        _fail_wavefunction_surface(plotter, state, message)
+                        _fail_wavefunction_surface(plotter, state, message or "")
             return
 
         epoch = _invalidate_wavefunction_renders()
@@ -4708,7 +5046,7 @@ def create_app(readers):
 
     def _compute_wavefunction_surface(
         surface_kind: str,
-        render_surface,
+        render_surface: Callable[..., Any],
         error_label: str,
         *,
         density_spin: bool | None = None,
@@ -4808,8 +5146,12 @@ def create_app(readers):
             _rebuild_crossfade(reader, plotter, viewer_state, state, va, vb, blend)
 
     @ctrl.set("sync_client_camera")
-    def sync_client_camera(position=None, focal_point=None, view_up=None,
-                           parallel_scale=None) -> None:
+    def sync_client_camera(
+        position: Any = None,
+        focal_point: Any = None,
+        view_up: Any = None,
+        parallel_scale: Any = None,
+    ) -> None:
         """Copy the client's camera onto the server plotter after a drag.
 
         VtkLocalView renders client-side and the client owns the camera;
@@ -4902,7 +5244,7 @@ def create_app(readers):
                 return
         state.status_message = f"Unknown bookmark: {name}"
 
-    _presentation_auto_task: asyncio.Task | None = None
+    _presentation_auto_task: asyncio.Task[Any] | None = None
     _presentation_auto_epoch = 0
 
     def _stop_presentation_auto_advance() -> None:
@@ -4955,7 +5297,7 @@ def create_app(readers):
             state.presentation_mode = False
             state.status_message = "Presentation mode exited"
 
-    def _saved_view_setting(saved_view: dict, name: str):
+    def _saved_view_setting(saved_view: dict[str, Any], name: str) -> Any:
         """Read a saved visual setting, including the legacy slide shape."""
         if name in saved_view:
             return saved_view[name]
@@ -4964,7 +5306,9 @@ def create_app(readers):
             return legacy_state.get(name)
         return None
 
-    def _prepare_saved_view_restore(saved_view: dict):
+    def _prepare_saved_view_restore(
+        saved_view: dict[str, Any],
+    ) -> tuple[str | None, Section | None]:
         """Restore controls and volume hints before section activation.
 
         Volume activation treats ``ViewerState`` hints as authoritative and
@@ -4994,10 +5338,10 @@ def create_app(readers):
                     restored_opacity = candidate
                     state.opacity = restored_opacity
         if saved_colormap is not None:
-            candidate = str(saved_colormap)
+            colormap_name = str(saved_colormap)
             with contextlib.suppress(ImportError, TypeError, ValueError):
-                get_cmap_safe(candidate)
-                restored_colormap = candidate
+                get_cmap_safe(cmap_argument(colormap_name))
+                restored_colormap = colormap_name
                 state.colormap = restored_colormap
 
         legacy_state = saved_view.get("state")
@@ -5022,7 +5366,7 @@ def create_app(readers):
                 hints.colormap = restored_colormap
         return section_id, section
 
-    def _apply_saved_view_camera(saved_view: dict) -> bool:
+    def _apply_saved_view_camera(saved_view: dict[str, Any]) -> bool:
         """Apply a saved camera after any section rebuild; report success."""
         camera = saved_view.get("camera")
         if not camera:
@@ -5034,7 +5378,7 @@ def create_app(readers):
             return False
         return True
 
-    def _apply_slide(slide: dict) -> None:
+    def _apply_slide(slide: dict[str, Any]) -> None:
         """Apply a presentation slide: restore camera and section selection."""
         state = server.state
         section_id, section = _prepare_saved_view_restore(slide)
@@ -5138,7 +5482,7 @@ def create_app(readers):
             f"Automatic slide advance every {_presentation_delay_seconds():g} s"
         )
 
-    def _session_payload() -> dict:
+    def _session_payload() -> dict[str, Any]:
         """The on-disk session document. Single source of truth.
 
         Both the explicit save and the auto-save write through this. They used
@@ -5180,7 +5524,7 @@ def create_app(readers):
             "library_favorites": list(state.library_favorites or []),
         }
 
-    def _saved_session_replication(session: dict) -> tuple[int, int, int] | None:
+    def _saved_session_replication(session: dict[str, Any]) -> tuple[int, int, int] | None:
         """Return a complete integral replication triple, or ignore it safely."""
         saved = session.get("replication")
         if not isinstance(saved, (list, tuple)) or len(saved) != 3:
@@ -5199,7 +5543,7 @@ def create_app(readers):
             restored.append(int(candidate))
         return restored[0], restored[1], restored[2]
 
-    def _restore_session_replication(session: dict) -> None:
+    def _restore_session_replication(session: dict[str, Any]) -> None:
         """Synchronize a saved supercell before activating its target section."""
         saved = _saved_session_replication(session)
         if saved is None:
@@ -5313,7 +5657,7 @@ def create_app(readers):
         ssaa = 2  # supersample 2x for anti-aliasing
         try:
             if transparent:
-                plotter.set_background("white")
+                set_background(plotter, "white")
             # plotter.screenshot(return_img=True) returns a NumPy (H, W, 3|4)
             # array, NOT a PIL Image — wrap it before using PIL methods.
             arr = plotter.screenshot(
@@ -5327,17 +5671,16 @@ def create_app(readers):
             if transparent:
                 # Make white background transparent.
                 img = img.convert("RGBA")
-                data = img.getdata()
-                new_data = []
-                for item in data:
+                new_data: list[tuple[int, int, int, int]] = []
+                for item in img.getdata():  # type: ignore[attr-defined]
                     if item[0] > 250 and item[1] > 250 and item[2] > 250:
                         new_data.append((255, 255, 255, 0))
                     else:
                         new_data.append(item)
-                img.putdata(new_data)  # type: ignore[arg-type]
+                img.putdata(new_data)
         finally:
             if transparent:
-                plotter.set_background(orig_bg)
+                set_background(plotter, orig_bg)
 
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
@@ -5366,7 +5709,7 @@ def create_app(readers):
         asyncio.ensure_future(_reset_screenshot_flag())
 
     @ctrl.set("apply_view_preset")
-    def apply_view_preset(name) -> None:
+    def apply_view_preset(name: Any) -> None:
         """One-click view presets (design refresh 2026, items 3+6): each sets
         representation, material (incl. background), SSAO, and atom labels
         together. Order matters — the label/representation rebuilds recreate
@@ -5400,7 +5743,7 @@ def create_app(readers):
         server.state.status_message = f"View preset: {name}"
 
     @ctrl.set("run_palette_action")
-    def run_palette_action(action_id) -> None:
+    def run_palette_action(action_id: Any) -> None:
         """Dispatch a command-palette action to its controller, then close
         the palette (design refresh 2026). Keep the ids in sync with
         _PALETTE_ACTIONS.
@@ -5484,7 +5827,7 @@ def create_app(readers):
 
     # ── Controller: geometry export ───────────────────────────────────
     @ctrl.set("export_geometry")
-    def export_geometry(fmt) -> None:
+    def export_geometry(fmt: Any) -> None:
         """Export the current structure geometry to a file.
 
         Receives a plain string from the client
@@ -5649,11 +5992,16 @@ def create_app(readers):
             },
         )
         server.state.download_history = server.state.download_history[:50]
-        asyncio.ensure_future(_reset_export_flag())
+        _schedule_export_reset()
 
-    async def _reset_export_flag() -> None:
-        await asyncio.sleep(0.5)
-        server.state.export_ready = False
+    def _schedule_export_reset() -> None:
+        # Headless controller calls have no running loop. Do not create a
+        # coroutine that can never be awaited, and leave the download ready.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.call_later(0.5, lambda: setattr(server.state, "export_ready", False))
 
     # ── Controller: video export dialog launcher ────────────────────
     @ctrl.set("open_video_export_dialog")
@@ -5699,7 +6047,7 @@ def create_app(readers):
         ext = fmt if fmt != "frames" else ""
         out = Path(f"{stem}_{kind}.{ext}") if ext else Path(f"{stem}_{kind}")
 
-        def _render():
+        def _render() -> Path | None:
             from vibeview.animation import (
                 render_orbital_animation,
                 render_trajectory_video,
@@ -5875,7 +6223,7 @@ def create_app(readers):
         except Exception as e:  # noqa: BLE001
             server.state.measure_result = f"Could not read structure: {e}"
             return
-        atoms = [
+        atoms: list[dict[str, Any]] = [
             {
                 "atomic_number": int(a.atomic_number),
                 "position": [float(c) for c in a.position],
@@ -5931,12 +6279,12 @@ def create_app(readers):
 
         # Build neighbor lists from the bond table.
         neighbors: dict[int, list[tuple[int, float]]] = {i: [] for i in range(n)}
-        for i, j, d, *_image in bonds:
+        for i, j, d in bonds:
             neighbors[i].append((j, d))
             neighbors[j].append((i, d))
 
         def _sym(idx: int) -> str:
-            z = atoms[idx].get("atomic_number", 0)
+            z = int(atoms[idx].get("atomic_number", 0))
             s = symbols[z - 1] if 1 <= z <= len(symbols) else str(z)
             return f"{s}{idx + 1}"
 
@@ -5944,7 +6292,7 @@ def create_app(readers):
         # Distances.
         if bonds:
             rows.append("── Bond Distances ──")
-            for i, j, d, *_image in sorted(bonds, key=lambda x: x[2]):
+            for i, j, d in sorted(bonds, key=lambda x: x[2]):
                 rows.append(f"  {_sym(i)}–{_sym(j)}: {d:.3f} Å")
 
         # Angles: for every atom with ≥2 neighbors, show all angles.
@@ -5989,7 +6337,7 @@ def create_app(readers):
     # invokes trame.trigger("toggle_measure_mode"), which needs a trigger registration.
     @ctrl.trigger("toggle_measure_mode")
     @ctrl.set("toggle_measure_mode")
-    def toggle_measure_mode(on=None) -> None:
+    def toggle_measure_mode(on: bool | None = None) -> None:
         state = server.state
         state.measure_mode = (not state.measure_mode) if on is None else bool(on)
         state.selected_atoms = []
@@ -6010,13 +6358,13 @@ def create_app(readers):
         _push_view(plotter)
 
     @ctrl.set("on_pick")
-    def on_pick(event=None) -> None:
+    def on_pick(event: Any = None) -> None:
         """Handle viewport clicks: measure mode (distance/angle/dihedral)
         or edit mode (atom selection)."""
         state = server.state
         if not isinstance(event, dict):
             return
-        if not state.measure_mode and not state.edit_mode:
+        if not state.measure_mode and not state.edit_mode and not state.residue_pick_mode:
             return
         # Find nearest atom to click point
         wp = None
@@ -6034,6 +6382,15 @@ def create_app(readers):
         except Exception:
             return
         import numpy as _np
+
+        if not sdata.atoms:
+            return
+        if state.residue_pick_mode and not state.measure_mode and not state.edit_mode:
+            residue_key = _pick_residue(sdata, plotter, state, wp[:3], viewer_state.replication)
+            if residue_key is not None:
+                chain, seq = residue_key
+                set_residue_selection(f"{chain or '*'}/{seq}")
+            return
 
         pos = _np.array([a.position for a in sdata.atoms], dtype=float)
         click = _np.array([float(c) for c in wp[:3]], dtype=float)
@@ -6063,16 +6420,14 @@ def create_app(readers):
                 wp_np = _np.array([float(c) for c in wp[:3]], dtype=float)
                 new_element = server.state.edit_new_element or "C"
                 # Save current state for undo
-                try:
+                with contextlib.suppress(Exception):
                     server.state.edit_history.append(_structure_edit_snapshot(sdata))
-                except Exception:
-                    pass
                 server.state.edit_future.clear()
                 # In-place list mutations are invisible to trame's dirty
                 # tracking (the pushed snapshot aliases the same list
                 # object), so mark them or Undo/Redo stay disabled client-side.
                 server.state.dirty("edit_history", "edit_future")
-                _add_atom_to_structure(reader, plotter, wp_np, new_element)
+                _add_atom_to_structure(reader, plotter, wp_np.tolist(), new_element)
                 server.state.edit_selected = []
                 server.state.status_message = f"Added {new_element} atom"
                 _push_view(plotter)
@@ -6095,7 +6450,7 @@ def create_app(readers):
 
     # ── Controller: periodic-table element picker ────────────────────
     @ctrl.set("open_element_picker")
-    def open_element_picker(target="new") -> None:
+    def open_element_picker(target: str = "new") -> None:
         """Open the periodic-table dialog for 'new' or 'change' picking."""
         if isinstance(target, (list, tuple)):
             target = target[0] if target else "new"
@@ -6105,7 +6460,7 @@ def create_app(readers):
         server.state.element_picker_open = True
 
     @ctrl.set("pick_element")
-    def pick_element(symbol=None) -> None:
+    def pick_element(symbol: Any = None) -> None:
         """Apply the clicked element and close the periodic table.
 
         Target 'new' sets the element used for added atoms; 'change'
@@ -6132,12 +6487,12 @@ def create_app(readers):
     # cannot unproject those (the client owns the camera in VtkLocalView).
     # "at" starts at -inf so "no hover yet" always reads stale, even on a
     # freshly booted machine where time.monotonic() itself is near zero.
-    _hover_state: dict = {"world": None, "atom_idx": -1, "at": float("-inf")}
+    _hover_state: dict[str, Any] = {"world": None, "atom_idx": -1, "at": float("-inf")}
     # Snapshot taken by context_menu_opened, consumed by the menu actions.
-    _ctx_menu_target: dict = {"world": None, "atom_idx": -1}
+    _ctx_menu_target: dict[str, Any] = {"world": None, "atom_idx": -1}
 
     @ctrl.set("on_hover")
-    def on_hover(event=None) -> None:
+    def on_hover(event: Any = None) -> None:
         """Remember the world position under the cursor + show the tooltip."""
         import time as _time
 
@@ -6205,7 +6560,7 @@ def create_app(readers):
 
     # ── Controller: volume clip planes ────────────────────────────────
     @ctrl.set("toggle_clip")
-    def toggle_clip(on=None) -> None:
+    def toggle_clip(on: bool | None = None) -> None:
         """Enable/disable volume clip planes.
 
         Wired from the Enable switch as
@@ -6234,7 +6589,7 @@ def create_app(readers):
         ctrl.view_update()
 
     @ctrl.set("toggle_show_slice")
-    def toggle_show_slice(on=None) -> None:
+    def toggle_show_slice(on: bool | None = None) -> None:
         """Toggle 2D cross-section slice mode."""
         state = server.state
         state.show_slice = (not state.show_slice) if on is None else bool(on)
@@ -6249,7 +6604,7 @@ def create_app(readers):
         ctrl.view_update()
 
     @ctrl.set("update_clip")
-    def update_clip(axis=None, value=None) -> None:
+    def update_clip(axis: Any = None, value: Any = None) -> None:
         """Update clip planes from slider values.
 
         Client-side ``v_model`` changes can reach the browser before the
@@ -6305,7 +6660,6 @@ def create_app(readers):
         except Exception:
             return
         selected_set = set(state.edit_selected)
-        n = len(sdata.atoms)
         # Build new lists excluding selected
         new_positions = [
             a.position.tolist() for i, a in enumerate(sdata.atoms) if i not in selected_set
@@ -6495,7 +6849,7 @@ def create_app(readers):
     _live_opt_run_epoch = 0
     _live_opt_probe_epoch = 0
 
-    def _live_opt_run_is_current(run_epoch, source_reader) -> bool:
+    def _live_opt_run_is_current(run_epoch: int | None, source_reader: QVFReader | None) -> bool:
         """Authorize a callback only for the immutable current run."""
         return (
             run_epoch == _live_opt_run_epoch
@@ -6504,7 +6858,9 @@ def create_app(readers):
             and server.state.live_opt_enabled
         )
 
-    def _live_opt_on_step(event, run_epoch=None, source_reader=None) -> None:
+    def _live_opt_on_step(
+        event: Any, run_epoch: int | None = None, source_reader: QVFReader | None = None
+    ) -> None:
         nonlocal _live_opt_undo_pushed
         if not _live_opt_run_is_current(run_epoch, source_reader):
             return
@@ -6540,8 +6896,8 @@ def create_app(readers):
     def _live_opt_on_done(
         converged: bool,
         steps: int,
-        run_epoch=None,
-        source_reader=None,
+        run_epoch: int | None = None,
+        source_reader: QVFReader | None = None,
     ) -> None:
         if not _live_opt_run_is_current(run_epoch, source_reader):
             return
@@ -6552,13 +6908,17 @@ def create_app(readers):
         )
         server.state.flush()
 
-    def _live_opt_on_error(msg: str, run_epoch=None, source_reader=None) -> None:
+    def _live_opt_on_error(
+        msg: str, run_epoch: int | None = None, source_reader: QVFReader | None = None
+    ) -> None:
         if not _live_opt_run_is_current(run_epoch, source_reader):
             return
         server.state.live_opt_status = f"live-opt error: {msg}"
         server.state.flush()
 
-    def _live_opt_on_note(msg: str, run_epoch=None, source_reader=None) -> None:
+    def _live_opt_on_note(
+        msg: str, run_epoch: int | None = None, source_reader: QVFReader | None = None
+    ) -> None:
         if not _live_opt_run_is_current(run_epoch, source_reader):
             return
         # Non-geometry progress (e.g. MACE model loading / weight download).
@@ -6599,7 +6959,7 @@ def create_app(readers):
         "mace": "MACE (ML potential, MACE-MPA-0)",
     }
 
-    def _live_opt_apply_probe(result: dict) -> None:
+    def _live_opt_apply_probe(result: dict[str, Any]) -> None:
         """Record probe outcome: availability + the engine picker options."""
         state = server.state
         engines = [e for e in result.get("engines", []) if e in _LIVE_OPT_ENGINE_TITLES]
@@ -6674,7 +7034,7 @@ def create_app(readers):
         )
 
     @ctrl.set("toggle_live_opt")
-    def toggle_live_opt(on=None) -> None:
+    def toggle_live_opt(on: bool | None = None) -> None:
         """Auto-optimize switch. Wired like ``toggle_clip``: *set* (don't
         flip) when called with the switch's new value, flip when called
         with no argument. First enable probes the worker subprocess; if
@@ -6730,7 +7090,7 @@ def create_app(readers):
         _live_opt_schedule()
 
     @ctrl.set("set_live_opt_engine")
-    def set_live_opt_engine(engine=None) -> None:
+    def set_live_opt_engine(engine: Any = None) -> None:
         """Engine picker handler. Wired like ``toggle_clip``: ``v_model``
         already wrote ``live_opt_engine``, so with an argument we just
         record it; either way, switching engine while auto-optimize is on
@@ -6806,7 +7166,7 @@ def create_app(readers):
     @ctrl.set("context_center_view")
     def context_center_view() -> None:
         """Center the camera on the right-clicked position."""
-        plotter.reset_camera()
+        reset_camera(plotter)
         plotter.render()
         _push_view(plotter)
         server.state.status_message = "View centered"
@@ -6956,7 +7316,7 @@ def create_app(readers):
             _remember_library_pick(server.state, name)
 
     @ctrl.set("use_library_recent")
-    def use_library_recent(name=None) -> None:
+    def use_library_recent(name: str | None = None) -> None:
         """Re-select a recently used library structure from its chip."""
         if isinstance(name, (list, tuple)):
             name = name[0] if name else None
@@ -6964,7 +7324,7 @@ def create_app(readers):
             server.state.library_query = str(name)
 
     @ctrl.set("toggle_library_favorite")
-    def toggle_library_favorite(name=None) -> None:
+    def toggle_library_favorite(name: str | None = None) -> None:
         """Pin/unpin a library structure (star next to the search box)."""
         state = server.state
         if isinstance(name, (list, tuple)):
@@ -7054,6 +7414,8 @@ def create_app(readers):
         # tracking (the pushed snapshot aliases the same list
         # object), so mark them or Undo/Redo stay disabled client-side.
         state.dirty("edit_history", "edit_future")
+        if res.positions is None:
+            return
         _rebuild_structure_from_positions(
             reader, plotter, res.positions.tolist(), symbols
         )
@@ -7238,7 +7600,7 @@ def create_app(readers):
             server.state.raytrace_enabled = False
 
     @ctrl.set("toggle_ssao")
-    def toggle_ssao(enabled=None) -> None:
+    def toggle_ssao(enabled: bool | None = None) -> None:
         """Toggle screen-space ambient occlusion."""
         state = server.state
         state.ssao_enabled = (not state.ssao_enabled) if enabled is None else bool(enabled)
@@ -7253,10 +7615,8 @@ def create_app(readers):
                 state.ssao_enabled = False
         else:
             # Restore default render pass
-            try:
+            with contextlib.suppress(Exception):
                 plotter.renderer.SetPass(None)
-            except Exception:
-                pass
             state.status_message = "Ambient occlusion off"
         # Refresh the framebuffer now: screenshots taken from the current
         # frame otherwise show the pre-toggle pass state.
@@ -7265,7 +7625,7 @@ def create_app(readers):
         _push_view(plotter)
 
     @ctrl.set("toggle_toon")
-    def toggle_toon(enabled=None) -> None:
+    def toggle_toon(enabled: bool | None = None) -> None:
         """Toggle non-photorealistic toon rendering.
 
         Wired like ``toggle_clip``: the switch sends
@@ -7295,7 +7655,7 @@ def create_app(readers):
         _push_view(plotter)
 
     @ctrl.set("toggle_orthographic")
-    def toggle_orthographic(enabled=None) -> None:
+    def toggle_orthographic(enabled: bool | None = None) -> None:
         """Switch between perspective and orthographic (parallel) projection.
 
         Orthographic drops perspective foreshortening — parallel lattice
@@ -7349,7 +7709,8 @@ def create_app(readers):
         """Toggle between dark and light 3D viewport background."""
         dark = not server.state.dark_background
         server.state.dark_background = dark
-        plotter.set_background("#1a1a2e" if dark else "#f0f0f0")
+        server.state.background_override = "#1a1a2e" if dark else "#f0f0f0"
+        set_background(plotter, "#1a1a2e" if dark else "#f0f0f0")
         server.state.status_message = f"Background: {'dark' if dark else 'light'}"
         ctrl.view_update()
 
@@ -7357,7 +7718,7 @@ def create_app(readers):
     # invokes trame.trigger("camera_preset"), which needs a trigger registration.
     @ctrl.trigger("camera_preset")
     @ctrl.set("camera_preset")
-    def camera_preset(view) -> None:
+    def camera_preset(view: Any) -> None:
         """Set the camera to a named preset view.
 
         Receives a plain string from the client (JS ``'isometric'``,
@@ -7366,15 +7727,15 @@ def create_app(readers):
         """
         if isinstance(view, (list, tuple)):
             view = view[0]
-        presets = {
-            "isometric": plotter.view_isometric,
-            "xy": plotter.view_xy,
-            "xz": plotter.view_xz,
-            "yz": plotter.view_yz,
-            "reset": plotter.reset_camera,
+        presets: dict[str, Callable[[], Any]] = {
+            "isometric": lambda: view_isometric(plotter),
+            "xy": lambda: view_xy(plotter),
+            "xz": lambda: view_xz(plotter),
+            "yz": lambda: view_yz(plotter),
+            "reset": lambda: reset_camera(plotter),
         }
         fn = presets.get(view)
-        if fn:
+        if fn is not None:
             fn()
             plotter.render()
             server.state.status_message = f"Camera: {view}"
@@ -7388,7 +7749,7 @@ def create_app(readers):
     # Readers replaced during hot-reload stay alive only until the fresh
     # reader owns every controller and any viewer-side overlays. Keeping them
     # beyond that handoff leaks one archive handle per panel-only refresh.
-    _retired_readers: list = []
+    _retired_readers: list[Any] = []
 
     def _close_retired_readers() -> None:
         while _retired_readers:
@@ -7396,7 +7757,7 @@ def create_app(readers):
                 _retired_readers.pop().close()
 
     @ctrl.set("apply_watcher_event")
-    def _apply_qvf_change(event) -> None:
+    def _apply_qvf_change(event: Any) -> None:
         """Hot-reload the viewer from a settled on-disk change.
 
         Swaps in a fresh :class:`QVFReader` — the old reader holds an open
@@ -7504,6 +7865,7 @@ def create_app(readers):
             )
             if panel_only:
                 _cancel_live_opt_for_reader_change()
+                _cancel_relocalization()
                 if reader is active_reader:
                     reader = fresh  # handlers read the closure-captured nonlocal
                 # Panel-only reloads intentionally skip _reload_active_file,
@@ -7538,7 +7900,7 @@ def create_app(readers):
     _watcher_task = None
     _watcher_path: str | None = None
 
-    def _watcher_task_is_running(task) -> bool:
+    def _watcher_task_is_running(task: asyncio.Task[Any] | None) -> bool:
         """Return whether *task* still owns an active polling coroutine."""
         if task is None:
             return False
@@ -7551,7 +7913,7 @@ def create_app(readers):
         task = _watcher_task
         _watcher_task = None
         _watcher_path = None
-        if _watcher_task_is_running(task):
+        if task is not None and _watcher_task_is_running(task):
             task.cancel()
 
     def _sync_file_watcher_for_active_reader() -> str | None:
@@ -7584,7 +7946,7 @@ def create_app(readers):
         watch_path = desired_path
         _watcher_path = watch_path
 
-        async def _watch():
+        async def _watch() -> None:
             while (
                 server.state.file_watcher_enabled
                 and _watcher_path == watch_path
@@ -7603,7 +7965,7 @@ def create_app(readers):
                     _apply_qvf_change(event)
                     server.state.flush()
 
-        def _watch_finished(task) -> None:
+        def _watch_finished(task: asyncio.Task[Any]) -> None:
             """Release ownership and report an unexpected watcher exit."""
             nonlocal _watcher_task, _watcher_path
             cancelled = getattr(task, "cancelled", None)
@@ -7644,7 +8006,7 @@ def create_app(readers):
         return None
 
     @ctrl.set("toggle_file_watcher")
-    def toggle_file_watcher(enabled=None) -> None:
+    def toggle_file_watcher(enabled: bool | None = None) -> None:
         """Enable/disable auto-reload of the active file on disk changes."""
         state = server.state
         state.file_watcher_enabled = (
@@ -7660,7 +8022,7 @@ def create_app(readers):
 
     # ── Controller: dark UI theme ─────────────────────────────────────
     @ctrl.set("toggle_dark_ui")
-    def toggle_dark_ui(enabled=None) -> None:
+    def toggle_dark_ui(enabled: bool | None = None) -> None:
         """Toggle dark mode for the UI chrome (not the 3D viewport)."""
         state = server.state
         state.ui_dark_mode = (not state.ui_dark_mode) if enabled is None else bool(enabled)
@@ -8377,36 +8739,35 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Command palette"),
             aria_label="Command palette",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VTextField(
-                    v_model=("palette_query",),
-                    placeholder="Type a command… (camera, view, HOMO, screenshot)",
-                    prepend_inner_icon="mdi-console-line",
-                    variant="solo",
-                    density="compact",
-                    hide_details=True,
-                    clearable=True,
-                    autofocus=True,
+        ), v.VCard():
+            v.VTextField(
+                v_model=("palette_query",),
+                placeholder="Type a command… (camera, view, HOMO, screenshot)",
+                prepend_inner_icon="mdi-console-line",
+                variant="solo",
+                density="compact",
+                hide_details=True,
+                clearable=True,
+                autofocus=True,
+            )
+            with v.VList(
+                density="compact",
+                nav=True,
+                max_height="360px",
+                style="overflow-y:auto",
+            ):
+                v.VListItem(
+                    v_for=(
+                        "a in palette_actions.filter(x => !palette_query || "
+                        "(x.title + ' ' + x.sub).toLowerCase()"
+                        ".includes(palette_query.toLowerCase()))",
+                    ),
+                    key=("a.id",),
+                    title=("a.title",),
+                    subtitle=("a.sub",),
+                    prepend_icon=("a.icon",),
+                    click=(ctrl.run_palette_action, "[a.id]"),
                 )
-                with v.VList(
-                    density="compact",
-                    nav=True,
-                    max_height="360px",
-                    style="overflow-y:auto",
-                ):
-                    v.VListItem(
-                        v_for=(
-                            "a in palette_actions.filter(x => !palette_query || "
-                            "(x.title + ' ' + x.sub).toLowerCase()"
-                            ".includes(palette_query.toLowerCase()))",
-                        ),
-                        key=("a.id",),
-                        title=("a.title",),
-                        subtitle=("a.sub",),
-                        prepend_icon=("a.icon",),
-                        click=(ctrl.run_palette_action, "[a.id]"),
-                    )
 
         with v.VDialog(
             v_model=("builder_dialog",),
@@ -8414,63 +8775,62 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Build molecule"),
             aria_label="Build molecule",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Build molecule")
-                v.VCardText(
-                    "Generates 3D coordinates and loads them as a new "
-                    "structure. Either way the geometry is a starting point, "
-                    "not an optimized one."
+        ), v.VCard():
+            v.VCardTitle("Build molecule")
+            v.VCardText(
+                "Generates 3D coordinates and loads them as a new "
+                "structure. Either way the geometry is a starting point, "
+                "not an optimized one."
+            )
+            with v.VCardText():
+                # `keyup__enter=` is silently dropped: trame only emits
+                # listeners whose name it was told about, and no widget
+                # declares that key. The modifier has to be registered
+                # explicitly through __events for Enter to reach Python.
+                v.VTextField(
+                    v_model=("builder_name",),
+                    label="Molecule name",
+                    placeholder="pyridine",
+                    prepend_inner_icon="mdi-molecule",
+                    density="compact",
+                    hide_details=True,
+                    clearable=True,
+                    autofocus=True,
+                    __events=[("keyup_enter", "keyup.enter")],
+                    keyup_enter=ctrl.build_molecule,
                 )
-                with v.VCardText():
-                    # `keyup__enter=` is silently dropped: trame only emits
-                    # listeners whose name it was told about, and no widget
-                    # declares that key. The modifier has to be registered
-                    # explicitly through __events for Enter to reach Python.
-                    v.VTextField(
-                        v_model=("builder_name",),
-                        label="Molecule name",
-                        placeholder="pyridine",
-                        prepend_inner_icon="mdi-molecule",
-                        density="compact",
-                        hide_details=True,
-                        clearable=True,
-                        autofocus=True,
-                        __events=[("keyup_enter", "keyup.enter")],
-                        keyup_enter=ctrl.build_molecule,
-                    )
-                    v.VDivider(classes="my-3")
-                    # SMILES reaches molecules the curated name database does
-                    # not have. Enter is registered the same way -- trame only
-                    # emits listeners it was told about, so keyup__enter alone
-                    # is silently dropped.
-                    v.VTextField(
-                        v_model=("builder_smiles",),
-                        label="or SMILES",
-                        placeholder="c1ccccc1O",
-                        prepend_inner_icon="mdi-graph-outline",
-                        density="compact",
-                        hide_details=True,
-                        clearable=True,
-                        __events=[("keyup_enter", "keyup.enter")],
-                        keyup_enter=ctrl.build_from_smiles,
-                    )
-                    v.VCardText(
-                        "SMILES needs an optional extra. Run vibe-view doctor "
-                        "for the install command.",
-                        classes="text-caption text-medium-emphasis pa-0 pt-2",
-                        v_if=("!smiles_available",),
-                    )
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn("Cancel", variant="text", click="builder_dialog = false")
-                    v.VBtn("Build", variant="tonal", click=ctrl.build_molecule)
-                    v.VBtn(
-                        "Build SMILES",
-                        variant="tonal",
-                        click=ctrl.build_from_smiles,
-                        disabled=("!builder_smiles",),
-                    )
+                v.VDivider(classes="my-3")
+                # SMILES reaches molecules the curated name database does
+                # not have. Enter is registered the same way -- trame only
+                # emits listeners it was told about, so keyup__enter alone
+                # is silently dropped.
+                v.VTextField(
+                    v_model=("builder_smiles",),
+                    label="or SMILES",
+                    placeholder="c1ccccc1O",
+                    prepend_inner_icon="mdi-graph-outline",
+                    density="compact",
+                    hide_details=True,
+                    clearable=True,
+                    __events=[("keyup_enter", "keyup.enter")],
+                    keyup_enter=ctrl.build_from_smiles,
+                )
+                v.VCardText(
+                    "SMILES needs an optional extra. Run vibe-view doctor "
+                    "for the install command.",
+                    classes="text-caption text-medium-emphasis pa-0 pt-2",
+                    v_if=("!smiles_available",),
+                )
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn("Cancel", variant="text", click="builder_dialog = false")
+                v.VBtn("Build", variant="tonal", click=ctrl.build_molecule)
+                v.VBtn(
+                    "Build SMILES",
+                    variant="tonal",
+                    click=ctrl.build_from_smiles,
+                    disabled=("!builder_smiles",),
+                )
 
         with v.VDialog(
             v_model=("load_file_dialog",),
@@ -8478,57 +8838,56 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Open chemistry files"),
             aria_label="Open chemistry files",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Open chemistry file(s)")
-                v.VCardText(
-                    "Choose a QVF, structure, cube or TREXIO HDF5 file, or enter a "
-                    "server-side path / directory / glob below."
-                )
-                # Browser-native file picker via hidden HTML input.
-                # VFileInput's content serialisation varies across Trame
-                # versions; a raw <input type=file> with FileReader is
-                # reliable everywhere.  The onchange handler reads the
-                # file as base64 and pushes it into Trame state.
-                html.Input(
-                    id="qvf-file-input",
-                    type="file",
-                    accept=".qvf,.xyz,.cif,.cube,.pdb,.mol2,.gjf,.com,.gro,.sdf,.mol,.trexio,.h5,.hdf5",
-                    style="display: none;",
-                )
+        ), v.VCard():
+            v.VCardTitle("Open chemistry file(s)")
+            v.VCardText(
+                "Choose a QVF, structure, cube or TREXIO HDF5 file, or enter a "
+                "server-side path / directory / glob below."
+            )
+            # Browser-native file picker via hidden HTML input.
+            # VFileInput's content serialisation varies across Trame
+            # versions; a raw <input type=file> with FileReader is
+            # reliable everywhere.  The onchange handler reads the
+            # file as base64 and pushes it into Trame state.
+            html.Input(
+                id="qvf-file-input",
+                type="file",
+                accept=".qvf,.xyz,.cif,.cube,.pdb,.mol2,.gjf,.com,.gro,.sdf,.mol,.trexio,.h5,.hdf5",
+                style="display: none;",
+            )
+            v.VBtn(
+                "Browse chemistry file\u2026",
+                prepend_icon="mdi-file-upload",
+                block=True,
+                variant="tonal",
+                click="document.getElementById('qvf-file-input').click()",
+            )
+            v.VCardText("Server-side path:", classes="text-caption mt-2")
+            v.VTextField(
+                v_model=("open_path",),
+                label="Path to chemistry file or directory",
+                placeholder="~/jobs/  or  /path/to/calc.qvf",
+                density="compact",
+                hide_details=True,
+                clearable=True,
+                __events=[("keyup_enter", "keyup.enter")],
+                keyup_enter=ctrl.open_path,
+            )
+            v.VCheckbox(
+                v_model=("open_recursive",),
+                label="Search subdirectories recursively",
+                density="compact",
+                hide_details=True,
+            )
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn("Close", click=ctrl.close_load_dialog)
                 v.VBtn(
-                    "Browse chemistry file\u2026",
-                    prepend_icon="mdi-file-upload",
-                    block=True,
-                    variant="tonal",
-                    click="document.getElementById('qvf-file-input').click()",
+                    "Open",
+                    color="primary",
+                    variant="flat",
+                    click=ctrl.open_path,
                 )
-                v.VCardText("Server-side path:", classes="text-caption mt-2")
-                v.VTextField(
-                    v_model=("open_path",),
-                    label="Path to chemistry file or directory",
-                    placeholder="~/jobs/  or  /path/to/calc.qvf",
-                    density="compact",
-                    hide_details=True,
-                    clearable=True,
-                    __events=[("keyup_enter", "keyup.enter")],
-                    keyup_enter=ctrl.open_path,
-                )
-                v.VCheckbox(
-                    v_model=("open_recursive",),
-                    label="Search subdirectories recursively",
-                    density="compact",
-                    hide_details=True,
-                )
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn("Close", click=ctrl.close_load_dialog)
-                    v.VBtn(
-                        "Open",
-                        color="primary",
-                        variant="flat",
-                        click=ctrl.open_path,
-                    )
 
         # ── vq Job Manager (M1/A1) — a real, always-available panel ─────
         # Temporary right drawer so it overlays without disturbing the
@@ -8541,179 +8900,178 @@ def create_app(readers):
             width=440,
             aria_label="vq Job Manager",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with html.Div(classes="pa-3"):
-                with v.VRow(dense=True, align="center", classes="mb-1"):
-                    v.VIcon("mdi-server-network", classes="mr-2")
-                    html.Span("vq Job Manager", classes="text-h6")
+        ), html.Div(classes="pa-3"):
+            with v.VRow(dense=True, align="center", classes="mb-1"):
+                v.VIcon("mdi-server-network", classes="mr-2")
+                html.Span("vq Job Manager", classes="text-h6")
+                v.VSpacer()
+                v.VBtn(
+                    icon="mdi-refresh",
+                    size="small",
+                    variant="text",
+                    title="Refresh now",
+                    click=ctrl.vq_refresh_jobs,
+                )
+                v.VBtn(
+                    icon="mdi-close",
+                    size="small",
+                    variant="text",
+                    aria_label="Close vq Job Manager",
+                    __properties=[("aria_label", "aria-label")],
+                    click="vq_panel_open = false",
+                )
+            # ── Queue overview strip (A5): host · vq version · daemon
+            # health · capacity · current load ──
+            with html.Div(
+                v_if=("vq_ov_host",),
+                classes="d-flex align-center flex-wrap mb-1 text-caption",
+                style="gap: 6px; color: var(--v-theme-on-surface);",
+            ):
+                v.VIcon(
+                    "mdi-circle",
+                    size="10",
+                    color=("vq_ov_daemon ? 'success' : 'error'",),
+                    title=("vq_ov_daemon ? 'daemon healthy' : 'daemon down'",),
+                )
+                html.Span("{{ vq_ov_host }}", classes="font-weight-medium")
+                v.VChip(
+                    "{{ vq_ov_capacity }}",
+                    v_if=("vq_ov_capacity",),
+                    size="x-small",
+                    label=True,
+                    variant="tonal",
+                )
+                v.VChip(
+                    "{{ vq_ov_load }}",
+                    v_if=("vq_ov_load",),
+                    size="x-small",
+                    label=True,
+                    variant="tonal",
+                    color="info",
+                )
+            with v.VRow(dense=True, align="center"):
+                v.VSwitch(
+                    v_model=("vq_monitor_active",),
+                    label="Live monitor (all states, auto-refresh 5s)",
+                    density="compact",
+                    color="primary",
+                    hide_details=True,
+                    change=ctrl.vq_refresh_jobs,
+                )
+            v.VTextField(
+                v_model=("vq_fetch_output_dir",),
+                label="Fetch results into",
+                density="compact",
+                hide_details=True,
+                prepend_inner_icon="mdi-folder-download",
+                classes="mb-2",
+            )
+            v.VDivider()
+            v.VProgressLinear(
+                v_if=("vq_jobs_loading",), indeterminate=True, color="primary"
+            )
+            # Error banner (vq missing / queue error)
+            v.VAlert(
+                "{{ vq_jobs_error }}",
+                v_if=("vq_jobs_error",),
+                type="warning",
+                density="compact",
+                variant="tonal",
+                classes="my-2 text-caption",
+            )
+            # Job rows — explicit flex layout (avoids fragile v-slots)
+            # ── Live status + log tail for the expanded job (A3) ──
+            # Placed ABOVE the list so it's visible the moment a job is
+            # clicked; the list scrolls below it.
+            with v.VCard(
+                v_if=("vq_detail_job_id",),
+                variant="tonal",
+                classes="mb-2",
+            ):
+                with v.VCardTitle(classes="d-flex align-center text-body-2"):
+                    html.Span("{{ vq_detail_name }}")
+                    v.VChip(
+                        "{{ vq_detail_state }}",
+                        size="x-small",
+                        label=True,
+                        classes="ml-2",
+                    )
                     v.VSpacer()
                     v.VBtn(
-                        icon="mdi-refresh",
+                        icon="mdi-close",
+                        size="x-small",
+                        variant="text",
+                        aria_label="Close job details",
+                        __properties=[("aria_label", "aria-label")],
+                        click="vq_detail_job_id = ''",
+                    )
+                html.Pre(
+                    "{{ vq_detail_log }}",
+                    style=(
+                        "max-height: 24vh; overflow: auto; margin: 0 12px 12px;"
+                        "font-size: 0.68rem; white-space: pre-wrap;"
+                        "font-family: 'JetBrains Mono', monospace;"
+                        "color: var(--v-theme-on-surface);"
+                    ),
+                )
+
+            with html.Div(
+                v_if=("!vq_jobs_loading && !vq_jobs_error",),
+                style="overflow-y: auto; max-height: calc(100vh - 240px);",
+            ):
+                with html.Div(
+                    v_for=("job in vq_jobs_list",),
+                    key=("job.id",),
+                    classes="d-flex align-center py-2",
+                    style="border-bottom: 1px solid rgba(255,255,255,0.08);",
+                ):
+                    v.VChip(
+                        "{{ job.state }}",
+                        color=("job.color",),
+                        size="x-small",
+                        label=True,
+                        classes="mr-3",
+                        style="min-width: 78px; justify-content: center;",
+                    )
+                    with html.Div(style="flex: 1 1 auto; min-width: 0;"):
+                        html.Div(
+                            "{{ job.name }}",
+                            classes="text-body-2 text-truncate",
+                        )
+                        html.Div(
+                            "{{ job.id.slice(0,12) }}"
+                            "{{ job.elapsed ? '  ·  ' + job.elapsed : '' }}",
+                            classes="text-caption text-medium-emphasis",
+                        )
+                    v.VBtn(
+                        icon="mdi-text-box-search-outline",
                         size="small",
                         variant="text",
-                        title="Refresh now",
-                        click=ctrl.vq_refresh_jobs,
+                        title="Show status + log tail",
+                        click=(ctrl.vq_show_job_status, "[job.id, job.name]"),
                     )
                     v.VBtn(
-                        icon="mdi-close",
+                        icon="mdi-monitor-eye",
                         size="small",
                         variant="text",
-                        aria_label="Close vq Job Manager",
-                        __properties=[("aria_label", "aria-label")],
-                        click="vq_panel_open = false",
+                        title="Watch live (checkpoint QVF)",
+                        v_if=("job.watchable",),
+                        click=(ctrl.vq_watch_live, "[job.id]"),
                     )
-                # ── Queue overview strip (A5): host · vq version · daemon
-                # health · capacity · current load ──
-                with html.Div(
-                    v_if=("vq_ov_host",),
-                    classes="d-flex align-center flex-wrap mb-1 text-caption",
-                    style="gap: 6px; color: var(--v-theme-on-surface);",
-                ):
-                    v.VIcon(
-                        "mdi-circle",
-                        size="10",
-                        color=("vq_ov_daemon ? 'success' : 'error'",),
-                        title=("vq_ov_daemon ? 'daemon healthy' : 'daemon down'",),
+                    v.VBtn(
+                        icon="mdi-open-in-app",
+                        size="small",
+                        variant="text",
+                        title="Fetch & open results",
+                        disabled=("!job.openable",),
+                        click=(ctrl.open_vq_job, "[job.id]"),
                     )
-                    html.Span("{{ vq_ov_host }}", classes="font-weight-medium")
-                    v.VChip(
-                        "{{ vq_ov_capacity }}",
-                        v_if=("vq_ov_capacity",),
-                        size="x-small",
-                        label=True,
-                        variant="tonal",
-                    )
-                    v.VChip(
-                        "{{ vq_ov_load }}",
-                        v_if=("vq_ov_load",),
-                        size="x-small",
-                        label=True,
-                        variant="tonal",
-                        color="info",
-                    )
-                with v.VRow(dense=True, align="center"):
-                    v.VSwitch(
-                        v_model=("vq_monitor_active",),
-                        label="Live monitor (all states, auto-refresh 5s)",
-                        density="compact",
-                        color="primary",
-                        hide_details=True,
-                        change=ctrl.vq_refresh_jobs,
-                    )
-                v.VTextField(
-                    v_model=("vq_fetch_output_dir",),
-                    label="Fetch results into",
-                    density="compact",
-                    hide_details=True,
-                    prepend_inner_icon="mdi-folder-download",
-                    classes="mb-2",
+                html.Div(
+                    "No jobs found. Turn on Live monitor to see "
+                    "queued and running jobs.",
+                    v_if=("vq_jobs_list.length === 0",),
+                    classes="text-caption text-medium-emphasis pa-4 text-center",
                 )
-                v.VDivider()
-                v.VProgressLinear(
-                    v_if=("vq_jobs_loading",), indeterminate=True, color="primary"
-                )
-                # Error banner (vq missing / queue error)
-                v.VAlert(
-                    "{{ vq_jobs_error }}",
-                    v_if=("vq_jobs_error",),
-                    type="warning",
-                    density="compact",
-                    variant="tonal",
-                    classes="my-2 text-caption",
-                )
-                # Job rows — explicit flex layout (avoids fragile v-slots)
-                # ── Live status + log tail for the expanded job (A3) ──
-                # Placed ABOVE the list so it's visible the moment a job is
-                # clicked; the list scrolls below it.
-                with v.VCard(
-                    v_if=("vq_detail_job_id",),
-                    variant="tonal",
-                    classes="mb-2",
-                ):
-                    with v.VCardTitle(classes="d-flex align-center text-body-2"):
-                        html.Span("{{ vq_detail_name }}")
-                        v.VChip(
-                            "{{ vq_detail_state }}",
-                            size="x-small",
-                            label=True,
-                            classes="ml-2",
-                        )
-                        v.VSpacer()
-                        v.VBtn(
-                            icon="mdi-close",
-                            size="x-small",
-                            variant="text",
-                            aria_label="Close job details",
-                            __properties=[("aria_label", "aria-label")],
-                            click="vq_detail_job_id = ''",
-                        )
-                    html.Pre(
-                        "{{ vq_detail_log }}",
-                        style=(
-                            "max-height: 24vh; overflow: auto; margin: 0 12px 12px;"
-                            "font-size: 0.68rem; white-space: pre-wrap;"
-                            "font-family: 'JetBrains Mono', monospace;"
-                            "color: var(--v-theme-on-surface);"
-                        ),
-                    )
-
-                with html.Div(
-                    v_if=("!vq_jobs_loading && !vq_jobs_error",),
-                    style="overflow-y: auto; max-height: calc(100vh - 240px);",
-                ):
-                    with html.Div(
-                        v_for=("job in vq_jobs_list",),
-                        key=("job.id",),
-                        classes="d-flex align-center py-2",
-                        style="border-bottom: 1px solid rgba(255,255,255,0.08);",
-                    ):
-                        v.VChip(
-                            "{{ job.state }}",
-                            color=("job.color",),
-                            size="x-small",
-                            label=True,
-                            classes="mr-3",
-                            style="min-width: 78px; justify-content: center;",
-                        )
-                        with html.Div(style="flex: 1 1 auto; min-width: 0;"):
-                            html.Div(
-                                "{{ job.name }}",
-                                classes="text-body-2 text-truncate",
-                            )
-                            html.Div(
-                                "{{ job.id.slice(0,12) }}"
-                                "{{ job.elapsed ? '  ·  ' + job.elapsed : '' }}",
-                                classes="text-caption text-medium-emphasis",
-                            )
-                        v.VBtn(
-                            icon="mdi-text-box-search-outline",
-                            size="small",
-                            variant="text",
-                            title="Show status + log tail",
-                            click=(ctrl.vq_show_job_status, "[job.id, job.name]"),
-                        )
-                        v.VBtn(
-                            icon="mdi-monitor-eye",
-                            size="small",
-                            variant="text",
-                            title="Watch live (checkpoint QVF)",
-                            v_if=("job.watchable",),
-                            click=(ctrl.vq_watch_live, "[job.id]"),
-                        )
-                        v.VBtn(
-                            icon="mdi-open-in-app",
-                            size="small",
-                            variant="text",
-                            title="Fetch & open results",
-                            disabled=("!job.openable",),
-                            click=(ctrl.open_vq_job, "[job.id]"),
-                        )
-                    html.Div(
-                        "No jobs found. Turn on Live monitor to see "
-                        "queued and running jobs.",
-                        v_if=("vq_jobs_list.length === 0",),
-                        classes="text-caption text-medium-emphasis pa-4 text-center",
-                    )
 
         # ── vq Submit dialog ──────────────────────────────────────────
         with v.VDialog(
@@ -8722,77 +9080,76 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Submit to vq"),
             aria_label="Submit to vq",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Submit to vq")
-                v.VCardText(
-                    "{{ vq_submit_container"
-                    " ? 'This will submit one pending QVF container "
-                    "(structure + job.spec). vq runs it and settles the same "
-                    "file in place, so the archive you get back is the whole "
-                    "calculation.'"
-                    " : 'This will generate a vibe-qc input script and submit "
-                    "it to the vq job queue for execution.' }}"
-                )
-                v.VCardText(
-                    "Template: {{ calc_template }}  |  Method: {{ calc_method }}  "
-                    "|  Basis: {{ calc_basis }}",
-                    classes="text-caption",
-                )
-                v.VCardSubtitle(
-                    "vibe-qc input file to submit:",
-                    v_if=("!vq_submit_container",),
-                )
-                v.VTextField(
-                    v_model=("vq_submit_input",),
-                    label=".py input path",
-                    density="compact",
-                    hide_details=True,
-                    v_if=("!vq_submit_container",),
-                )
-                v.VSwitch(
-                    v_model=("vq_submit_container",),
-                    label=(
-                        "Submit as QVF container (one file out, "
-                        "same file back)"
-                    ),
-                    density="compact",
+        ), v.VCard():
+            v.VCardTitle("Submit to vq")
+            v.VCardText(
+                "{{ vq_submit_container"
+                " ? 'This will submit one pending QVF container "
+                "(structure + job.spec). vq runs it and settles the same "
+                "file in place, so the archive you get back is the whole "
+                "calculation.'"
+                " : 'This will generate a vibe-qc input script and submit "
+                "it to the vq job queue for execution.' }}"
+            )
+            v.VCardText(
+                "Template: {{ calc_template }}  |  Method: {{ calc_method }}  "
+                "|  Basis: {{ calc_basis }}",
+                classes="text-caption",
+            )
+            v.VCardSubtitle(
+                "vibe-qc input file to submit:",
+                v_if=("!vq_submit_container",),
+            )
+            v.VTextField(
+                v_model=("vq_submit_input",),
+                label=".py input path",
+                density="compact",
+                hide_details=True,
+                v_if=("!vq_submit_container",),
+            )
+            v.VSwitch(
+                v_model=("vq_submit_container",),
+                label=(
+                    "Submit as QVF container (one file out, "
+                    "same file back)"
+                ),
+                density="compact",
+                color="primary",
+                hide_details=True,
+                classes="px-4",
+                disabled=("!vq_submit_container_available",),
+            )
+            v.VSwitch(
+                v_model=("vq_submit_live_checkpoint",),
+                label=(
+                    "vq_submit_container"
+                    " ? 'Stream live checkpoints"
+                    " (containers settle in place instead)'"
+                    " : 'Stream live checkpoints"
+                    " (watchable while running)'",
+                ),
+                density="compact",
+                color="primary",
+                hide_details=True,
+                classes="px-4",
+                disabled=("vq_submit_container",),
+            )
+            with v.VProgressLinear(
+                v_if=("vq_submitting",),
+                indeterminate=True,
+                color="primary",
+            ):
+                pass
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn("Cancel", click="vq_submit_dialog = false", disabled=("vq_submitting",))
+                v.VBtn(
+                    "Submit to Cluster",
                     color="primary",
-                    hide_details=True,
-                    classes="px-4",
-                    disabled=("!vq_submit_container_available",),
+                    variant="flat",
+                    click=ctrl.vq_submit_job,
+                    disabled=("vq_submitting",),
                 )
-                v.VSwitch(
-                    v_model=("vq_submit_live_checkpoint",),
-                    label=(
-                        "vq_submit_container"
-                        " ? 'Stream live checkpoints"
-                        " (containers settle in place instead)'"
-                        " : 'Stream live checkpoints"
-                        " (watchable while running)'",
-                    ),
-                    density="compact",
-                    color="primary",
-                    hide_details=True,
-                    classes="px-4",
-                    disabled=("vq_submit_container",),
-                )
-                with v.VProgressLinear(
-                    v_if=("vq_submitting",),
-                    indeterminate=True,
-                    color="primary",
-                ):
-                    pass
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn("Cancel", click="vq_submit_dialog = false", disabled=("vq_submitting",))
-                    v.VBtn(
-                        "Submit to Cluster",
-                        color="primary",
-                        variant="flat",
-                        click=ctrl.vq_submit_job,
-                        disabled=("vq_submitting",),
-                    )
 
         # ── Supercell dialog (v1.3) ────────────────────────────────────
         with v.VDialog(
@@ -8801,49 +9158,48 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Build supercell"),
             aria_label="Build supercell",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Build Supercell")
-                v.VCardText("Specify replication factors Nx, Ny, Nz:")
-                with v.VRow(dense=True):
-                    v.VTextField(
-                        v_model=("build_supercell_nx", 1),
-                        v_if=("!is_periodic || pbc_a",),
-                        label="Nx",
-                        type="number",
-                        min=1,
-                        density="compact",
-                        hide_details=True,
-                        style="max-width: 80px",
-                    )
-                    v.VTextField(
-                        v_model=("build_supercell_ny", 1),
-                        v_if=("!is_periodic || pbc_b",),
-                        label="Ny",
-                        type="number",
-                        min=1,
-                        density="compact",
-                        hide_details=True,
-                        style="max-width: 80px",
-                    )
-                    v.VTextField(
-                        v_model=("build_supercell_nz", 1),
-                        v_if=("!is_periodic || pbc_c",),
-                        label="Nz",
-                        type="number",
-                        min=1,
-                        density="compact",
-                        hide_details=True,
-                        style="max-width: 80px",
-                    )
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn("Cancel", click="build_supercell_dialog = false")
-                    v.VBtn(
-                        "Build",
-                        color="primary",
-                        click=ctrl.build_supercell,
-                    )
+        ), v.VCard():
+            v.VCardTitle("Build Supercell")
+            v.VCardText("Specify replication factors Nx, Ny, Nz:")
+            with v.VRow(dense=True):
+                v.VTextField(
+                    v_model=("build_supercell_nx", 1),
+                    v_if=("!is_periodic || pbc_a",),
+                    label="Nx",
+                    type="number",
+                    min=1,
+                    density="compact",
+                    hide_details=True,
+                    style="max-width: 80px",
+                )
+                v.VTextField(
+                    v_model=("build_supercell_ny", 1),
+                    v_if=("!is_periodic || pbc_b",),
+                    label="Ny",
+                    type="number",
+                    min=1,
+                    density="compact",
+                    hide_details=True,
+                    style="max-width: 80px",
+                )
+                v.VTextField(
+                    v_model=("build_supercell_nz", 1),
+                    v_if=("!is_periodic || pbc_c",),
+                    label="Nz",
+                    type="number",
+                    min=1,
+                    density="compact",
+                    hide_details=True,
+                    style="max-width: 80px",
+                )
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn("Cancel", click="build_supercell_dialog = false")
+                v.VBtn(
+                    "Build",
+                    color="primary",
+                    click=ctrl.build_supercell,
+                )
 
         # ── Screenshot dialog ─────────────────────────────────────────
         with v.VDialog(
@@ -8852,31 +9208,30 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Export screenshot"),
             aria_label="Export screenshot",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Export Screenshot")
-                v.VCardText("Resolution multiplier")
-                v.VSelect(
-                    v_model=("screenshot_scale",),
-                    items=("screenshot_scale_options",),
-                    label="Scale",
-                    density="compact",
-                    hide_details=True,
-                )
-                v.VSwitch(
-                    v_model=("screenshot_transparent",),
-                    label="Transparent background",
-                    density="compact",
+        ), v.VCard():
+            v.VCardTitle("Export Screenshot")
+            v.VCardText("Resolution multiplier")
+            v.VSelect(
+                v_model=("screenshot_scale",),
+                items=("screenshot_scale_options",),
+                label="Scale",
+                density="compact",
+                hide_details=True,
+            )
+            v.VSwitch(
+                v_model=("screenshot_transparent",),
+                label="Transparent background",
+                density="compact",
+                color="primary",
+            )
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn("Cancel", click="screenshot_dialog = false")
+                v.VBtn(
+                    "Capture",
                     color="primary",
+                    click=ctrl.save_screenshot,
                 )
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn("Cancel", click="screenshot_dialog = false")
-                    v.VBtn(
-                        "Capture",
-                        color="primary",
-                        click=ctrl.save_screenshot,
-                    )
 
         # ── Video export dialog ──────────────────────────────────────
         with v.VDialog(
@@ -8886,55 +9241,54 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Export video"),
             aria_label="Export video",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Export Video")
-                v.VCardText("Format, frame rate, and animation type for video export")
-                v.VSelect(
-                    v_model=("video_export_format", "mp4"),
-                    items=("video_export_format_options",),
-                    item_title="title",
-                    item_value="value",
-                    label="Format",
-                    density="compact",
-                    hide_details=True,
+        ), v.VCard():
+            v.VCardTitle("Export Video")
+            v.VCardText("Format, frame rate, and animation type for video export")
+            v.VSelect(
+                v_model=("video_export_format", "mp4"),
+                items=("video_export_format_options",),
+                item_title="title",
+                item_value="value",
+                label="Format",
+                density="compact",
+                hide_details=True,
+            )
+            v.VSelect(
+                v_model=("video_export_fps", 30),
+                items=("video_export_fps_options",),
+                item_title="title",
+                item_value="value",
+                label="Frame rate",
+                density="compact",
+                hide_details=True,
+            )
+            v.VSelect(
+                v_model=("video_export_kind", "turntable"),
+                items=("video_export_kind_options",),
+                item_title="title",
+                item_value="value",
+                label="Animation type",
+                density="compact",
+                hide_details=True,
+            )
+            v.VProgressLinear(
+                v_if=("video_export_running",),
+                indeterminate=True,
+                color="primary",
+            )
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn(
+                    "Cancel",
+                    click="video_export_dialog = false",
+                    disabled=("video_export_running",),
                 )
-                v.VSelect(
-                    v_model=("video_export_fps", 30),
-                    items=("video_export_fps_options",),
-                    item_title="title",
-                    item_value="value",
-                    label="Frame rate",
-                    density="compact",
-                    hide_details=True,
-                )
-                v.VSelect(
-                    v_model=("video_export_kind", "turntable"),
-                    items=("video_export_kind_options",),
-                    item_title="title",
-                    item_value="value",
-                    label="Animation type",
-                    density="compact",
-                    hide_details=True,
-                )
-                v.VProgressLinear(
-                    v_if=("video_export_running",),
-                    indeterminate=True,
+                v.VBtn(
+                    "Export",
                     color="primary",
+                    click=ctrl.do_video_export,
+                    disabled=("video_export_running",),
                 )
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn(
-                        "Cancel",
-                        click="video_export_dialog = false",
-                        disabled=("video_export_running",),
-                    )
-                    v.VBtn(
-                        "Export",
-                        color="primary",
-                        click=ctrl.do_video_export,
-                        disabled=("video_export_running",),
-                    )
 
         # ── High-quality raytrace render dialog ────────────────────────
         with v.VDialog(
@@ -8944,94 +9298,93 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("High-quality raytrace render"),
             aria_label="High-quality raytrace render",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("High-Quality Raytrace Render")
-                v.VCardSubtitle("Publication / magazine-cover quality output")
-                with v.VCardText():
-                    # Quality preset
-                    v.VSelect(
-                        v_model=("hq_render_quality",),
-                        items=("hq_render_quality_options",),
-                        label="Quality",
-                        density="compact",
-                        hide_details=True,
-                        disabled=("hq_render_running",),
-                    )
-                    # Resolution
-                    v.VSelect(
-                        v_model=("hq_render_resolution",),
-                        items=("hq_render_resolution_options",),
-                        label="Resolution",
-                        density="compact",
-                        hide_details=True,
-                        disabled=("hq_render_running",),
-                    )
-                    # Environment / lighting
-                    v.VSelect(
-                        v_model=("hq_render_environment",),
-                        items=("hq_render_environment_options",),
-                        label="Lighting",
-                        density="compact",
-                        hide_details=True,
-                        disabled=("hq_render_running",),
-                    )
-                    # Material style
-                    v.VSelect(
-                        v_model=("hq_render_material",),
-                        items=("hq_render_material_options",),
-                        label="Material",
-                        density="compact",
-                        hide_details=True,
-                        disabled=("hq_render_running",),
-                    )
-                    # Depth of field toggle
-                    v.VSwitch(
-                        v_model=("hq_render_dof",),
-                        label="Depth of field",
-                        density="compact",
-                        color="primary",
-                        disabled=("hq_render_running",),
-                    )
-                    # Save to disk alongside QVF file
-                    v.VSwitch(
-                        v_model=("hq_render_save_disk",),
-                        label="Save next to .qvf file",
-                        density="compact",
-                        color="primary",
-                        disabled=("hq_render_running",),
-                    )
-                    v.VCardText(
-                        "{{ hq_render_saved_path }}",
-                        v_if=("hq_render_saved_path",),
-                        classes="text-caption text-green",
-                    )
-                    # Progress bar (shown during render)
-                    v.VProgressLinear(
-                        v_model=("hq_render_progress",),
-                        color="primary",
-                        height="8",
-                        indeterminate=("hq_render_running && hq_render_progress < 0.05",),
-                        v_if=("hq_render_running",),
-                    )
-                    v.VCardText(
-                        "{{ hq_render_progress_msg }}",
-                        v_if=("hq_render_running",),
-                        classes="text-caption",
-                    )
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn(
-                        "Cancel",
-                        click="hq_render_dialog = false",
-                        disabled=("hq_render_running",),
-                    )
-                    v.VBtn(
-                        "Render",
-                        color="primary",
-                        click=ctrl.start_hq_render,
-                        disabled=("hq_render_running",),
-                    )
+        ), v.VCard():
+            v.VCardTitle("High-Quality Raytrace Render")
+            v.VCardSubtitle("Publication / magazine-cover quality output")
+            with v.VCardText():
+                # Quality preset
+                v.VSelect(
+                    v_model=("hq_render_quality",),
+                    items=("hq_render_quality_options",),
+                    label="Quality",
+                    density="compact",
+                    hide_details=True,
+                    disabled=("hq_render_running",),
+                )
+                # Resolution
+                v.VSelect(
+                    v_model=("hq_render_resolution",),
+                    items=("hq_render_resolution_options",),
+                    label="Resolution",
+                    density="compact",
+                    hide_details=True,
+                    disabled=("hq_render_running",),
+                )
+                # Environment / lighting
+                v.VSelect(
+                    v_model=("hq_render_environment",),
+                    items=("hq_render_environment_options",),
+                    label="Lighting",
+                    density="compact",
+                    hide_details=True,
+                    disabled=("hq_render_running",),
+                )
+                # Material style
+                v.VSelect(
+                    v_model=("hq_render_material",),
+                    items=("hq_render_material_options",),
+                    label="Material",
+                    density="compact",
+                    hide_details=True,
+                    disabled=("hq_render_running",),
+                )
+                # Depth of field toggle
+                v.VSwitch(
+                    v_model=("hq_render_dof",),
+                    label="Depth of field",
+                    density="compact",
+                    color="primary",
+                    disabled=("hq_render_running",),
+                )
+                # Save to disk alongside QVF file
+                v.VSwitch(
+                    v_model=("hq_render_save_disk",),
+                    label="Save next to .qvf file",
+                    density="compact",
+                    color="primary",
+                    disabled=("hq_render_running",),
+                )
+                v.VCardText(
+                    "{{ hq_render_saved_path }}",
+                    v_if=("hq_render_saved_path",),
+                    classes="text-caption text-green",
+                )
+                # Progress bar (shown during render)
+                v.VProgressLinear(
+                    v_model=("hq_render_progress",),
+                    color="primary",
+                    height="8",
+                    indeterminate=("hq_render_running && hq_render_progress < 0.05",),
+                    v_if=("hq_render_running",),
+                )
+                v.VCardText(
+                    "{{ hq_render_progress_msg }}",
+                    v_if=("hq_render_running",),
+                    classes="text-caption",
+                )
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn(
+                    "Cancel",
+                    click="hq_render_dialog = false",
+                    disabled=("hq_render_running",),
+                )
+                v.VBtn(
+                    "Render",
+                    color="primary",
+                    click=ctrl.start_hq_render,
+                    disabled=("hq_render_running",),
+                )
 
         # ── Keyboard shortcuts dialog ────────────────────────────────
         with v.VDialog(
@@ -9040,28 +9393,24 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Keyboard shortcuts"),
             aria_label="Keyboard shortcuts",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Keyboard Shortcuts")
-                with v.VCardText():
-                    with v.VList(density="compact"):
-                        with v.VListItem(
-                            v_for=("(key, desc) in Object.entries(shortcut_keys)",),
-                            key=("key",),
-                        ):
-                            with v.VListItemTitle():
-                                v.VChip(
-                                    "{{ key }}",
-                                    size="x-small",
-                                    color="primary",
-                                    variant="outlined",
-                                    classes="mr-2",
-                                    label=True,
-                                )
-                                html.Span("{{ desc }}")
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn("Close", click="shortcuts_help_dialog = false")
+        ), v.VCard():
+            v.VCardTitle("Keyboard Shortcuts")
+            with v.VCardText(), v.VList(density="compact"), v.VListItem(
+                v_for=("(key, desc) in Object.entries(shortcut_keys)",),
+                key=("key",),
+            ), v.VListItemTitle():
+                v.VChip(
+                    "{{ key }}",
+                    size="x-small",
+                    color="primary",
+                    variant="outlined",
+                    classes="mr-2",
+                    label=True,
+                )
+                html.Span("{{ desc }}")
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn("Close", click="shortcuts_help_dialog = false")
 
         # ── About dialog ────────────────────────────────────────────
         with v.VDialog(
@@ -9070,29 +9419,28 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("About vibe-view"),
             aria_label="About vibe-view",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("vibe-view")
-                v.VCardSubtitle("{{ about_version }}")
-                v.VCardText(
-                    "GPU-accelerated interactive 3D viewer and molecular editor "
-                    "for QVF and quantum-chemistry data from many codes.\n\n"
-                    "Features: structure editing, fragment building, crystal builder, "
-                    "POV-Ray/Blender export, vq integration, material presets, "
-                    "presentation mode, and more."
-                )
-                v.VDivider()
-                v.VCardText(
-                    "{{ about_system_info }}",
-                    classes="text-caption",
-                    style="white-space: pre; font-family: monospace;",
-                )
-                v.VDivider()
-                v.VCardText("License: MPL 2.0", classes="text-caption")
-                v.VCardText("https://vibe-qc.com", classes="text-caption")
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn("Close", click="about_dialog = false")
+        ), v.VCard():
+            v.VCardTitle("vibe-view")
+            v.VCardSubtitle("{{ about_version }}")
+            v.VCardText(
+                "GPU-accelerated interactive 3D viewer and molecular editor "
+                "for QVF and quantum-chemistry data from many codes.\n\n"
+                "Features: structure editing, fragment building, crystal builder, "
+                "POV-Ray/Blender export, vq integration, material presets, "
+                "presentation mode, and more."
+            )
+            v.VDivider()
+            v.VCardText(
+                "{{ about_system_info }}",
+                classes="text-caption",
+                style="white-space: pre; font-family: monospace;",
+            )
+            v.VDivider()
+            v.VCardText("License: MPL 2.0", classes="text-caption")
+            v.VCardText("https://vibe-qc.com", classes="text-caption")
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn("Close", click="about_dialog = false")
 
         # ── Settings dialog ───────────────────────────────────────────
         with v.VDialog(
@@ -9101,50 +9449,65 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Settings"),
             aria_label="Settings",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Settings")
-                v.VSwitch(
-                    v_model=("settings_dark_background",),
-                    label="Dark background (default)",
-                    density="compact",
+        ), v.VCard():
+            v.VCardTitle("Settings")
+            v.VTextField(
+                v_model=("settings_relocalize_backend_python",),
+                label="vibe-qc Python executable",
+                placeholder="/path/to/backend/bin/python",
+                hint=("Global backend for re-localization. "
+                      "Use Python from a separate vibe-qc installation."),
+                persistent_hint=True,
+                classes="ma-3",
+            )
+            v.VBtn(
+                "Save backend and check",
+                click=ctrl.save_relocalize_backend,
+                loading=("relocalize_probe_running",),
+                classes="mx-3",
+            )
+            v.VAlert("{{ relocalize_backend_status }}", density="compact", classes="ma-3")
+            v.VSwitch(
+                v_model=("settings_dark_background",),
+                label="Dark background (default)",
+                density="compact",
+                color="primary",
+                hide_details=True,
+            )
+            v.VSwitch(
+                v_model=("ui_dark_mode", True),
+                label="Dark UI theme",
+                density="compact",
+                color="primary",
+                hide_details=True,
+                update_modelValue=(ctrl.toggle_dark_ui, "[$event]"),
+            )
+            v.VSelect(
+                v_model=("settings_material_preset",),
+                items=("material_preset_options",),
+                item_title="title",
+                item_value="value",
+                label="Default material style",
+                density="compact",
+                hide_details=True,
+            )
+            v.VSelect(
+                v_model=("settings_auto_save_interval", 60),
+                items=("settings_interval_options",),
+                item_title="title",
+                item_value="value",
+                label="Auto-save interval",
+                density="compact",
+                hide_details=True,
+            )
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn("Cancel", click="settings_dialog = false")
+                v.VBtn(
+                    "Save",
                     color="primary",
-                    hide_details=True,
+                    click=ctrl.save_settings,
                 )
-                v.VSwitch(
-                    v_model=("ui_dark_mode", True),
-                    label="Dark UI theme",
-                    density="compact",
-                    color="primary",
-                    hide_details=True,
-                    update_modelValue=(ctrl.toggle_dark_ui, "[$event]"),
-                )
-                v.VSelect(
-                    v_model=("settings_material_preset",),
-                    items=("material_preset_options",),
-                    item_title="title",
-                    item_value="value",
-                    label="Default material style",
-                    density="compact",
-                    hide_details=True,
-                )
-                v.VSelect(
-                    v_model=("settings_auto_save_interval", 60),
-                    items=("settings_interval_options",),
-                    item_title="title",
-                    item_value="value",
-                    label="Auto-save interval",
-                    density="compact",
-                    hide_details=True,
-                )
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn("Cancel", click="settings_dialog = false")
-                    v.VBtn(
-                        "Save",
-                        color="primary",
-                        click=ctrl.save_settings,
-                    )
 
         # ── Download manager dialog ──────────────────────────────────
         with v.VDialog(
@@ -9153,28 +9516,27 @@ def create_app(readers):
             afterLeave=_dialog_focus_restore("Recent exports"),
             aria_label="Recent exports",
             __properties=[("aria_label", "aria-label")],
-        ):
-            with v.VCard():
-                v.VCardTitle("Recent Exports")
-                with v.VList(density="compact", v_if=("download_history.length > 0",)):
-                    v.VListItem(
-                        v_for=("item in download_history",),
-                        key=("item.time",),
-                        title=("item.name",),
-                        subtitle=("item.format + ' — ' + item.time",),
-                        prepend_icon="mdi-file-download",
-                    )
-                v.VCardText(
-                    "No exports yet. Use the export buttons or take a screenshot.",
-                    v_if=("download_history.length === 0",),
-                    classes="text-caption",
+        ), v.VCard():
+            v.VCardTitle("Recent Exports")
+            with v.VList(density="compact", v_if=("download_history.length > 0",)):
+                v.VListItem(
+                    v_for=("item in download_history",),
+                    key=("item.time",),
+                    title=("item.name",),
+                    subtitle=("item.format + ' — ' + item.time",),
+                    prepend_icon="mdi-file-download",
                 )
-                with v.VCardActions():
-                    v.VSpacer()
-                    v.VBtn(
-                        "Clear History", size="small", variant="text", click="download_history = []"
-                    )
-                    v.VBtn("Close", click="download_manager_dialog = false")
+            v.VCardText(
+                "No exports yet. Use the export buttons or take a screenshot.",
+                v_if=("download_history.length === 0",),
+                classes="text-caption",
+            )
+            with v.VCardActions():
+                v.VSpacer()
+                v.VBtn(
+                    "Clear History", size="small", variant="text", click="download_history = []"
+                )
+                v.VBtn("Close", click="download_manager_dialog = false")
 
         # Left sidebar — sibling of v-main so Vuetify offsets the content.
         with v.VNavigationDrawer(
@@ -9234,7 +9596,10 @@ def create_app(readers):
         ):
             _build_controls(server, ctrl)
 
-        with v.VMain():
+        # noqa: SIM117 below — the nesting mirrors the Vuetify DOM and each
+        # level carries its own comment; flattening it would move 500+ lines
+        # of layout one indent left for no gain.
+        with v.VMain():  # noqa: SIM117
             # Inside main: viewport on top, bottom panel below. Use flex column
             # so the viewport fills the available height while the bottom panel
             # only takes the space its cards need.
@@ -9319,7 +9684,8 @@ def create_app(readers):
                         "if(window._vibe_ctx_wired)return;"
                         "window._vibe_ctx_wired=1;"
                         "document.addEventListener('contextmenu',function(e){"
-                        "var el=document.querySelector('.vtk-view canvas, .js-vtk-view canvas, canvas');"
+                        "var el=document.querySelector('.vtk-view canvas, "
+                        ".js-vtk-view canvas, canvas');"
                         "if(!el)return;"
                         "var r=el.getBoundingClientRect();"
                         "if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)return;"
@@ -9347,7 +9713,8 @@ def create_app(readers):
                         "typeof document !== 'undefined' && (function(){"
                         "var _tries=0;var _iv=setInterval(function(){"
                         "if(++_tries>40){clearInterval(_iv);return;}"
-                        "var el=document.querySelector('.vtk-view canvas, .js-vtk-view canvas, canvas');"
+                        "var el=document.querySelector('.vtk-view canvas, "
+                        ".js-vtk-view canvas, canvas');"
                         "if(!el)return;"
                         f"el.setAttribute('aria-label',{_VIEWPORT_ARIA_LABEL!r});"
                         "if(el._vibe_tt_wired)return;"
@@ -9385,7 +9752,10 @@ def create_app(readers):
                             "!selected_section && welcome_visible && sidebar_entries.length > 0",
                         ),
                         classes="ma-4 pa-4",
-                        style="position: absolute; top: 20px; left: 20px; z-index: 50; max-width: 400px; opacity: 0.95;",
+                        style=(
+                            "position: absolute; top: 20px; left: 20px; "
+                            "z-index: 50; max-width: 400px; opacity: 0.95;"
+                        ),
                     ):
                         v.VCardTitle("👋 Welcome to vibe-view")
                         v.VCardText(
@@ -9468,6 +9838,53 @@ def create_app(readers):
                         ),
                     ):
                         v.VCardTitle("{{ bands_title }}")
+                        # Energy window (#26). An all-electron periodic
+                        # archive puts core states thousands of eV below
+                        # E_F, so the autoscaled axis flattens the valence
+                        # region; the chart opens on a valence window and
+                        # these fields move it. Commit on Enter or on
+                        # leaving the field, not per keystroke — every
+                        # commit re-renders the whole figure.
+                        with v.VRow(
+                            dense=True,
+                            classes="px-4 align-center",
+                            style="flex: 0 0 auto;",
+                            v_if=("bands_window_available",),
+                        ):
+                            with v.VCol(cols=4):
+                                v.VTextField(
+                                    v_model=("bands_emin",),
+                                    label="E − E_F min (eV)",
+                                    aria_label="Energy window minimum in eV",
+                                    __properties=[("aria_label", "aria-label")],
+                                    type="number",
+                                    density="compact",
+                                    hide_details=True,
+                                    __events=["blur", ("keyup_enter", "keyup.enter")],
+                                    keyup_enter=ctrl.update_bands_energy_window,
+                                    blur=ctrl.update_bands_energy_window,
+                                )
+                            with v.VCol(cols=4):
+                                v.VTextField(
+                                    v_model=("bands_emax",),
+                                    label="E − E_F max (eV)",
+                                    aria_label="Energy window maximum in eV",
+                                    __properties=[("aria_label", "aria-label")],
+                                    type="number",
+                                    density="compact",
+                                    hide_details=True,
+                                    __events=["blur", ("keyup_enter", "keyup.enter")],
+                                    keyup_enter=ctrl.update_bands_energy_window,
+                                    blur=ctrl.update_bands_energy_window,
+                                )
+                            with v.VCol(cols=4):
+                                v.VBtn(
+                                    "Reset window",
+                                    size="small",
+                                    variant="text",
+                                    disabled=("bands_window_auto",),
+                                    click=ctrl.reset_bands_energy_window,
+                                )
                         html.Iframe(
                             srcdoc=("bands_html",),
                             style=(
@@ -9734,30 +10151,29 @@ def create_app(readers):
             position_y=("context_menu_y",),
             absolute=True,
             close_on_content_click=True,
-        ):
-            with v.VList(density="compact"):
-                v.VListItem(
-                    "Select Atom",
-                    prepend_icon="mdi-cursor-pointer",
-                    click=ctrl.context_select_atom,
-                    v_if=("context_menu_atom_idx >= 0",),
-                )
-                v.VListItem(
-                    "Add Atom Here",
-                    prepend_icon="mdi-atom",
-                    click=ctrl.context_add_atom,
-                )
-                v.VListItem(
-                    "Center View Here",
-                    prepend_icon="mdi-crosshairs-gps",
-                    click=ctrl.context_center_view,
-                )
-                v.VDivider()
-                v.VListItem(
-                    "Screenshot",
-                    prepend_icon="mdi-camera",
-                    click=ctrl.save_screenshot,
-                )
+        ), v.VList(density="compact"):
+            v.VListItem(
+                "Select Atom",
+                prepend_icon="mdi-cursor-pointer",
+                click=ctrl.context_select_atom,
+                v_if=("context_menu_atom_idx >= 0",),
+            )
+            v.VListItem(
+                "Add Atom Here",
+                prepend_icon="mdi-atom",
+                click=ctrl.context_add_atom,
+            )
+            v.VListItem(
+                "Center View Here",
+                prepend_icon="mdi-crosshairs-gps",
+                click=ctrl.context_center_view,
+            )
+            v.VDivider()
+            v.VListItem(
+                "Screenshot",
+                prepend_icon="mdi-camera",
+                click=ctrl.save_screenshot,
+            )
 
         # ── Hover tooltip ──
         with html.Div(
@@ -9783,101 +10199,100 @@ def create_app(readers):
             role="region",
             aria_label="Presentation mode",
             __properties=["role", ("aria_label", "aria-label")],
+        ), html.Div(
+            style=(
+                "width: 100vw; height: 100vh; position: relative;"
+                " color: white; pointer-events: none;"
+            ),
         ):
+            # The live VTK viewport stays visible underneath. App chrome
+            # is v-if-gated while presentation_mode is true, so the
+            # viewport expands to the full browser before these controls
+            # are painted over it.
+            v.VCardText(
+                "{{ presentation_slides.length > 0 ? "
+                "presentation_slides[presentation_slide].name : '' }}",
+                classes="text-h3 text-white text-center",
+                style=(
+                    "position: absolute; top: 24px; left: 50%;"
+                    " transform: translateX(-50%); z-index: 100;"
+                    " width: max-content; max-width: calc(100vw - 48px);"
+                    " padding: 8px 18px; border-radius: 10px;"
+                    " background: rgba(0,0,0,0.68);"
+                    " text-shadow: 0 1px 3px #000;"
+                ),
+            )
+            v.VChip(
+                "{{ presentation_slide + 1 }} / {{ presentation_slides.length }}",
+                color="white",
+                variant="outlined",
+                style=(
+                    "position: absolute; bottom: 24px; right: 24px;"
+                    " z-index: 100; background: rgba(0,0,0,0.68);"
+                ),
+            )
+            # Navigation controls
             with html.Div(
                 style=(
-                    "width: 100vw; height: 100vh; position: relative;"
-                    " color: white; pointer-events: none;"
+                    "position: absolute; bottom: 24px; left: 50%;"
+                    " transform: translateX(-50%); display: flex; gap: 12px;"
+                    " z-index: 200; padding: 4px 8px; border-radius: 24px;"
+                    " background: rgba(0,0,0,0.68); pointer-events: auto;"
                 ),
             ):
-                # The live VTK viewport stays visible underneath. App chrome
-                # is v-if-gated while presentation_mode is true, so the
-                # viewport expands to the full browser before these controls
-                # are painted over it.
-                v.VCardText(
-                    "{{ presentation_slides.length > 0 ? "
-                    "presentation_slides[presentation_slide].name : '' }}",
-                    classes="text-h3 text-white text-center",
-                    style=(
-                        "position: absolute; top: 24px; left: 50%;"
-                        " transform: translateX(-50%); z-index: 100;"
-                        " width: max-content; max-width: calc(100vw - 48px);"
-                        " padding: 8px 18px; border-radius: 10px;"
-                        " background: rgba(0,0,0,0.68);"
-                        " text-shadow: 0 1px 3px #000;"
-                    ),
-                )
-                v.VChip(
-                    "{{ presentation_slide + 1 }} / {{ presentation_slides.length }}",
+                v.VBtn(
+                    icon="mdi-chevron-left",
+                    size="large",
                     color="white",
-                    variant="outlined",
-                    style=(
-                        "position: absolute; bottom: 24px; right: 24px;"
-                        " z-index: 100; background: rgba(0,0,0,0.68);"
-                    ),
+                    variant="text",
+                    title="Previous slide",
+                    aria_label="Previous slide",
+                    __properties=[("aria_label", "aria-label")],
+                    disabled=("presentation_slides.length < 2",),
+                    click=ctrl.presentation_prev,
                 )
-                # Navigation controls
-                with html.Div(
-                    style=(
-                        "position: absolute; bottom: 24px; left: 50%;"
-                        " transform: translateX(-50%); display: flex; gap: 12px;"
-                        " z-index: 200; padding: 4px 8px; border-radius: 24px;"
-                        " background: rgba(0,0,0,0.68); pointer-events: auto;"
+                v.VBtn(
+                    icon=(
+                        "presentation_auto_advance ? 'mdi-pause' : 'mdi-play'",
                     ),
-                ):
-                    v.VBtn(
-                        icon="mdi-chevron-left",
-                        size="large",
-                        color="white",
-                        variant="text",
-                        title="Previous slide",
-                        aria_label="Previous slide",
-                        __properties=[("aria_label", "aria-label")],
-                        disabled=("presentation_slides.length < 2",),
-                        click=ctrl.presentation_prev,
-                    )
-                    v.VBtn(
-                        icon=(
-                            "presentation_auto_advance ? 'mdi-pause' : 'mdi-play'",
-                        ),
-                        size="large",
-                        color="white",
-                        variant="text",
-                        title=(
-                            "presentation_auto_advance ? "
-                            "'Pause automatic slide advance' : "
-                            "'Start automatic slide advance'",
-                        ),
-                        aria_label=(
-                            "presentation_auto_advance ? "
-                            "'Pause automatic slide advance' : "
-                            "'Start automatic slide advance'",
-                        ),
-                        __properties=[("aria_label", "aria-label")],
-                        disabled=("presentation_slides.length < 2",),
-                        click=ctrl.toggle_presentation_auto_advance,
-                    )
-                    v.VBtn(
-                        icon="mdi-chevron-right",
-                        size="large",
-                        color="white",
-                        variant="text",
-                        title="Next slide",
-                        aria_label="Next slide",
-                        __properties=[("aria_label", "aria-label")],
-                        disabled=("presentation_slides.length < 2",),
-                        click=ctrl.presentation_next,
-                    )
-                    v.VBtn(
-                        icon="mdi-close",
-                        size="large",
-                        color="red",
-                        variant="text",
-                        title="Exit presentation",
-                        aria_label="Exit presentation",
-                        __properties=[("aria_label", "aria-label")],
-                        click=ctrl.toggle_presentation,
-                    )
+                    size="large",
+                    color="white",
+                    variant="text",
+                    title=(
+                        "presentation_auto_advance ? "
+                        "'Pause automatic slide advance' : "
+                        "'Start automatic slide advance'",
+                    ),
+                    aria_label=(
+                        "presentation_auto_advance ? "
+                        "'Pause automatic slide advance' : "
+                        "'Start automatic slide advance'",
+                    ),
+                    __properties=[("aria_label", "aria-label")],
+                    disabled=("presentation_slides.length < 2",),
+                    click=ctrl.toggle_presentation_auto_advance,
+                )
+                v.VBtn(
+                    icon="mdi-chevron-right",
+                    size="large",
+                    color="white",
+                    variant="text",
+                    title="Next slide",
+                    aria_label="Next slide",
+                    __properties=[("aria_label", "aria-label")],
+                    disabled=("presentation_slides.length < 2",),
+                    click=ctrl.presentation_next,
+                )
+                v.VBtn(
+                    icon="mdi-close",
+                    size="large",
+                    color="red",
+                    variant="text",
+                    title="Exit presentation",
+                    aria_label="Exit presentation",
+                    __properties=[("aria_label", "aria-label")],
+                    click=ctrl.toggle_presentation,
+                )
 
     # ── About info ──────────────────────────────────────────────────
     import platform
@@ -9934,16 +10349,41 @@ def create_app(readers):
             pass  # Silently skip if file can't be written
 
     # ── Controller: persistent settings ────────────────────────────
+    @ctrl.set("save_relocalize_backend")
+    def save_relocalize_backend() -> bool:
+        from vibeview.settings import set_setting
+
+        state = server.state
+        path = str(state.settings_relocalize_backend_python or "").strip()
+        if path and not Path(path).expanduser().is_absolute():
+            state.relocalize_backend_status = "The backend Python path must be absolute"
+            return False
+        try:
+            set_setting("relocalize_backend_python", path)
+        except OSError as exc:
+            state.relocalize_backend_status = f"Could not save backend setting: {exc}"
+            return False
+        _cancel_relocalization()
+        state.relocalize_backend_python = path
+        check_relocalize_backend()
+        return True
+
     @ctrl.set("save_settings")
     def save_settings() -> None:
         """Persist user settings to disk."""
+        from vibeview.settings import load_settings
         from vibeview.settings import save_settings as _save
 
-        settings = {
-            "dark_background": server.state.settings_dark_background,
-            "material_preset": server.state.settings_material_preset,
-            "auto_save_interval": int(server.state.settings_auto_save_interval or 60),
-        }
+        if not save_relocalize_backend():
+            return
+        settings = load_settings()
+        settings.update(
+            {
+                "dark_background": server.state.settings_dark_background,
+                "material_preset": server.state.settings_material_preset,
+                "auto_save_interval": int(server.state.settings_auto_save_interval or 60),
+            }
+        )
         _save(settings)
         server.state.settings_dialog = False
         server.state.status_message = "Settings saved"
@@ -9951,12 +10391,15 @@ def create_app(readers):
         # Apply immediately
         if server.state.settings_dark_background != server.state.dark_background:
             server.state.dark_background = server.state.settings_dark_background
-            plotter.set_background(
+            server.state.background_override = (
+                "#1a1a2e" if server.state.dark_background else "#f0f0f0"
+            )
+            set_background(plotter, 
                 "#1a1a2e" if server.state.settings_dark_background else "#f0f0f0"
             )
             _push_view(plotter)
 
-    async def _auto_save_loop():
+    async def _auto_save_loop() -> None:
         """Auto-save session every 60 seconds."""
         while True:
             await asyncio.sleep(60)
@@ -10036,7 +10479,7 @@ def _element_button_style(z: int, row: int, col: int) -> str:
     )
 
 
-def _build_controls(server, ctrl) -> None:
+def _build_controls(server: Any, ctrl: Any) -> None:
     """Build the contextual control panel based on the selected section."""
     try:
         from trame.widgets import html
@@ -10113,13 +10556,13 @@ def _build_controls(server, ctrl) -> None:
             hide_details=True,
             update_modelValue=(ctrl.set_representation_style, "[$event]"),
         )
-        # Cartoon-only: what the ribbon is coloured by. Hidden for every
-        # other representation, where it would do nothing.
+        # One palette control across atom, bond and cartoon representations.
         v.VSelect(
-            v_model=("cartoon_color_mode",),
+            v_model=("structure_color_mode",),
             items=(
                 "cartoon_color_mode_options",
                 [
+                    {"title": "Element (cartoon: chain)", "value": "element"},
                     {"title": "Chain", "value": "chain"},
                     {"title": "Secondary structure", "value": "structure"},
                     {"title": "Residue type", "value": "residue"},
@@ -10128,10 +10571,10 @@ def _build_controls(server, ctrl) -> None:
             ),
             item_title="title",
             item_value="value",
-            label="Ribbon colour",
+            label="Biomolecule colour",
             density="compact",
             hide_details=True,
-            v_if=("representation_style === 'cartoon'",),
+            v_if=("residue_selection_available",),
             update_modelValue=(ctrl.set_cartoon_color_mode, "[$event]"),
         )
         # Residue/chain selection (D4), shared by every representation and
@@ -10160,6 +10603,27 @@ def _build_controls(server, ctrl) -> None:
             "{{ residue_selection_summary }}",
             classes="text-caption text-medium-emphasis mb-1 px-1",
             v_if=("residue_selection_available && residue_selection_summary",),
+        )
+        v.VSelect(
+            v_model=("residue_visibility",),
+            items=("residue_visibility_options", [
+                {"title": "Show all", "value": "all"},
+                {"title": "Isolate selection", "value": "isolate"},
+                {"title": "Hide selection", "value": "hide"},
+            ]),
+            item_title="title", item_value="value", label="Residue visibility",
+            density="compact", hide_details=True, v_if=("residue_selection_available",),
+            update_modelValue=(ctrl.set_residue_visibility, "[$event]"),
+        )
+        v.VSwitch(
+            v_model=("residue_pick_mode",), label="Pick residues in viewport",
+            density="compact", hide_details=True, v_if=("residue_selection_available",),
+            update_modelValue=(ctrl.set_residue_pick_mode, "[$event]"),
+        )
+        v.VSwitch(
+            v_model=("show_hydrogen_bonds",), label="Hydrogen-bond contacts (explicit H)",
+            density="compact", hide_details=True,
+            update_modelValue=(ctrl.toggle_hydrogen_bonds, "[$event]"),
         )
         # ── Material presets (v1.6) ──
         v.VSelect(
@@ -11102,26 +11566,37 @@ def _build_controls(server, ctrl) -> None:
         )
         # Re-localize: ask vibe-qc for a criterion this file does not carry.
         # Runs in a subprocess; the result lands as its own sidebar section.
+        v.VSelect(
+            v_model=("relocalize_source",),
+            items=(
+                "[{title:'Archived occupied orbitals',value:'supplied'},"
+                "{title:'New RHF + localize',value:'fresh_rhf'}]",
+            ),
+            label="Orbital source",
+            density="compact",
+        )
+        v.VAlert(
+            "Runs a new molecular RHF calculation using the current geometry and archived basis. "
+            "This is a new state.",
+            v_if=("relocalize_source === 'fresh_rhf'",),
+            density="compact",
+            type="info",
+        )
         with v.VRow(dense=True, classes="mt-2", align="center"):
             with v.VCol(cols=7, classes="py-0"):
                 v.VSelect(
                     v_model=("relocalize_method",),
-                    items=(
-                        "relocalize_method_options.length "
-                        "? relocalize_method_options "
-                        ": [{title:'IBO (intrinsic bond orbitals)',value:'ibo'},"
-                        "{title:'Foster-Boys',value:'boys'},"
-                        "{title:'Pipek-Mezey',value:'pipek-mezey'}]",
-                    ),
+                    items=("relocalize_method_options",),
                     item_title="title",
                     item_value="value",
                     label="Re-localize with",
+                    disabled=("!relocalize_supported || relocalize_running",),
                     density="compact",
                     hide_details=True,
                 )
             with v.VCol(cols=5, classes="py-0"):
                 v.VBtn(
-                    "Localize",
+                    "{{ relocalize_source === 'fresh_rhf' ? 'Calculate' : 'Localize' }}",
                     click=ctrl.run_relocalize,
                     loading=("relocalize_running",),
                     disabled=(
@@ -11131,19 +11606,58 @@ def _build_controls(server, ctrl) -> None:
                     size="small",
                     block=True,
                 )
+        with v.VRow(dense=True, classes="ma-1"):
+            v.VBtn(
+                "Check backend",
+                click=ctrl.check_relocalize_backend,
+                loading=("relocalize_probe_running",),
+                size="small",
+            )
+            v.VBtn("Backend settings", click="settings_dialog = true", size="small")
+            v.VBtn(
+                "Cancel", click=ctrl.cancel_relocalize, v_if=("relocalize_running",), size="small"
+            )
+            v.VBtn(
+                "Clear re-localized overlays",
+                click=ctrl.clear_relocalization,
+                v_if=("relocalize_has_overlay",),
+                size="small",
+            )
+        v.VAlert(
+            "{{ relocalize_reason }}",
+            v_if=("relocalize_reason",),
+            density="compact",
+            variant="tonal",
+            type="info",
+        )
+        v.VAlert("{{ relocalize_backend_status }}", density="compact", variant="tonal")
         v.VAlert(
             "{{ relocalize_status }}",
             v_if=("relocalize_status",),
             density="compact",
             variant="tonal",
             type=(
-                "relocalize_status.startsWith('failed') "
+                "relocalize_status.startsWith('Failed') "
                 "|| relocalize_status.includes('cannot') "
                 "|| relocalize_status.includes('needs vibe-qc') "
                 "? 'warning' : 'info'",
             ),
             classes="mt-1 text-caption",
         )
+        v.VAlert(
+            "{{ relocalize_result_summary }}",
+            v_if=("relocalize_result_summary",),
+            density="compact",
+            variant="tonal",
+            classes="mt-1 text-caption",
+        )
+        with html.Table(v_if=("relocalize_charge_rows.length",), classes="text-caption"):
+            with html.Thead(), html.Tr():
+                html.Th("Atom")
+                html.Th("IAO charge (e)")
+            with html.Tbody(), html.Tr(v_for="row in relocalize_charge_rows", key="row.atom"):
+                html.Td("{{ row.atom }}")
+                html.Td("{{ row.charge }}")
         with v.VRow(dense=True, classes="mt-1"):
             v.VBtn(
                 icon="mdi-skip-previous",
@@ -11419,7 +11933,7 @@ def _build_controls(server, ctrl) -> None:
 _SUBSCRIPT = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
 
 
-def _present_elements(reader: QVFReader) -> list[dict]:
+def _present_elements(reader: QVFReader) -> list[dict[str, Any]]:
     """Elements present in the structure, as picker items.
 
     ``[{"title": "C", "value": 6}, ...]`` in ascending atomic number — the
@@ -11522,7 +12036,7 @@ _PALETTE_ACTIONS = [
 ]
 
 
-def _palette_actions_for(reader) -> list[dict]:
+def _palette_actions_for(reader: QVFReader) -> list[dict[str, Any]]:
     """The static quick actions plus one 'Open section' entry per section
     of the loaded file, so Ctrl/Cmd+K can jump anywhere by name (design
     refresh 2026: palette open-section actions)."""
@@ -11540,7 +12054,7 @@ def _palette_actions_for(reader) -> list[dict]:
 _LIBRARY_RECENT_MAX = 6
 
 
-def _remember_library_pick(state, name: str) -> None:
+def _remember_library_pick(state: Any, name: str) -> None:
     """Push *name* onto the most-recently-used library list.
 
     Most-recent-first, de-duplicated, capped at _LIBRARY_RECENT_MAX so the
@@ -11787,10 +12301,15 @@ def _two_d_panel_kinds() -> frozenset[str]:
     )
 
 
-def _clear_output_panels(state) -> None:
+def _clear_output_panels(state: Any) -> None:
     state.active_volume_id = None
     state.volume_loaded = False
     state.bands_html = None
+    # A window typed for one section must not carry into the next (#26).
+    state.bands_window_available = False
+    state.bands_window_auto = True
+    state.bands_emin = None
+    state.bands_emax = None
     state.phonon_html = None
     state.eos_html = None
     state.fermi_band_options = []
@@ -11818,6 +12337,11 @@ def _clear_output_panels(state) -> None:
     # switch staleness) so the dropdown can't list a stale wavefunction.
     state.wf_section_id = None
     state.wf_mo_rows = []
+    state.relocalize_supported = False
+    state.relocalize_method_options = []
+    state.relocalize_has_overlay = False
+    state.relocalize_result_summary = ""
+    state.relocalize_charge_rows = []
     # Computed surfaces are scoped to that wavefunction section. Ordinary
     # same-file scene rebuilds preserve this recipe; section and file switches
     # deliberately discard it here.
@@ -11871,7 +12395,7 @@ def _push_camera(plotter: pv.Plotter) -> None:
         push()
 
 
-def _retaining_view_updater(plotter, update):
+def _retaining_view_updater(plotter: pv.Plotter, update: Callable[..., Any]) -> Callable[..., Any]:
     """Keep the last sent scene alive until its replacement is serialized.
 
     trame-vtk identifies VTK objects by memory address. Releasing actors
@@ -11881,7 +12405,7 @@ def _retaining_view_updater(plotter, update):
     """
     previous_actors = tuple(plotter.actors.values())
 
-    def update_view(*args, **kwargs):
+    def update_view(*args: Any, **kwargs: Any) -> Any:
         nonlocal previous_actors
         current_actors = tuple(plotter.actors.values())
         result = update(*args, **kwargs)
@@ -11906,16 +12430,15 @@ def _push_view(plotter: pv.Plotter) -> None:
     update = getattr(plotter, "_vibe_view_update", None)
     if update is None:
         return
-    try:
+    # The viewport push is best-effort: a client that has gone away must not
+    # take the render path down with it.
+    with contextlib.suppress(Exception):
         update()
-    except Exception:  # noqa: BLE001 — viewport push is best-effort
-        pass
 
 
-def _save_screenshot_disk(png_bytes: bytes, reader) -> None:
+def _save_screenshot_disk(png_bytes: bytes, reader: QVFReader) -> None:
     """Write screenshot PNG next to the QVF file, if its path is known."""
     from datetime import datetime
-    from pathlib import Path
 
     if reader.path is None:
         return
@@ -11925,10 +12448,9 @@ def _save_screenshot_disk(png_bytes: bytes, reader) -> None:
     out.write_bytes(png_bytes)
 
 
-def _save_export_disk(data: bytes, reader, fmt: str) -> None:
+def _save_export_disk(data: bytes, reader: QVFReader, fmt: str) -> None:
     """Write exported geometry next to the QVF file."""
     from datetime import datetime
-    from pathlib import Path
 
     if reader.path is None:
         return
@@ -11952,8 +12474,8 @@ def _activate_volume(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
-    section,
+    state: Any,
+    section: Section,
 ) -> None:
     """Lazy activation of a volume section."""
     from vibeview.renderers.volume import VolumeRenderer
@@ -11989,7 +12511,7 @@ def _rebuild_volume(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
+    state: Any,
     section_id: str,
 ) -> None:
     """Rebuild the isosurface for a given volume section.
@@ -12113,9 +12635,7 @@ def _rebuild_volume(
                     # counts ADDITIONAL cells per direction, so 0 means "this axis
                     # stays one cell thick" — for a slab that keeps the isosurface
                     # from repeating into the vacuum along the synthesized normal.
-                    grid_rep = tuple(
-                        periodic_rep if p else 0 for p in sdata.pbc
-                    )
+                    grid_rep = _triple([periodic_rep if p else 0 for p in sdata.pbc])
                     raw_data, grid = replicate_volume_for_periodic(
                         raw_data,
                         grid,
@@ -12245,7 +12765,7 @@ def _rebuild_volume(
             plotter.add_mesh(
                 mesh,
                 scalars=scalars_name,
-                cmap=cmap,
+                cmap=cmap_argument(cmap),
                 opacity=hints.opacity,
                 name=f"volume_{section_id}",
                 show_scalar_bar=(scalars_name == "esp"),
@@ -12306,11 +12826,11 @@ def _render_nci_surface(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
-    section,
+    state: Any,
+    section: Section,
     isovalue: float,
-    lattice,
-    replication,
+    lattice: np.ndarray | None,
+    replication: tuple[int, int, int],
 ) -> None:
     """Render a volume.rdg (NCI) section.
 
@@ -12420,8 +12940,11 @@ _COMPARE_PALETTE = [
 
 
 def _render_compare_overlay(
-    plotter: pv.Plotter, readers, align: bool = False, highlight: int | None = None
-) -> list[dict]:
+    plotter: pv.Plotter,
+    readers: Sequence[QVFReader],
+    align: bool = False,
+    highlight: int | None = None,
+) -> list[dict[str, Any]]:
     """Overlay the structures from all loaded files, one uniform colour per file
     (Phase D1 compare mode).
 
@@ -12439,7 +12962,7 @@ def _render_compare_overlay(
 
     _remove_actors_by_prefix(plotter, "cmp_")
     ref_pts = None
-    legend: list[dict] = []
+    legend: list[dict[str, Any]] = []
     for i, r in enumerate(readers):
         try:
             sdata = r.read_structure()
@@ -12483,7 +13006,7 @@ def _render_compare_overlay(
     return legend
 
 
-def _grids_match(grid_a, grid_b, atol: float = 1e-6) -> bool:
+def _grids_match(grid_a: GridData, grid_b: GridData, atol: float = 1e-6) -> bool:
     """True when two volume grids are voxel-for-voxel comparable."""
     import numpy as _np
 
@@ -12494,7 +13017,9 @@ def _grids_match(grid_a, grid_b, atol: float = 1e-6) -> bool:
     )
 
 
-def compute_volume_difference(grid_a, data_a, grid_b, data_b):
+def compute_volume_difference(
+    grid_a: GridData, data_a: np.ndarray, grid_b: GridData, data_b: np.ndarray
+) -> np.ndarray:
     """ρ_A − ρ_B on grid A (Phase D2).
 
     Requires matching grids (same shape, origin, and voxel vectors); raises
@@ -12508,10 +13033,18 @@ def compute_volume_difference(grid_a, data_a, grid_b, data_b):
             f"density grids differ (shapes {tuple(grid_a.shape)} vs "
             f"{tuple(grid_b.shape)}); matching grids are required"
         )
-    return _np.asarray(data_a, dtype=float) - _np.asarray(data_b, dtype=float)
+    delta: np.ndarray = _np.asarray(data_a, dtype=float) - _np.asarray(data_b, dtype=float)
+    return delta
 
 
-def _activate_density_diff(plotter, viewer_state, state, readers, idx_a, idx_b) -> None:
+def _activate_density_diff(
+    plotter: pv.Plotter,
+    viewer_state: ViewerState,
+    state: Any,
+    readers: Sequence[QVFReader],
+    idx_a: int,
+    idx_b: int,
+) -> None:
     """Render the signed density difference ρ_A − ρ_B between two files (Phase D2).
 
     Draws a two-colour isosurface (red = accumulation where A > B, blue =
@@ -12529,7 +13062,7 @@ def _activate_density_diff(plotter, viewer_state, state, readers, idx_a, idx_b) 
         state.status_message = "Density difference: invalid file selection"
         return
 
-    def _density(r):
+    def _density(r: QVFReader) -> tuple[GridData | None, np.ndarray | None]:
         sec = next((s for s in r.sections if s.kind == "volume.density"), None)
         if sec is None:
             return None, None
@@ -12545,6 +13078,8 @@ def _activate_density_diff(plotter, viewer_state, state, readers, idx_a, idx_b) 
     if grid_a is None or grid_b is None:
         state.status_message = "Density difference: both files need a volume.density section"
         return
+    if data_a is None or data_b is None:
+        raise ValueError("Both volumes must be loaded before they can be subtracted")
     try:
         delta = compute_volume_difference(grid_a, data_a, grid_b, data_b)
     except ValueError as e:
@@ -12561,7 +13096,7 @@ def _activate_density_diff(plotter, viewer_state, state, readers, idx_a, idx_b) 
 
     struct_sec = next((s for s in ra.sections if s.kind == "structure"), None)
     if struct_sec is not None:
-        try:
+        with contextlib.suppress(QVFError):
             StructureRenderer(struct_sec, ra).add_to_plotter(
                 plotter,
                 representation=str(
@@ -12571,9 +13106,8 @@ def _activate_density_diff(plotter, viewer_state, state, readers, idx_a, idx_b) 
                     getattr(state, "cartoon_color_mode", "chain")
                 ),
                 residue_selection=str(getattr(state, "residue_selection", "") or ""),
+                **_structure_display_options(state),
             )
-        except QVFError:
-            pass
 
     iso = 0.005
     lattice = _get_lattice_vectors(ra)
@@ -12592,13 +13126,15 @@ def _activate_density_diff(plotter, viewer_state, state, readers, idx_a, idx_b) 
         f"Density difference: {_job_name(ra)} − {_job_name(rb)} "
         f"(red = accumulation, blue = depletion, iso {iso})"
     )
-    plotter.view_isometric()
-    plotter.reset_camera()
+    view_isometric(plotter)
+    reset_camera(plotter)
     plotter.render()
     _push_view(plotter)
 
 
-def _activate_fermi(reader, plotter, viewer_state, state, section) -> None:
+def _activate_fermi(
+    reader: QVFReader, plotter: pv.Plotter, viewer_state: ViewerState, state: Any, section: Section
+) -> None:
     """Activate a fermi_surface section.
 
     Renders the Fermi sheets (E − E_F = 0 isosurfaces) in reciprocal space
@@ -12649,8 +13185,8 @@ def _activate_fermi(reader, plotter, viewer_state, state, section) -> None:
         name="fermi_cell",
         show_scalar_bar=False,
     )
-    plotter.view_isometric()
-    plotter.reset_camera()
+    view_isometric(plotter)
+    reset_camera(plotter)
 
     fermi_ev = meta.get("fermi_energy_ev")
     ef = f", E_F={fermi_ev:.2f} eV" if isinstance(fermi_ev, (int, float)) else ""
@@ -12667,12 +13203,12 @@ def _activate_fermi(reader, plotter, viewer_state, state, section) -> None:
 
 
 def _build_signed_contour(
-    renderer,
-    data: "np.ndarray",
+    renderer: VolumeRenderer,
+    data: np.ndarray,
     isovalue: float,
     replication: tuple[int, int, int],
-    lattice_vectors,
-) -> "pv.PolyData | None":
+    lattice_vectors: np.ndarray | None,
+) -> pv.PolyData | None:
     """Build a contour from pre-processed signed data on the renderer's grid."""
     import numpy as _np
     import pyvista as _pv
@@ -12719,55 +13255,140 @@ def _build_signed_contour(
         return None
     if lattice_vectors is not None and any(r > 1 for r in replication):
         contour = _replicate_mesh(contour, lattice_vectors, replication)
-    return contour
+    signed: pv.PolyData = contour
+    return signed
 
 
-def _activate_bands(reader: QVFReader, state, section) -> None:
+def _coerce_window_bound(value: Any) -> float | None:
+    """A number from an energy-window field, or ``None`` when it is blank.
+
+    A ``type="number"`` VTextField still v-models as a string, and a
+    cleared field arrives as ``""``. Anything that is not a finite number
+    reads as "not set" — the caller then keeps the previous window.
+    """
+    import math
+
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _requested_energy_window(
+    state: Any, viewer_state: ViewerState | None, *section_ids: str
+) -> tuple[float, float] | None:
+    """The energy window the reader or the producer asked for (#26).
+
+    A window the reader typed into the panel controls wins; failing that,
+    a ``viewer_defaults`` hint on any of ``section_ids``. ``None`` leaves
+    the renderer on its own valence default.
+    """
+    from vibeview.renderers.energy_window import parse_energy_window
+
+    if not getattr(state, "bands_window_auto", True):
+        window = parse_energy_window(
+            [getattr(state, "bands_emin", None), getattr(state, "bands_emax", None)]
+        )
+        if window is not None:
+            return window
+    if viewer_state is not None:
+        return viewer_state.get_energy_window(*section_ids)
+    return None
+
+
+def _publish_energy_window(state: Any, window: Any, compute_default: Callable[[], Any]) -> None:
+    """Show the window a chart was actually drawn with in the panel controls.
+
+    When the caller passed no window the renderer used its own default, so
+    ask for the same value rather than leaving the fields blank — they are
+    the reader's starting point for a manual adjustment. Blank fields mean
+    the chart really is on full autoscale.
+    """
+    state.bands_window_available = True
+    if window is None:
+        try:
+            window = compute_default()
+        except Exception:
+            window = None
+    if window is None:
+        state.bands_emin = None
+        state.bands_emax = None
+    else:
+        state.bands_emin = float(window[0])
+        state.bands_emax = float(window[1])
+
+
+def _activate_bands(
+    reader: QVFReader, state: Any, section: Section, viewer_state: ViewerState | None = None
+) -> None:
     """Lazy activation of a bands section.
 
     When the archive also carries a ``dos.total`` section, the bands
     and DOS are rendered side-by-side in a single combined panel.
+
+    Either form opens on an energy window (#26): the reader's own min/max,
+    else a ``viewer_defaults`` hint, else the renderer's valence default.
+    Without one, an all-electron archive's core states dominate the
+    autoscale and squeeze the valence region into a few pixels.
     """
     from vibeview.renderers.bands import BandsRenderer
 
     renderer = BandsRenderer(section, reader)
+    # Check for a companion DOS section.
+    dos_section = next((s for s in reader.sections if s.kind == "dos.total"), None)
+    ids = [section.id] + ([dos_section.id] if dos_section is not None else [])
+    window = _requested_energy_window(state, viewer_state, *ids)
     try:
-        bands_html = renderer.render_to_html()
+        bands_html = renderer.render_to_html(energy_window=window)
     except QVFError as e:
         state.status_message = f"Error loading bands: {e}"
         return
 
-    # Check for a companion DOS section.
-    dos_section = next((s for s in reader.sections if s.kind == "dos.total"), None)
     if dos_section is not None:
         try:
-            from vibeview.renderers.dos import DOSRenderer, render_bands_dos_combined
+            from vibeview.renderers.dos import (
+                DOSRenderer,
+                bands_dos_energy_window,
+                render_bands_dos_combined,
+            )
 
             dos_renderer = DOSRenderer(dos_section, reader)
             # Single figure with a shared energy axis (bands left, DOS rotated
             # right) — the standard solid-state plot (A4-04).
             state.bands_html = render_bands_dos_combined(
-                renderer, dos_renderer, title="Band Structure & DOS"
+                renderer,
+                dos_renderer,
+                title="Band Structure & DOS",
+                energy_window=window,
             )
             state.bands_title = "Band Structure & DOS"
             state.status_message = f"Loaded bands + DOS: {section.id}, {dos_section.id}"
+            _publish_energy_window(
+                state, window, lambda: bands_dos_energy_window(renderer, dos_renderer)
+            )
+            return
         except Exception as e:
-            state.bands_html = bands_html
-            state.bands_title = "Band Structure"
             state.status_message = f"Loaded bands: {section.id} (DOS unavailable: {e})"
     else:
-        state.bands_html = bands_html
-        state.bands_title = "Band Structure"
         state.status_message = f"Loaded bands: {section.id}"
+    state.bands_html = bands_html
+    state.bands_title = "Band Structure"
+    _publish_energy_window(state, window, renderer.default_energy_window)
 
 
-def _activate_dos(reader: QVFReader, state, section) -> None:
+def _activate_dos(
+    reader: QVFReader, state: Any, section: Section, viewer_state: ViewerState | None = None
+) -> None:
     """Lazy activation of a standalone DOS section (no bands available)."""
     from vibeview.renderers.dos import DOSRenderer
 
     renderer = DOSRenderer(section, reader)
+    window = _requested_energy_window(state, viewer_state, section.id)
     try:
-        state.bands_html = renderer.render_to_html()
+        state.bands_html = renderer.render_to_html(energy_window=window)
         # The bands_html slot is shared with the (absent) bands panel; title it
         # for what's actually shown so a DOS-only view isn't mislabeled
         # "Band Structure" (live-review finding).
@@ -12775,11 +13396,12 @@ def _activate_dos(reader: QVFReader, state, section) -> None:
             "Projected DOS" if section.kind == "dos.projected" else "Density of States"
         )
         state.status_message = f"Loaded DOS: {section.id}"
+        _publish_energy_window(state, window, renderer.default_energy_window)
     except Exception as e:
         state.status_message = f"Error loading DOS: {e}"
 
 
-def _activate_phonon_bands(reader: QVFReader, state, section) -> None:
+def _activate_phonon_bands(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a phonon_bands section (2D side panel)."""
     from vibeview.renderers.phonon import PhononBandsRenderer
 
@@ -12792,7 +13414,7 @@ def _activate_phonon_bands(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading phonon bands: {e}"
 
 
-def _activate_phonon_dos(reader: QVFReader, state, section) -> None:
+def _activate_phonon_dos(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a phonon_dos section (2D side panel)."""
     from vibeview.renderers.phonon import PhononDOSRenderer
 
@@ -12805,7 +13427,7 @@ def _activate_phonon_dos(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading phonon DOS: {e}"
 
 
-def _activate_eos(reader: QVFReader, state, section) -> None:
+def _activate_eos(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of an equation_of_state section (2D side panel)."""
     from vibeview.renderers.eos import EquationOfStateRenderer
 
@@ -12818,7 +13440,12 @@ def _activate_eos(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading equation of state: {e}"
 
 
-def _activate_spectra(reader: QVFReader, state, section, all_readers=None) -> None:
+def _activate_spectra(
+    reader: QVFReader,
+    state: Any,
+    section: Section,
+    all_readers: Sequence[QVFReader] | None = None,
+) -> None:
     """Lazy activation of a spectra section.
 
     With ``spectra_compare`` on and several files open, same-kind spectra
@@ -12862,7 +13489,7 @@ def _activate_spectra(reader: QVFReader, state, section, all_readers=None) -> No
         state.status_message = f"Error loading spectra: {e}"
 
 
-def _activate_trajectory(reader: QVFReader, state, section) -> None:
+def _activate_trajectory(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a trajectory section."""
     from vibeview.renderers.trajectory import TrajectoryRenderer
 
@@ -12878,7 +13505,7 @@ def _activate_trajectory(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading trajectory: {e}"
 
 
-def _activate_vibrations(reader: QVFReader, state, section) -> None:
+def _activate_vibrations(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a vibrations section.
 
     When the archive also carries a ``spectra.ir`` section, each mode
@@ -12945,7 +13572,9 @@ def _activate_vibrations(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading vibrations: {e}"
 
 
-def _activate_atom_properties(reader: QVFReader, plotter: pv.Plotter, state, section) -> None:
+def _activate_atom_properties(
+    reader: QVFReader, plotter: pv.Plotter, state: Any, section: Section
+) -> None:
     """Lazy activation of an atom_properties section.
 
     Renders the Mulliken / Löwdin / Hirshfeld table in the bottom panel (via
@@ -12982,7 +13611,7 @@ def _activate_atom_properties(reader: QVFReader, plotter: pv.Plotter, state, sec
 def _rollback_atom_properties_overlay(
     reader: QVFReader,
     plotter: pv.Plotter,
-    state,
+    state: Any,
     *,
     push: bool,
 ) -> None:
@@ -13013,6 +13642,7 @@ def _rollback_atom_properties_overlay(
                 residue_selection=str(
                     getattr(state, "residue_selection", "") or ""
                 ),
+                **_structure_display_options(state),
             )
         except Exception:  # noqa: BLE001 — leave no partial fallback
             _remove_static_structure(plotter)
@@ -13027,8 +13657,8 @@ def _rollback_atom_properties_overlay(
 def _render_atom_properties_overlay(
     reader: QVFReader,
     plotter: pv.Plotter,
-    state,
-    data=None,
+    state: Any,
+    data: Any = None,
     *,
     push: bool = True,
 ) -> bool:
@@ -13052,8 +13682,8 @@ def _render_atom_properties_overlay(
 def _render_atom_properties_overlay_impl(
     reader: QVFReader,
     plotter: pv.Plotter,
-    state,
-    data=None,
+    state: Any,
+    data: Any = None,
     *,
     push: bool = True,
 ) -> bool:
@@ -13089,7 +13719,7 @@ def _render_atom_properties_overlay_impl(
     # NOTE: these are NumPy arrays — ``a or b`` raises "truth value of an
     # array is ambiguous", which used to crash the whole overlay (so the
     # charge spheres + labels never rendered). Use explicit None/len checks.
-    def _nonempty(arr):
+    def _nonempty(arr: Any) -> bool:
         return arr is not None and len(arr) > 0
 
     choices = {
@@ -13101,7 +13731,7 @@ def _render_atom_properties_overlay_impl(
     charges = preferred
     if not _nonempty(charges):
         charges = next((value for value in choices.values() if _nonempty(value)), None)
-    if not _nonempty(charges):
+    if charges is None or not _nonempty(charges):
         raise ValueError("atom-properties section has no supported charge array")
 
     atoms = structure_data.atoms[: len(charges)]
@@ -13158,6 +13788,7 @@ def _render_atom_properties_overlay_impl(
             cartoon_color_mode=str(getattr(state, "cartoon_color_mode", "chain")),
             residue_selection=str(getattr(state, "residue_selection", "") or ""),
             atom_colors=atom_colors,
+            **_structure_display_options(state),
         )
 
         # Structure replacement removes the previous charge labels along with
@@ -13201,22 +13832,19 @@ def _charge_color(q: float, q_max: float) -> tuple[float, float, float]:
 
 def _remove_atom_charge_labels(plotter: pv.Plotter) -> None:
     """Strip any prior charge-label overlay before drawing a new one."""
-    try:
-        plotter.remove_actor("atom_charge_labels")
-    except Exception:  # noqa: BLE001 — no-op when not yet present
-        pass
+    # A no-op when the overlay was never drawn.
+    with contextlib.suppress(Exception):
+        remove_actor(plotter, "atom_charge_labels")
 
 
 def _remove_atom_index_labels(plotter: pv.Plotter) -> None:
     """Hide structure index labels when charge labels are about to be
     drawn at the same positions — avoids two overlapping label sets."""
-    try:
-        plotter.remove_actor("atom_index_labels")
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        remove_actor(plotter, "atom_index_labels")
 
 
-def _restore_cpk_atoms(reader: QVFReader, plotter: pv.Plotter, state) -> None:
+def _restore_cpk_atoms(reader: QVFReader, plotter: pv.Plotter, state: Any) -> None:
     """Re-draw atom spheres with their default CPK colour palette.
 
     Called when the user switches away from an atom_properties section
@@ -13247,11 +13875,12 @@ def _restore_cpk_atoms(reader: QVFReader, plotter: pv.Plotter, state) -> None:
         representation=str(getattr(state, "representation_style", "ball_and_stick")),
         cartoon_color_mode=str(getattr(state, "cartoon_color_mode", "chain")),
         residue_selection=str(getattr(state, "residue_selection", "") or ""),
+        **_structure_display_options(state),
     )
     _apply_scene_appearance(plotter, state)
 
 
-def _activate_citations(reader: QVFReader, state, section) -> None:
+def _activate_citations(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a citations section."""
     from vibeview.renderers.citations import CitationsRenderer
 
@@ -13264,7 +13893,7 @@ def _activate_citations(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading citations: {e}"
 
 
-def _activate_run_record(reader: QVFReader, state, section) -> None:
+def _activate_run_record(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a run.record section (input + log panel)."""
     from vibeview.renderers.run_record import RunRecordRenderer
 
@@ -13284,7 +13913,7 @@ def _activate_run_record(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading run record: {e}"
 
 
-def _activate_job_spec(reader: QVFReader, state, section) -> None:
+def _activate_job_spec(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a job.spec section (declarative job request)."""
     from vibeview.renderers.job_spec import JobSpecRenderer
 
@@ -13302,7 +13931,7 @@ def _activate_job_spec(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading job spec: {e}"
 
 
-def _activate_bond_orders(reader: QVFReader, state, section) -> None:
+def _activate_bond_orders(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a bond_orders section."""
     from vibeview.renderers.bond_orders import BondOrdersRenderer
 
@@ -13318,7 +13947,7 @@ def _activate_bond_orders(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading bond orders: {e}"
 
 
-def _activate_dos_coop(reader: QVFReader, state, section) -> None:
+def _activate_dos_coop(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a dos.coop or dos.cohp section."""
     from vibeview.renderers.coop import COOPRenderer
 
@@ -13332,7 +13961,9 @@ def _activate_dos_coop(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading {renderer.kind_label}: {e}"
 
 
-def _activate_topology_qtaim(reader: QVFReader, plotter: pv.Plotter, state, section) -> None:
+def _activate_topology_qtaim(
+    reader: QVFReader, plotter: pv.Plotter, state: Any, section: Section
+) -> None:
     """Lazy activation of a topology.qtaim section."""
     from vibeview.renderers.qtaim import QTAIMRenderer
 
@@ -13354,7 +13985,7 @@ def _activate_topology_qtaim(reader: QVFReader, plotter: pv.Plotter, state, sect
         state.status_message = f"Error loading QTAIM: {e}"
 
 
-def _activate_scan_surface(reader: QVFReader, state, section) -> None:
+def _activate_scan_surface(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a scan.surface section — render the 2D energy
     heat-map into the plot panel (reuses the trajectory plot image)."""
     import base64
@@ -13372,7 +14003,7 @@ def _activate_scan_surface(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading scan surface: {e}"
 
 
-def _activate_scf_history(reader: QVFReader, state, section) -> None:
+def _activate_scf_history(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of an scf_history section."""
     from vibeview.renderers.scf_history import SCFHistoryRenderer
 
@@ -13389,7 +14020,7 @@ def _activate_scf_history(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading SCF history: {e}"
 
 
-def _activate_symmetry(reader: QVFReader, state, section) -> None:
+def _activate_symmetry(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a structure.symmetry section."""
     from vibeview.renderers.symmetry import SymmetryRenderer
 
@@ -13402,7 +14033,7 @@ def _activate_symmetry(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading symmetry: {e}"
 
 
-def _activate_nmr(reader: QVFReader, state, section) -> None:
+def _activate_nmr(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a spectra.nmr section."""
     from vibeview.renderers.nmr import NMRRenderer
 
@@ -13415,7 +14046,7 @@ def _activate_nmr(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading NMR data: {e}"
 
 
-def _activate_epr(reader: QVFReader, state, section) -> None:
+def _activate_epr(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a spectra.epr section."""
     from vibeview.renderers.epr import EPRRenderer
 
@@ -13428,7 +14059,7 @@ def _activate_epr(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading EPR data: {e}"
 
 
-def _section_title(section) -> str:
+def _section_title(section: Section) -> str:
     label = getattr(section, "label", None)
     if label:
         return str(label)
@@ -13442,7 +14073,7 @@ def _section_title(section) -> str:
     }.get(section.kind, section.kind)
 
 
-def _update_trajectory_plot(reader: QVFReader, state) -> None:
+def _update_trajectory_plot(reader: QVFReader, state: Any) -> None:
     """Update the energy plot for the current trajectory / reaction-path frame."""
     from vibeview.renderers.reaction import ReactionPathRenderer
     from vibeview.renderers.trajectory import TrajectoryRenderer
@@ -13452,7 +14083,7 @@ def _update_trajectory_plot(reader: QVFReader, state) -> None:
         return
 
     if section.kind == "reaction.path":
-        renderer = ReactionPathRenderer(section, reader)
+        renderer: ReactionPathRenderer | TrajectoryRenderer = ReactionPathRenderer(section, reader)
         try:
             renderer.load()
             frame = state.trajectory_frame
@@ -13476,7 +14107,7 @@ def _update_trajectory_plot(reader: QVFReader, state) -> None:
         pass
 
 
-def _prepare_scene_actor_replacement(plotter: pv.Plotter, state) -> None:
+def _prepare_scene_actor_replacement(plotter: pv.Plotter, state: Any) -> None:
     """Discard toon snapshots before their actors are removed or replaced."""
     if not bool(getattr(state, "toon_mode", False)):
         return
@@ -13488,7 +14119,7 @@ def _prepare_scene_actor_replacement(plotter: pv.Plotter, state) -> None:
     disable_toon_rendering(plotter)
 
 
-def _apply_scene_appearance(plotter: pv.Plotter, state):
+def _apply_scene_appearance(plotter: pv.Plotter, state: Any) -> MaterialPreset:
     """Make actor properties and background agree with persistent UI state."""
     from vibeview.material_presets import apply_material_to_actor, get_preset
     from vibeview.renderers.structure import (
@@ -13504,13 +14135,18 @@ def _apply_scene_appearance(plotter: pv.Plotter, state):
         disable_toon_rendering(plotter)
 
     preset = get_preset(str(getattr(state, "material_preset", "cpk_glossy")))
-    background = preset.background_color
-    plotter.set_background(background)
-    state.dark_background = sum(background) < 1.5
+    override = getattr(state, "background_override", None)
+    background = override if override is not None else preset.background_color
+    set_background(plotter, background)  # a hex string or an RGB triple; both are colours
+    state.dark_background = sum(pv.Color(background).float_rgb) < 1.5
 
     # Preserve scalar/CPK colours. Without base_color the material helper
     # deliberately supplies neutral grey, which is not what a scene-wide
     # appearance replay wants.
+    preserve_residue_bonds = (
+        getattr(state, "atom_color_mode", "element") in ("chain", "structure", "residue", "bfactor")
+        or bool(getattr(state, "residue_selection", ""))
+    )
     for actor_name, actor in getattr(plotter, "actors", {}).items():
         try:
             prop = actor.GetProperty() if hasattr(actor, "GetProperty") else None
@@ -13523,7 +14159,7 @@ def _apply_scene_appearance(plotter: pv.Plotter, state):
                 actor,
                 preset,
                 base_color=current,
-                is_bond=str(actor_name).startswith("bond"),
+                is_bond=str(actor_name).startswith("bond") and not preserve_residue_bonds,
             )
         except Exception:
             pass
@@ -13537,7 +14173,7 @@ def _replay_wavefunction_surface(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
+    state: Any,
 ) -> bool:
     """Re-render the exact computed surface recorded by the active section."""
     kind = str(getattr(state, "wf_surface_kind", "") or "")
@@ -13585,7 +14221,7 @@ def _replay_wavefunction_surface(
 
 def _finalize_wavefunction_surface_appearance(
     plotter: pv.Plotter,
-    state,
+    state: Any,
 ) -> None:
     """Realize persistent material/toon state on newly created iso actors."""
     _apply_scene_appearance(plotter, state)
@@ -13595,7 +14231,7 @@ def _finalize_wavefunction_surface_appearance(
 
 def _fail_wavefunction_surface(
     plotter: pv.Plotter,
-    state,
+    state: Any,
     message: str,
     *,
     push: bool = True,
@@ -13617,7 +14253,7 @@ def _fail_wavefunction_surface(
         _push_view(plotter)
 
 
-def _reapply_raytrace(plotter: pv.Plotter, state) -> None:
+def _reapply_raytrace(plotter: pv.Plotter, state: Any) -> None:
     """Re-attach the OSPRay render pass after a scene rebuild dropped it.
 
     `plotter.clear()` + the SSAO re-setup replace the renderer's render pass, so
@@ -13641,7 +14277,7 @@ def _rebuild_scene(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
+    state: Any,
 ) -> str | None:
     """Serialize scene replacement against worker-thread computed renders."""
     render_lock = getattr(plotter, "_vibeview_wf_render_lock", None)
@@ -13655,13 +14291,13 @@ def _rebuild_scene_unlocked(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
+    state: Any,
 ) -> str | None:
     """Rebuild the 3D scene; return an error message when replay is incomplete."""
     rebuild_error = None
     _prepare_scene_actor_replacement(plotter, state)
     plotter.clear()
-    plotter.set_background("#1a1a2e")
+    set_background(plotter, "#1a1a2e" if getattr(state, "dark_background", True) else "#f0f0f0")
 
     # Keep the renderer pass aligned with the switch. PyVista clear() retains
     # an existing pass, while other render setup can replace it, so handle
@@ -13693,6 +14329,7 @@ def _rebuild_scene_unlocked(
                 representation=str(getattr(state, "representation_style", "ball_and_stick")),
                 cartoon_color_mode=str(getattr(state, "cartoon_color_mode", "chain")),
                 residue_selection=str(getattr(state, "residue_selection", "") or ""),
+                **_structure_display_options(state),
             )
         except Exception as e:
             rebuild_error = f"Structure rebuild error: {e}"
@@ -13756,14 +14393,14 @@ def _rebuild_scene_unlocked(
             _remove_atom_charge_labels(plotter)
             state.status_message = rebuild_error
 
-    plotter.show_grid()
+    show_grid(plotter)
     _apply_scene_appearance(plotter, state)
     # Successful overlay helpers update status themselves. If an earlier
     # rebuild stage failed, restore that diagnostic after every later replay
     # so the UI never replaces an incomplete-scene error with false success.
     if rebuild_error is not None:
         state.status_message = rebuild_error
-    plotter.view_isometric()
+    view_isometric(plotter)
     plotter.render()
     # VtkLocalView caches geometry on the client; a plotter.clear() + re-add
     # leaves the client looking at the old scene unless we explicitly push.
@@ -13771,7 +14408,7 @@ def _rebuild_scene_unlocked(
     return rebuild_error
 
 
-def _get_lattice_vectors(reader: QVFReader):
+def _get_lattice_vectors(reader: QVFReader) -> np.ndarray | None:
     """Return the [3,3] lattice vectors from the structure section, or None."""
     try:
         structure = reader.read_structure()
@@ -13782,7 +14419,7 @@ def _get_lattice_vectors(reader: QVFReader):
     return None
 
 
-def _orbital_is_wrappable(section) -> bool:
+def _orbital_is_wrappable(section: Section) -> bool:
     """Whether a volume section may be minimum-image recentred.
 
     Producers tag a localized orbital / Wannier function with
@@ -13803,7 +14440,7 @@ def _remove_actors_by_prefix(plotter: pv.Plotter, prefix: str) -> None:
     """Remove all actors whose name starts with the given prefix."""
     for key in list(plotter.actors.keys()):
         if isinstance(key, str) and key.startswith(prefix):
-            plotter.remove_actor(key)
+            remove_actor(plotter, key)
 
 
 def _remove_static_structure(plotter: pv.Plotter) -> None:
@@ -13826,13 +14463,14 @@ def _remove_static_structure(plotter: pv.Plotter) -> None:
         "bond_",
         "bonds_",
         "cartoon_",
+        "hydrogen_bond_",
         "cell_",
         "structure_",
     ):
         _remove_actors_by_prefix(plotter, prefix)
 
 
-def _update_pick_markers(reader: QVFReader, plotter: pv.Plotter, picked: list) -> None:
+def _update_pick_markers(reader: QVFReader, plotter: pv.Plotter, picked: list[int]) -> None:
     """Draw translucent yellow highlight spheres on the selected atoms."""
     _remove_actors_by_prefix(plotter, "pick_marker_")
     if not picked:
@@ -13860,7 +14498,9 @@ def _update_pick_markers(reader: QVFReader, plotter: pv.Plotter, picked: list) -
         )
 
 
-def _update_edit_highlights(reader: QVFReader, plotter: pv.Plotter, selected: list) -> None:
+def _update_edit_highlights(
+    reader: QVFReader, plotter: pv.Plotter, selected: list[int]
+) -> None:
     """Draw orange wireframe highlight spheres on edit-selected atoms."""
     _remove_actors_by_prefix(plotter, "edit_highlight_")
     if not selected:
@@ -13889,7 +14529,9 @@ def _update_edit_highlights(reader: QVFReader, plotter: pv.Plotter, selected: li
         )
 
 
-def _update_frozen_highlights(reader: QVFReader, plotter: pv.Plotter, frozen: list) -> None:
+def _update_frozen_highlights(
+    reader: QVFReader, plotter: pv.Plotter, frozen: list[int]
+) -> None:
     """Draw blue 'locked' wireframe spheres on atoms held fixed during live-opt.
 
     Distinct from the orange edit-selection highlight (``_update_edit_highlights``)
@@ -13923,7 +14565,7 @@ def _update_frozen_highlights(reader: QVFReader, plotter: pv.Plotter, frozen: li
         )
 
 
-def _reset_frozen(plotter: pv.Plotter, state) -> None:
+def _reset_frozen(plotter: pv.Plotter, state: Any) -> None:
     """Clear the frozen-atom set and its markers.
 
     Called wherever atom indices are reindexed (delete / undo / redo / reload),
@@ -13934,7 +14576,7 @@ def _reset_frozen(plotter: pv.Plotter, state) -> None:
     _remove_actors_by_prefix(plotter, "frozen_highlight_")
 
 
-def _structure_edit_snapshot(structure) -> dict:
+def _structure_edit_snapshot(structure: StructureData) -> dict[str, Any]:
     """Return one serializable atoms+lattice undo/redo transaction."""
     lattice = structure.lattice_vectors
     return {
@@ -13947,12 +14589,12 @@ def _structure_edit_snapshot(structure) -> dict:
 
 
 def _rebuild_structure_from_positions(
-    reader,
-    plotter,
-    positions_list,
-    symbols_list=None,
+    reader: QVFReader,
+    plotter: pv.Plotter,
+    positions_list: Sequence[Sequence[float]] | np.ndarray,
+    symbols_list: Sequence[str] | None = None,
     *,
-    lattice_vectors=None,
+    lattice_vectors: np.ndarray | Sequence[Sequence[float]] | None = None,
 ) -> None:
     """Rebuild the structure renderer with new atom positions.
 
@@ -13967,6 +14609,9 @@ def _rebuild_structure_from_positions(
     from vibeview.renderers.structure import _draw_unit_cell, cpk_color, cpk_radius
 
     # Remove old structure actors (original and any previous edit-mode actors)
+    invalidate = getattr(plotter, "_vibeview_invalidate_relocalization", None)
+    if invalidate is not None:
+        invalidate()
     for prefix in ("atom_", "bond_", "cell_", "structure_"):
         _remove_actors_by_prefix(plotter, prefix)
 
@@ -13999,8 +14644,11 @@ def _rebuild_structure_from_positions(
             symbols_list,
             lattice_vectors=lattice_vectors,
         )
+    refresh = getattr(plotter, "_vibeview_refresh_relocalization", None)
+    if refresh is not None:
+        refresh()
 
-    for i, (symbol, pos) in enumerate(zip(symbols_list, positions)):
+    for i, (symbol, pos) in enumerate(zip(symbols_list, positions, strict=True)):
         z = _SYMBOL_TO_Z.get(symbol, 6)
         radius = cpk_radius(z, 0.35)
         sphere = pv.Sphere(radius=radius, center=pos, theta_resolution=12, phi_resolution=12)
@@ -14024,7 +14672,12 @@ def _rebuild_structure_from_positions(
     plotter.render()
 
 
-def _auto_bond(plotter, symbols, positions, tolerance=1.2):
+def _auto_bond(
+    plotter: pv.Plotter,
+    symbols: Sequence[str],
+    positions: Sequence[Any] | np.ndarray,
+    tolerance: float = 1.2,
+) -> None:
     """Auto-bond based on covalent radii."""
     import numpy as np
     import pyvista as pv
@@ -14059,7 +14712,9 @@ def _auto_bond(plotter, symbols, positions, tolerance=1.2):
                 )
 
 
-def _add_atom_to_structure(reader, plotter, position, symbol="C"):
+def _add_atom_to_structure(
+    reader: QVFReader, plotter: pv.Plotter, position: Sequence[float], symbol: str = "C"
+) -> None:
     """Add a new atom to the structure visualization.
 
     Reads current structure, appends the new atom, rebuilds the scene.
@@ -14083,7 +14738,7 @@ def _add_atom_to_structure(reader, plotter, position, symbol="C"):
 _MEASURE_HINT = "Measure: click 2 atoms → distance, 3 → angle, 4 → dihedral."
 
 
-def _measure_text(sdata, picked: list) -> str:
+def _measure_text(sdata: StructureData, picked: list[int]) -> str:
     """Build the measurement readout from the picked-atom order:
     1 → label, 2 → distance, 3 → distance chain + angle, 4 → + dihedral."""
     import numpy as _np
@@ -14116,7 +14771,8 @@ def _measure_text(sdata, picked: list) -> str:
         y = float(_np.dot(m, n2))
         dih = math.degrees(math.atan2(y, x))
         lines.append(
-            f"Dihedral {_lbl(picked[0])}–{_lbl(picked[1])}–{_lbl(picked[2])}–{_lbl(picked[3])}: {dih:.1f}°"
+            f"Dihedral {_lbl(picked[0])}–{_lbl(picked[1])}–"
+            f"{_lbl(picked[2])}–{_lbl(picked[3])}: {dih:.1f}°"
         )
     return "\n".join(lines)
 
@@ -14125,7 +14781,7 @@ def _rebuild_crossfade(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
+    state: Any,
     section_id_a: str,
     section_id_b: str,
     blend: float,
@@ -14165,7 +14821,7 @@ def _rebuild_crossfade(
         plotter.add_mesh(
             mesh,
             scalars="values",
-            cmap=hints.colormap,
+            cmap=cmap_argument(hints.colormap),
             opacity=opacity,
             name=f"volume_{section_id}",
             show_scalar_bar=False,
@@ -14175,7 +14831,7 @@ def _rebuild_crossfade(
     _push_view(plotter)
 
 
-def _render_trajectory_atoms(reader: QVFReader, plotter: pv.Plotter, state) -> None:
+def _render_trajectory_atoms(reader: QVFReader, plotter: pv.Plotter, state: Any) -> None:
     """Render atoms for the current trajectory / reaction-path frame."""
 
     from vibeview.renderers.reaction import ReactionPathRenderer
@@ -14216,7 +14872,7 @@ def _render_trajectory_atoms(reader: QVFReader, plotter: pv.Plotter, state) -> N
 
     znums = [a.atomic_number for a in renderer.load().atoms]
     ball_scale = 0.35
-    for i, (symbol, pos) in enumerate(atoms):
+    for i, (_symbol, pos) in enumerate(atoms):
         z = znums[i] if i < len(znums) else 0
         sphere = pv.Sphere(
             radius=cpk_radius(z, ball_scale),
@@ -14271,7 +14927,7 @@ def _render_trajectory_atoms(reader: QVFReader, plotter: pv.Plotter, state) -> N
     _push_view(plotter)
 
 
-def _activate_reaction_path(reader: QVFReader, state, section) -> None:
+def _activate_reaction_path(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a reaction.path section.
 
     Reaction paths share the trajectory binary layout, so we reuse the
@@ -14309,7 +14965,7 @@ def _activate_reaction_path(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading reaction path: {e}"
 
 
-def _activate_reaction_waypoints(reader: QVFReader, state, section) -> None:
+def _activate_reaction_waypoints(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a reaction.waypoints annotation.
 
     Resolves the referenced trajectory, switches the trajectory state
@@ -14363,7 +15019,35 @@ def _activate_reaction_waypoints(reader: QVFReader, state, section) -> None:
     _update_trajectory_plot(reader, state)
 
 
-def _activate_wavefunction(reader: QVFReader, state, section) -> None:
+def _relocalize_source_section(reader: QVFReader, section_id: str) -> str:
+    wf = reader.read_wavefunction_gto(section_id)
+    return str((wf.relocalization or {}).get("source_section_id", section_id))
+
+
+def _refresh_relocalize_state(reader: QVFReader, state: Any) -> None:
+    from vibeview.relocalize import method_options
+
+    options: list[dict[str, str]] = []
+    reason = "Select a wavefunction with archived occupied coefficients"
+    if state.wf_section_id:
+        try:
+            sid = _relocalize_source_section(reader, state.wf_section_id)
+            options, reason = method_options(
+                reader,
+                state.relocalize_capabilities,
+                sid,
+                source=state.relocalize_source or "supplied",
+            )
+        except (QVFError, ValueError) as exc:
+            reason = str(exc)
+    state.relocalize_method_options = options
+    state.relocalize_supported = bool(options)
+    state.relocalize_reason = reason
+    if options and state.relocalize_method not in [o["value"] for o in options]:
+        state.relocalize_method = options[0]["value"]
+
+
+def _activate_wavefunction(reader: QVFReader, state: Any, section: Section) -> None:
     """Lazy activation of a wavefunction.gto section."""
     from vibeview.renderers.wavefunction import WavefunctionRenderer
 
@@ -14378,13 +15062,30 @@ def _activate_wavefunction(reader: QVFReader, state, section) -> None:
             c is not None and np.iscomplexobj(c)
             for c in (wf.mo_coefficients, wf.mo_coefficients_alpha, wf.mo_coefficients_beta)
         )
-        state.relocalize_supported = not bool(state.is_periodic) and not state.wf_is_complex
-        state.relocalize_status = (
-            "Periodic/complex re-localization is not supported in the viewer; "
-            "generate localized orbitals with the periodic calculation and open its QVF."
-            if not state.relocalize_supported
-            else ""
-        )
+        _refresh_relocalize_state(reader, state)
+        metadata = wf.relocalization or {}
+        state.relocalize_has_overlay = bool(metadata)
+        state.relocalize_result_summary = ""
+        state.relocalize_charge_rows = []
+        if metadata:
+            source_label = (
+                "New RHF calculation"
+                if metadata.get("scf_performed")
+                else "Archived occupied subspace"
+            )
+            audit = metadata.get("validation", {})
+            state.relocalize_result_summary = (
+                f"{source_label}. Charges/populations: {metadata.get('population_model')}. "
+                f"Orthonormality error: {audit.get('orthonormality_error', 0):.2g}; "
+                f"subspace residual: {audit.get('subspace_residual', 0):.2g}. "
+                "Localization convergence is not certified by the kernel. "
+                + " ".join(metadata.get("warnings") or [])
+            )
+            atoms = reader.read_structure(wf.structure_ref).atoms
+            state.relocalize_charge_rows = [
+                {"atom": f"{i + 1} {a.symbol}", "charge": f"{q:+.6f}"}
+                for i, (a, q) in enumerate(zip(atoms, metadata["charges"], strict=True))
+            ]
         state.wf_mo_rows = rows
         # Default the picker to the HOMO (most-requested orbital), keyed on
         # the composite "{spin}:{index}" value the dropdown now uses.
@@ -14407,7 +15108,7 @@ def _activate_wavefunction(reader: QVFReader, state, section) -> None:
         state.status_message = f"Error loading wavefunction: {e}"
 
 
-def _parse_mo_key(mo_key) -> tuple[str, int]:
+def _parse_mo_key(mo_key: Any) -> tuple[str, int]:
     """Parse a picker value into ``(spin, index)``.
 
     Accepts the composite ``"{spin}:{index}"`` form emitted by
@@ -14426,7 +15127,7 @@ def _parse_mo_key(mo_key) -> tuple[str, int]:
         return ("restricted", 0)
 
 
-def _step_mo_selection(state, direction: int) -> str | None:
+def _step_mo_selection(state: Any, direction: int) -> str | None:
     """Advance the wavefunction picker and return its composite MO key."""
     rows = state.wf_mo_rows or []
     if not rows:
@@ -14437,7 +15138,7 @@ def _step_mo_selection(state, direction: int) -> str | None:
     except StopIteration:
         idx = 0
     new_idx = max(0, min(len(rows) - 1, idx + int(direction)))
-    selected = rows[new_idx].get("value", current)
+    selected = str(rows[new_idx].get("value", current))
     state.wf_selected_mo = selected
     return selected
 
@@ -14446,8 +15147,8 @@ def _render_mo_volume(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
-    section,
+    state: Any,
+    section: Section,
     mo_index: int,
     spin: str,
     *,
@@ -14502,6 +15203,8 @@ def _render_mo_volume(
     _t = time.perf_counter()
     contour_pos = build_isosurface_mesh(values, grid, +iso_pos, grid_units="angstrom")
     contour_neg = build_isosurface_mesh(values, grid, -iso_pos, grid_units="angstrom")
+    if contour_pos is None or contour_neg is None:
+        raise ValueError("MO isosurface extraction returned no mesh")
     _log.info(
         "render_mo: contour done in %.2fs (|iso|=%.3f, %d + %d points)",
         time.perf_counter() - _t,
@@ -14568,8 +15271,8 @@ def _render_wf_density(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
-    section,
+    state: Any,
+    section: Section,
     *,
     update_state: bool = True,
 ) -> str:
@@ -14661,8 +15364,8 @@ def _render_wf_elf(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
-    section,
+    state: Any,
+    section: Section,
     *,
     update_state: bool = True,
 ) -> str:
@@ -14725,8 +15428,8 @@ def _render_wf_nci(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
-    section,
+    state: Any,
+    section: Section,
     *,
     update_state: bool = True,
 ) -> str:
@@ -14800,8 +15503,8 @@ def _render_wf_laplacian(
     reader: QVFReader,
     plotter: pv.Plotter,
     viewer_state: ViewerState,
-    state,
-    section,
+    state: Any,
+    section: Section,
     *,
     update_state: bool = True,
 ) -> str:
@@ -14864,7 +15567,7 @@ def _render_wf_laplacian(
     return message
 
 
-def _update_reaction_label(reader: QVFReader, state) -> None:
+def _update_reaction_label(reader: QVFReader, state: Any) -> None:
     """Set state.reaction_current_label to the waypoint at the current frame, if any."""
     frame = int(state.trajectory_frame or 0)
     waypoints = state.reaction_waypoints or []
@@ -14875,7 +15578,7 @@ def _update_reaction_label(reader: QVFReader, state) -> None:
     state.reaction_current_label = ""
 
 
-def _camera_to_dict(plotter: pv.Plotter) -> dict:
+def _camera_to_dict(plotter: pv.Plotter) -> dict[str, Any]:
     """Serialise the plotter camera into the shape ``_apply_camera`` reads.
 
     PyVista's ``Camera`` has no ``to_dict``. Bookmark and session save both
@@ -14890,7 +15593,7 @@ def _camera_to_dict(plotter: pv.Plotter) -> dict:
     """
     try:
         cam = plotter.camera
-        out = {
+        out: dict[str, Any] = {
             "position": [float(v) for v in cam.position],
             "focal_point": [float(v) for v in cam.focal_point],
             "view_up": [float(v) for v in cam.up],
@@ -14904,7 +15607,7 @@ def _camera_to_dict(plotter: pv.Plotter) -> dict:
         return {}
 
 
-def _apply_camera(plotter: pv.Plotter, camera: dict | None) -> None:
+def _apply_camera(plotter: pv.Plotter, camera: dict[str, Any] | None) -> None:
     """Apply a VTK camera dict to the plotter, if well-formed."""
     if not camera:
         return
@@ -14930,16 +15633,15 @@ def _apply_camera(plotter: pv.Plotter, camera: dict | None) -> None:
     # headless / before the view is built. Mirrors _push_view.
     push = getattr(plotter, "_vibe_view_push_camera", None)
     if push is not None:
-        try:
+        # The camera push is best-effort, as in _push_view above.
+        with contextlib.suppress(Exception):
             push()
-        except Exception:  # noqa: BLE001 — camera push is best-effort
-            pass
 
 
 def _render_vibration_atoms(
     reader: QVFReader,
     plotter: pv.Plotter,
-    state,
+    state: Any,
     phase: float = 0.0,
 ) -> None:
     """Render atoms displaced along the selected normal mode."""
@@ -14978,7 +15680,7 @@ def _render_vibration_atoms(
     # vibrations atoms, index-aligned with displace_atoms' output.
     znums = [a.atomic_number for a in renderer.load().atoms]
     ball_scale = 0.35
-    for i, (symbol, pos) in enumerate(atoms):
+    for i, (_symbol, pos) in enumerate(atoms):
         z = znums[i] if i < len(znums) else 0
         sphere = pv.Sphere(
             radius=cpk_radius(z, ball_scale),
@@ -15006,7 +15708,9 @@ _CLIP_ACTOR_NAMES = (
 )
 
 
-def _clip_to_planes(mesh, fx: float, fy: float, fz: float, bounds):
+def _clip_to_planes(
+    mesh: pv.DataSet, fx: float, fy: float, fz: float, bounds: Sequence[float]
+) -> pv.DataSet:
     """Clip ``mesh`` by three axis-aligned planes positioned at the
     fractional ``(fx, fy, fz)`` of ``bounds`` (xmin,xmax,ymin,ymax,zmin,zmax).
     Returns the clipped mesh (possibly empty)."""
@@ -15019,7 +15723,9 @@ def _clip_to_planes(mesh, fx: float, fy: float, fz: float, bounds):
     return out
 
 
-def _rebuild_clip(reader, plotter, viewer_state, state) -> None:
+def _rebuild_clip(
+    reader: QVFReader, plotter: pv.Plotter, viewer_state: ViewerState, state: Any
+) -> None:
     """Apply axis-aligned clip planes to the active volume isosurface.
 
     For signed kinds (``volume.difference`` / ``volume.spin``) both the
@@ -15036,10 +15742,8 @@ def _rebuild_clip(reader, plotter, viewer_state, state) -> None:
     # scalar-bar actor as a side effect of removing its named volume actor.
     retired_actors = list(plotter.actors.values())
     for nm in _CLIP_ACTOR_NAMES:
-        try:
-            plotter.remove_actor(nm)
-        except (KeyError, ValueError):
-            pass
+        with contextlib.suppress(KeyError, ValueError):
+            remove_actor(plotter, nm)
     section = (
         next((s for s in reader.sections if s.id == state.active_volume_id), None)
         if state.active_volume_id
@@ -15058,10 +15762,8 @@ def _rebuild_clip(reader, plotter, viewer_state, state) -> None:
     if getattr(state, "show_slice", False):
         _remove_actors_by_prefix(plotter, f"volume_{state.active_volume_id}")
         for nm in _CLIP_ACTOR_NAMES:
-            try:
-                plotter.remove_actor(nm)
-            except (KeyError, ValueError):
-                pass
+            with contextlib.suppress(KeyError, ValueError):
+                remove_actor(plotter, nm)
         try:
             from vibeview.renderers.volume import _BOHR_TO_ANGSTROM, VolumeRenderer
 
@@ -15092,13 +15794,13 @@ def _rebuild_clip(reader, plotter, viewer_state, state) -> None:
             pos = b[idx] + frac * (b[idx + 1] - b[idx])
             origin = list(vol.center)
             origin[{"x": 0, "y": 1, "z": 2}[axis_label]] = pos
-            slc = vol.slice(normal=axis_label, origin=origin)
+            slc = vol.slice(normal=cast("Literal['x', 'y', 'z']", axis_label), origin=origin)
             if slc.n_points > 0:
                 plotter.add_mesh(
                     slc,
                     name="_volume_slice",
                     scalars="values",
-                    cmap=state.colormap or hints.colormap,
+                    cmap=cmap_argument(state.colormap or hints.colormap),
                     opacity=0.85,
                     show_scalar_bar=False,
                 )
@@ -15137,14 +15839,14 @@ def _rebuild_clip(reader, plotter, viewer_state, state) -> None:
             if not meshes:
                 return
             # Shared clip-plane frame across both lobes (union of bounds).
-            b = [m.bounds for m in meshes]
+            all_bounds = [m.bounds for m in meshes]
             bounds = (
-                min(x[0] for x in b),
-                max(x[1] for x in b),
-                min(x[2] for x in b),
-                max(x[3] for x in b),
-                min(x[4] for x in b),
-                max(x[5] for x in b),
+                min(x[0] for x in all_bounds),
+                max(x[1] for x in all_bounds),
+                min(x[2] for x in all_bounds),
+                max(x[3] for x in all_bounds),
+                min(x[4] for x in all_bounds),
+                max(x[5] for x in all_bounds),
             )
             for mesh, color, name in (
                 (pos, "#3366cc", "_volume_clipped_pos"),
@@ -15171,7 +15873,7 @@ def _rebuild_clip(reader, plotter, viewer_state, state) -> None:
                     clipped,
                     name="_volume_clipped",
                     scalars=clipped.active_scalars_name,
-                    cmap=state.colormap or hints.colormap,
+                    cmap=cmap_argument(state.colormap or hints.colormap),
                     opacity=state.opacity or hints.opacity,
                     show_scalar_bar=False,
                 )

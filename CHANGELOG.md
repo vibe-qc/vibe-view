@@ -11,14 +11,199 @@ deliberately not transferred — see the [README](README.md#history).
 
 ## [Unreleased]
 
-### Changed
-- Public source is usable without private URL rewriting or omitted agent guides.
-  Site CI settings and release coordination stay outside the product repository.
-- Installer launcher records use external private state with verified migration
-  from the legacy checkout record; ordinary virtualenv locations are unchanged.
+## [v2.18.1] - 2026-09-22 - *Richardson's Robin*
 
+This patch consolidates the lint and strict type gates, documentation fixes,
+and the stable real-UHF producer/consumer gradient fixture.
 
 ### Fixed
+
+- Every source module is now in the strict mypy gate. `app.py`, the browser
+  viewer, is annotated: its trame controllers keep their real signatures,
+  the pyvista `Plotter` methods whose stubs mypy misreads go through
+  `plotter_compat`, and `disallow_untyped_decorators` is relaxed for that one
+  module because trame ships no types. The `types` job covers the whole
+  tree; `tests/test_type_ramp.py` fails when a new source module is added
+  without joining the gate. (#33)
+- The mypy ramp grows from 80 to 90 modules: the QVF reader, the structure
+  renderer, the wavefunction renderer, the converters, the CLI, the
+  re-localization backend and the whole terminal viewer now pass full strict
+  and stay gated, leaving only `app.py` deferred. Two real defects came out
+  of it: the terminal viewer guarded its status updates with Textual's
+  `App.is_mounted`, a method that is always truthy, and now uses
+  `is_running`; and every bond-typed path declared bonds as 3-tuples while
+  the reader has always emitted `(i, j, order, image)`, which the new
+  `qvf.Bond` alias names. (#33)
+- The mypy ramp grows from 75 to 80 modules: batch rendering, headless
+  capture, video export and the launcher now pass full strict and stay gated,
+  through a small `plotter_compat` module that carries the one `type: ignore`
+  each for the pyvista 0.49 `Plotter` methods mypy misreads. The structure
+  renderer's cached bond list is typed with the bond order it always carried.
+  (#33)
+- The mypy ramp grows from 71 to 75 modules: the directory server, the
+  terminal cell encoder, the QTAIM renderer and the ray-trace engine now pass
+  full strict and stay gated. The QTAIM renderer reads its untyped
+  critical-point fields through guards, so a malformed field skips the point
+  instead of raising mid-render. (#33)
+- The mypy ramp grows from 65 to 71 modules: the Jupyter integration, lazy
+  loader, live optimization, and the bond-order, reaction-path and
+  equation-of-state renderers now pass full strict and stay gated. The
+  bond-order table reads its untyped pair fields through guards instead of
+  bare `float()` casts. (#33)
+- The mypy ramp grows from 61 to 65 modules: the Python API, the profiler,
+  the terminal rasterizer and the volume renderer now pass full strict and
+  stay gated. (#8)
+- The mypy ramp grows from 50 to 58 modules: the build tools, user
+  configuration, dashboard, PDF and SVG exports, input-file parser, COOP/COHP
+  renderer and TREXIO importer now pass full strict and stay gated. The
+  configuration reader drops its `tomli` fallback, which Python 3.11, the
+  support floor, made unreachable. (#8)
+- The `lint` CI job runs `ruff check .` over the whole checkout instead of
+  `tests/ src/ scripts/`. The narrower scope left `electron/desktop-launcher.py`,
+  the `docs/*.py` capture scripts and the privacy hook's tests unlinted, and
+  the nine findings they carried are cleared. The mypy ramp grows from 41 to
+  50 modules: the material presets, the energy window, the Fermi-surface,
+  NCI, phonon, SCF-history and spectra renderers, the Gamma-point Bloch sum
+  and the one-shot terminal renderer now pass full strict and stay gated.
+  (#8)
+- Keep documentation deployment manual for every web-triggered pipeline,
+  including pipelines on `release`, using product-local rules over the
+  configured deployment job. Ordinary release pushes still publish. (#22)
+- Build the documentation for merge requests changing package/toolchain
+  metadata or the API modules and schemas imported by the site, while
+  retaining the filter for unrelated viewer changes. (#30)
+
+### Documentation
+
+- Rework the first-run guide and add a complete import, inspect and share
+  tutorial using bundled inputs. Clarify section IDs, missing data, capture
+  limits, terminal plotting and reproducible figure exports; refresh actual
+  viewer captures without changing codename artwork. (#20)
+
+### Added
+
+- **ruff and mypy are enforced.** Both were configured in `pyproject.toml`
+  before the split and run by nothing, so the tree had drifted to 325 ruff
+  findings. Some were inert style, but the classes the issue names hide real
+  defects — 70 unused imports, 13 assigned-but-never-used locals, 26 `zip()`
+  calls with no `strict=`, 41 files opened without a context manager, and
+  three annotations naming a type the module never imports. All of them are
+  gone, each decided rather than batch-annotated: the `zip()` calls are
+  `strict=True` where the lengths are fixed by construction and `strict=False`
+  with a stated reason where they are not. Two deliberate suppressions remain,
+  both with their reason on the line — `E741` where `l` is the
+  angular-momentum quantum number (also a `BasisShell` field name), `h, k, l`
+  the Miller indices or `I` the inertia tensor, and one `SIM117` in the
+  viewer's Vuetify layout. A `lint` CI job now runs `ruff check tests/ src/
+  scripts/` on every merge request, so a new finding fails the pipeline.
+
+  mypy gets the per-module ramp the issue asked for rather than a
+  whitewash. `strict = true` over the whole tree is about 4300 findings across
+  170 files, `app.py` alone holding 478, so `[tool.mypy].files` names the 41
+  modules that are clean today and the `types` job checks exactly those under
+  full strict. Everything else is still analysed for the types it provides but
+  its own findings are not reported, and the list only ever grows. Getting
+  there also fixed the two things that stopped mypy running at all: the
+  `python_version` floor of 3.11 made numpy's own stubs a syntax error that
+  aborted the run before any of our code was reached, and ~78 unstubbed
+  third-party and companion imports drowned everything else. Both CI jobs
+  share `.rules_product_gate` with `test` and `qvf-conformance`, so a ref gets
+  the whole gate or none of it, and `tests/test_ci_rules.py` checks the
+  widened matrix, that the jobs really invoke the tools, and that the ramp
+  names files that exist. (#8)
+
+## [v2.18.0] - 2026-09-17 - *Richardson's Robin*
+
+Periodic band-structure and DOS charts now open on the states around E_F.
+An all-electron archive puts its core shells hundreds or thousands of eV
+below the valence region -- silicon at STO-3G places its 1s at -2431 eV --
+and an axis autoscaled over all of them left the bands unreadable without a
+manual zoom. Pseudopotential archives, which have no core states, keep the
+axis they had. The Sphinx toolchain is now a declared `docs` extra instead
+of ten pins inlined in CI, so the site can be built from package metadata.
+Setup scripts run on stock macOS Bash 3.2, and a release push no longer
+repeats the gate its candidate already passed.
+
+### Added
+
+- **An energy window for the band-structure and DOS charts.** All-electron
+  periodic archives carry core states hundreds or thousands of eV below E_F —
+  silicon at STO-3G puts its 1s at -2431 eV — and an axis autoscaled over all
+  of them squeezed the valence and conduction bands into a few pixels around
+  the E_F line, so the chart could not be read without a manual drag-zoom. The
+  bands, DOS and combined panels now open on the states grouped around E_F,
+  with the core shells off the axis, and carry **E − E_F min** / **E − E_F
+  max** fields and a **Reset window** button. A spectrum with no core states is
+  not windowed at all, so pseudopotential archives keep the axis they had. A
+  producer can ship its own first view with an `energy_window` hint in
+  `viewer_defaults`, and `render_to_html` / `render_to_bytes` take
+  `energy_window=` and `auto_window=False` for scripted figures. (#26)
+
+- **A `docs` extra** declaring the Sphinx toolchain. `.gitlab-ci.yml`'s
+  `.docs_deps` pinned all of it inline, so the requirement appeared in no
+  package metadata and the only way to render the site locally was to read the
+  CI file and retype ten pins — `docs/Makefile` and `scripts/build_site.sh`
+  both assumed `sphinx-build` was already on `PATH` and said nothing about how
+  it got there. Four of those pins (`numpy`, `click`, `pydantic`, `jsonschema`)
+  were already `[project.dependencies]`, repeated only because the docs job did
+  not install the package, and would have kept an old floor after a core pin
+  moved. CI, `CONTRIBUTING.md`, `README.md`, `AGENTS.md`, the Makefile and the
+  site builder now all name `pip install -e '.[docs]'`, and
+  `tests/test_docs_toolchain.py` keeps the extra in step with `docs/conf.py`'s
+  extensions, with the core dependency list and with the CI job. (#19)
+
+### Fixed
+
+- The setup scripts no longer abort on stock macOS Bash 3.2, which rejects
+  an empty `"${array[@]}"` as an unbound variable under `set -u`. This made
+  `uninstall.sh` fail outright on macOS. (#29)
+
+- **A release push no longer repeats the gate the candidate already passed.**
+  `test` and `qvf-conformance` carried no `rules:` of their own, so they fell
+  through to the `workflow:` admission list and ran on every ref in it. After
+  v2.16.2 that was visible: the candidate pipeline proved the exact commit,
+  then fast-forwarding `release` onto that same SHA started the identical two
+  jobs again against an identical tree, and preparing `main` needed a `ci.skip`
+  push option to get out of the way of a third copy. Both jobs now name their
+  refs — merge requests, `release-candidate/*` and manual `web` runs — which
+  is the delivery model `docs/roadmap.md` already described: work lands on
+  `main`, a candidate pipeline proves it, and `release` only fast-forwards.
+  `docs-build` still runs on `main` and `release`, because the site artifact
+  and the deployment jobs need it. The matrix is a table at the top of
+  `.gitlab-ci.yml` and in `CONTRIBUTING.md`, and `tests/test_ci_rules.py`
+  evaluates the file against it, so a job that loses its rules fails the suite
+  instead of silently inheriting every ref again. (#22)
+
+## [v2.18.0] - 2026-09-16 - *Richardson's Robin*
+
+### Added
+
+- Biomolecule residue isolation, hiding and viewport selection, with chain,
+  secondary-structure, residue-type and B-factor colours in atom and bond views.
+- PDB HELIX/SHEET annotations are retained. Optional secondary-structure subtype
+  metadata distinguishes alpha, pi and 3₁₀ helices and beta bridges in ribbons.
+- Optional dashed hydrogen-bond contact display using explicit hydrogens and
+  documented geometric criteria in the input cell.
+
+### Fixed
+
+- Restore **Re-localize with** using a separately installed vibe-qc worker.
+  A persistent backend Python setting, native capability probe and archive
+  checks enable compatible molecular methods. Exact archived occupied orbitals
+  are preserved; new RHF is an explicit option. Validated session overlays
+  include localization descriptors and IAO charges, with cancellation and
+  stale-result protection. Periodic, complex and incomplete inputs explain
+  why localization is unavailable.
+- Strands have crisp edges, correctly shaded end caps and complete terminal
+  residue assignments. Hidden ribbon spans are never connected across gaps.
+- QVF slicing preserves root, section and member metadata, prunes removed
+  viewer hints, refuses dangling section references, and validates before
+  replacing the output. (#24)
+- DOS energy grids retain their specified Fermi-relative values; combined
+  bands/DOS plots subtract only the bands' own Fermi reference, with separate
+  axes when that reference is absent. (#25)
+- Scene rebuilds and file reloads preserve the light-background choice. (#27)
+- Headless exports do not create an unawaited reset coroutine. (#21)
 
 - Installation, quickstart and desktop tutorials now begin with exact clone
   commands: deploy-key SSH access to GitLab on port 26, or the GitHub mirror.
@@ -32,6 +217,11 @@ deliberately not transferred — see the [README](README.md#history).
 
 - Desktop builds now retain artifacts locally; operators publish feeds with separate private deployment tooling.
 
+### Changed
+- Public source is usable without private URL rewriting or omitted agent guides.
+  Site CI settings and release coordination stay outside the product repository.
+- Installer launcher records use external private state with verified migration
+  from the legacy checkout record; ordinary virtualenv locations are unchanged.
 
 ### Maintenance: separate product source and private operations
 
@@ -360,6 +550,17 @@ along with vibe-qc, vibe-queue, qvf and vibe-qc-agentic-loop. The QVF manifest
 schemas, previously symlinks into the producer's tree, became vendored data
 files so the built wheel is self-contained.
 
+## [v2.0.0] - 2026-07-01 - *Pauling's Panther*
+
+Monorepo-era release, recorded before the split in vibe-qc's changelog and
+carried here so the viewer's own history holds it (#32). The version has no
+tag in this repository and its codename predates the per-product pools; both
+are history, not entries in the current catalogue.
+
+vibe-view 2.0 achieves feature parity with Avogadro 2.0 as an interactive
+molecular editor and viewer with seamless vibe-qc workflow integration. 512
+tests, 9 versioned feature releases, 24 CLI commands, 7 export formats.
+
 [Unreleased]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
 [v2.17.1]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
 [v2.17.0]: https://github.com/vibe-qc/vibe-view/tree/v2.17.0
@@ -368,3 +569,4 @@ files so the built wheel is self-contained.
 [v2.16.0]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
 [v2.15.3]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
 [2.15.2]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
+[v2.0.0]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md

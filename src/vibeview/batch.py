@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibeview.plotter_compat import cmap_argument, reset_camera, set_background, view_isometric
+
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
 
@@ -25,10 +27,10 @@ def render_structure_png(reader: QVFReader, path: Path, size: tuple[int, int] = 
         return False
     plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
     try:
-        plotter.set_background("#1a1a2e")
+        set_background(plotter, "#1a1a2e")
         StructureRenderer(section, reader).add_to_plotter(plotter)
-        plotter.view_isometric()
-        plotter.reset_camera()
+        view_isometric(plotter)
+        reset_camera(plotter)
         plotter.screenshot(str(path))
     finally:
         plotter.close()
@@ -45,7 +47,7 @@ def render_volume_png(
 ) -> bool:
     """Render a volume section to PNG (density, orbital, etc.)."""
     from vibeview.renderers.structure import StructureRenderer
-    from vibeview.renderers.volume import VolumeRenderer, build_isosurface_mesh
+    from vibeview.renderers.volume import VolumeRenderer
     from vibeview.viewer_defaults import VolumeHints
 
     section = reader.get_section(section_id) if reader.has_section(section_id) else None
@@ -54,18 +56,19 @@ def render_volume_png(
 
     renderer = VolumeRenderer(section, reader)
     try:
-        grid = renderer.load_grid()
-        data = renderer.load_data()
+        # Both calls are the availability probe; the payloads are re-read
+        # by build_isosurface_mesh below.
+        renderer.load_grid()
+        renderer.load_data()
     except Exception:
         return False
 
     hints = VolumeHints(isovalue=isovalue, colormap=colormap, opacity=0.6)
-    import numpy as np
     import pyvista as pv
 
     plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
     try:
-        plotter.set_background("#1a1a2e")
+        set_background(plotter, "#1a1a2e")
         # Draw structure for context
         struct_sec = next((s for s in reader.sections if s.kind == "structure"), None)
         if struct_sec:
@@ -75,13 +78,13 @@ def render_volume_png(
             plotter.add_mesh(
                 mesh,
                 scalars="values",
-                cmap=colormap,
+                cmap=cmap_argument(colormap),
                 opacity=0.6,
                 name="vol",
                 show_scalar_bar=False,
             )
-        plotter.view_isometric()
-        plotter.reset_camera()
+        view_isometric(plotter)
+        reset_camera(plotter)
         plotter.screenshot(str(path))
     finally:
         plotter.close()
@@ -97,7 +100,6 @@ def render_all_png(
     """Render structure + optionally each volume section to PNG files.
 
     Returns list of paths written."""
-    import pyvista as pv
 
     written: list[str] = []
 

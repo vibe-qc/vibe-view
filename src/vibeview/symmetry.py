@@ -160,7 +160,7 @@ def detect_point_group(
     pos = positions - com
 
     # Inertia tensor
-    I = np.zeros((3, 3))
+    I = np.zeros((3, 3))  # noqa: E741 — `I` is the inertia tensor
     for i in range(n):
         m = masses[i]
         x, y, z = pos[i]
@@ -218,10 +218,9 @@ def _has_inversion(symbols: list[str], pos: np.ndarray) -> bool:
     for i in range(n):
         found = False
         for j in range(n):
-            if symbols[i] == symbols[j]:
-                if np.linalg.norm(pos[i] + pos[j]) < _TOL:
-                    found = True
-                    break
+            if symbols[i] == symbols[j] and np.linalg.norm(pos[i] + pos[j]) < _TOL:
+                found = True
+                break
         if not found:
             return False
     return True
@@ -238,10 +237,9 @@ def _has_sigma_h(symbols: list[str], pos: np.ndarray, axis: np.ndarray) -> bool:
         reflected = reflect @ pos[i]
         found = False
         for j in range(n):
-            if symbols[i] == symbols[j]:
-                if np.linalg.norm(reflected - pos[j]) < _TOL:
-                    found = True
-                    break
+            if symbols[i] == symbols[j] and np.linalg.norm(reflected - pos[j]) < _TOL:
+                found = True
+                break
         if not found:
             return False
     return True
@@ -264,10 +262,9 @@ def _has_any_mirror(symbols: list[str], pos: np.ndarray) -> bool:
             reflected = reflect @ pos[i]
             found = False
             for j in range(len(symbols)):
-                if symbols[i] == symbols[j]:
-                    if np.linalg.norm(reflected - pos[j]) < _TOL:
-                        found = True
-                        break
+                if symbols[i] == symbols[j] and np.linalg.norm(reflected - pos[j]) < _TOL:
+                    found = True
+                    break
             if not found:
                 match = False
                 break
@@ -297,10 +294,9 @@ def _has_vertical_mirror(symbols: list[str], pos: np.ndarray, axis: np.ndarray) 
             reflected = reflect @ pos[i]
             found = False
             for j in range(len(symbols)):
-                if symbols[i] == symbols[j]:
-                    if np.linalg.norm(reflected - pos[j]) < _TOL:
-                        found = True
-                        break
+                if symbols[i] == symbols[j] and np.linalg.norm(reflected - pos[j]) < _TOL:
+                    found = True
+                    break
             if not found:
                 match = False
                 break
@@ -479,10 +475,7 @@ def _rotation_matrix(axis: np.ndarray, angle: float) -> np.ndarray:
 
 def _has_equivalent(p: np.ndarray, q: np.ndarray, positions: np.ndarray, tol: float) -> bool:
     """Check if q is close to any position in the set."""
-    for r in positions:
-        if np.linalg.norm(q - r) < tol:
-            return True
-    return False
+    return any(np.linalg.norm(q - r) < tol for r in positions)
 
 
 # ── Symmetry element rendering ──────────────────────────────────────────
@@ -585,7 +578,8 @@ def pg_summary(pg: PointGroup) -> str:
         f"Order: {pg.order}",
         f"Rotor type: {pg.rotor_type}",
         f"Confidence: {pg.confidence:.0%}",
-        f"Moments (amu\u00b7\u00c5\u00b2): Ia={pg.moments[0]:.1f}, Ib={pg.moments[1]:.1f}, Ic={pg.moments[2]:.1f}",
+        f"Moments (amu\u00b7\u00c5\u00b2): Ia={pg.moments[0]:.1f}, "
+        f"Ib={pg.moments[1]:.1f}, Ic={pg.moments[2]:.1f}",
     ]
     if pg.principal_axis is not None:
         pa = pg.principal_axis

@@ -287,7 +287,7 @@ vibe_toolset_find_external_python() {
         python3
     )
 
-    for candidate in "${candidates[@]}"; do
+    for candidate in ${candidates[@]+"${candidates[@]}"}; do
         if _vibe_toolset_try_external_python \
             selected "$candidate" "$protected_target" "$min_major" "$min_minor"; then
             printf -v "$out_var" '%s' "$selected"

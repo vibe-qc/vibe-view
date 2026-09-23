@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import html
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from vibeview.renderers import BaseRenderer
 
@@ -51,7 +51,7 @@ def _fmt(v: object) -> str:
     return str(v)
 
 
-def _table(rows: list[dict], columns: list[str], caption: str) -> str:
+def _table(rows: list[dict[str, Any]], columns: list[str], caption: str) -> str:
     body_rows: list[str] = []
     for row in rows:
         if not any(c in row for c in columns):
@@ -77,7 +77,7 @@ def _table(rows: list[dict], columns: list[str], caption: str) -> str:
     )
 
 
-def _hyperfine_columns(rows: list[dict]) -> list[str]:
+def _hyperfine_columns(rows: list[dict[str, Any]]) -> list[str]:
     preferred = [
         "atom_index", "symbol", "element", "isotope",
         "a_iso_mhz", "a_iso", "a_tensor_mhz",

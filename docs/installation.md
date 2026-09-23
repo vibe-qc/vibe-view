@@ -117,10 +117,11 @@ is deliberately lean so a capture-only host does not drag in a web server.
 | `viewer` | trame, trame-vtk, trame-vuetify, uvicorn | `vibe-view open`, `serve`, `dashboard`, `desktop` |
 | `tui` | textual | `vibe-view tui` (`vibe-view show` is core) |
 | `ase` | ase | The long tail of structure formats, via `ase.io.read` |
+| `trexio` | TREXIO | Gaussian wavefunctions and structures from supported TREXIO datasets |
 | `smiles` | rdkit | Build a 3-D structure from a SMILES string |
 | `jupyter` | ipython, ipywidgets | The `%vibeview` notebook magic |
 | `queue` | vq | The vq job panel and `vibe-view from-vq` — see [Queue integration](queue.md) |
-| `all` | viewer + tui + ase + smiles + jupyter | Everything **except** `queue` |
+| `all` | viewer + tui + ase + trexio + smiles + jupyter | Everything **except** `queue` |
 
 Two of these have caveats worth knowing before you hit them:
 

@@ -17,7 +17,7 @@ the user must be able to see.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import plotly.graph_objects as go
@@ -73,7 +73,7 @@ class PhononBandsRenderer(BaseRenderer):
         for start in boundaries:
             fig.add_vline(x=start, line={"color": "#999999", "width": 0.5, "dash": "dot"})
 
-        x_axis: dict = {"title": "q-point"}
+        x_axis: dict[str, Any] = {"title": "q-point"}
         if tick_vals:
             x_axis.update({"tickvals": tick_vals, "ticktext": tick_text})
         fig.update_layout(
@@ -85,7 +85,7 @@ class PhononBandsRenderer(BaseRenderer):
             height=450,
             margin={"l": 60, "r": 20, "t": 50, "b": 50},
         )
-        return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs)
+        return str(fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs))
 
 
 class PhononDOSRenderer(BaseRenderer):
@@ -130,4 +130,4 @@ class PhononDOSRenderer(BaseRenderer):
             height=450,
             margin={"l": 60, "r": 20, "t": 50, "b": 50},
         )
-        return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs)
+        return str(fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs))

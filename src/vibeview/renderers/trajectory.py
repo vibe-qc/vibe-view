@@ -37,7 +37,7 @@ class TrajectoryRenderer(BaseRenderer):
     @property
     def n_frames(self) -> int:
         data = self.load()
-        return data.coords.shape[0]
+        return int(data.coords.shape[0])
 
     @property
     def n_atoms(self) -> int:
@@ -80,7 +80,7 @@ class TrajectoryRenderer(BaseRenderer):
         idx = max(0, min(current_frame, n - 1))
         return self._frame_pngs[idx]
 
-    def _prerender_all_frames(self, data) -> list[bytes]:
+    def _prerender_all_frames(self, data: TrajectoryData) -> list[bytes]:
         """Render one PNG per trajectory frame (frame indicator varies;
         everything else is identical). Called once at section load."""
         energies = np.array(data.energies)

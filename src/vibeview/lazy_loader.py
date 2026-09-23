@@ -8,7 +8,13 @@ startup time for large QVFs from seconds to milliseconds.
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from vibeview.qvf import Manifest, Section
 
 T = TypeVar("T")
 
@@ -22,10 +28,11 @@ def lazy(fn: Callable[..., T]) -> Callable[..., T]:
     attr_name = f"_lazy_{fn.__name__}"
 
     @functools.wraps(fn)
-    def wrapper(self, *args: Any, **kwargs: Any) -> T:
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
         if not hasattr(self, attr_name):
             setattr(self, attr_name, fn(self, *args, **kwargs))
-        return getattr(self, attr_name)
+        cached: T = getattr(self, attr_name)
+        return cached
 
     return wrapper
 
@@ -37,7 +44,7 @@ class LazySection:
     the first call to ``read()``.
     """
 
-    def __init__(self, section, reader):
+    def __init__(self, section: Section, reader: QVFLazyReader) -> None:
         self._section = section
         self._reader = reader  # QVFLazyReader (has read_section_data)
         self._data: Any = None
@@ -122,14 +129,14 @@ class QVFLazyReader:
         return self._sections
 
     @property
-    def manifest(self):
+    def manifest(self) -> Manifest:
         return self._raw_reader.manifest
 
     @property
-    def path(self):
+    def path(self) -> Path | None:
         return self._raw_reader.path
 
-    def read_section_data(self, section) -> Any:
+    def read_section_data(self, section: Section) -> Any:
         """Dispatch to the appropriate QVFReader method.
 
         Volume kinds (``volume.*``, ``basis.*``, ``fermi_surface``)

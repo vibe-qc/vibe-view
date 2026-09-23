@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import contextlib
 import re
-from typing import TYPE_CHECKING, NamedTuple
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 import pyvista as pv
@@ -17,11 +18,13 @@ from vtkmodules.vtkCommonCore import vtkWeakReference
 
 # Import covalent-radii data for periodic bond inference.
 from vibeview.profiler import profiler
-from vibeview.qvf import _BOND_TOLERANCE, _COVALENT_RADII, clamp_replication  # noqa: PLC2701
+from vibeview.qvf import _COVALENT_RADII, clamp_replication  # noqa: PLC2701
 from vibeview.renderers import BaseRenderer
 
 if TYPE_CHECKING:
-    from vibeview.qvf import QVFReader, Section, StructureData
+    from vibeview.qvf import Bond, QVFReader, Section, StructureData
+
+Color = str | tuple[float, float, float]
 
 # CPK colour table — Jmol colours by atomic number
 _CPK_COLORS: dict[int, str] = {
@@ -238,21 +241,23 @@ _LABEL_SPECS_ATTR = "_vibe_view_label_specs"
 
 
 class _LabelSpec(NamedTuple):
-    positions: list
+    positions: list[Any]
     strings: list[str]
     scale: float
     lift: float
     actor_ref: vtkWeakReference
 
 
-def _label_actor_ref(actor) -> vtkWeakReference:
+def _label_actor_ref(actor: Any) -> vtkWeakReference:
     """A VTK-native weak reference stable across PyVista wrapper collection."""
     actor_ref = vtkWeakReference()
     actor_ref.Set(actor)
     return actor_ref
 
 
-def _billboard_basis(anchor, camera):
+def _billboard_basis(
+    anchor: np.ndarray, camera: Any
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Right / up / forward for a glyph at *anchor* facing *camera*.
 
     ``camera`` is ``(position, focal_point, view_up)``. Text3D lies in the
@@ -280,13 +285,13 @@ def _billboard_basis(anchor, camera):
 
 
 def build_label_mesh(
-    positions,
-    strings,
+    positions: Sequence[Any] | np.ndarray,
+    strings: Sequence[str],
     *,
     scale: float = 0.5,
     lift: float = 0.55,
-    camera=None,
-):
+    camera: Any = None,
+) -> pv.PolyData | None:
     """Build ONE merged ``pv.PolyData`` of 3D polygonal text labels.
 
     Used for atom-index labels and atom-charge labels. We deliberately do
@@ -309,7 +314,7 @@ def build_label_mesh(
     deferred label-orientation finding.
     """
     glyphs = []
-    for pos, text in zip(positions, strings):
+    for pos, text in zip(positions, strings, strict=True):
         if not text:
             continue
         anchor = np.asarray(pos, dtype=float)
@@ -334,7 +339,15 @@ def build_label_mesh(
     return merged
 
 
-def register_label_actor(plotter, name, positions, strings, *, scale=0.5, lift=0.55):
+def register_label_actor(
+    plotter: Any,
+    name: str,
+    positions: Sequence[Any] | np.ndarray,
+    strings: Sequence[str],
+    *,
+    scale: float = 0.5,
+    lift: float = 0.55,
+) -> None:
     """Record what an actor's labels are, so a camera move can rebuild them."""
     specs = getattr(plotter, _LABEL_SPECS_ATTR, None)
     if specs is None:
@@ -349,12 +362,12 @@ def register_label_actor(plotter, name, positions, strings, *, scale=0.5, lift=0
     )
 
 
-def forget_label_actors(plotter) -> None:
+def forget_label_actors(plotter: Any) -> None:
     """Drop the registry — the scene that owned those actors is gone."""
     setattr(plotter, _LABEL_SPECS_ATTR, {})
 
 
-def reorient_labels(plotter) -> int:
+def reorient_labels(plotter: Any) -> int:
     """Rebuild every registered label actor to face the plotter's camera.
 
     Returns how many actors were rebuilt. Cheap enough to run on every
@@ -406,7 +419,14 @@ def reorient_labels(plotter) -> int:
     return rebuilt
 
 
-def _bond_far_endpoint(p1, p2, image, lattice, inv_lattice, pbc):
+def _bond_far_endpoint(
+    p1: np.ndarray,
+    p2: np.ndarray,
+    image: tuple[int, int, int] | None,
+    lattice: np.ndarray | None,
+    inv_lattice: np.ndarray | None,
+    pbc: Sequence[bool],
+) -> np.ndarray:
     """Where the far end of a bond actually sits.
 
     A nonzero ``image`` is authoritative: inference recorded exactly which
@@ -421,13 +441,20 @@ def _bond_far_endpoint(p1, p2, image, lattice, inv_lattice, pbc):
     that really is in-cell.
     """
     if lattice is not None and image is not None and any(image):
-        return p2 + np.asarray(image, dtype=float) @ np.asarray(lattice, dtype=float)
-    if inv_lattice is not None:
+        shifted: np.ndarray = p2 + np.asarray(image, dtype=float) @ np.asarray(lattice, dtype=float)
+        return shifted
+    if lattice is not None and inv_lattice is not None:
         return _minimum_image(p1, p2, lattice, inv_lattice, pbc)
     return p2
 
 
-def _minimum_image(p1, p2, lattice, inv_lattice, pbc=(True, True, True)):
+def _minimum_image(
+    p1: np.ndarray,
+    p2: np.ndarray,
+    lattice: np.ndarray,
+    inv_lattice: np.ndarray,
+    pbc: Sequence[bool] = (True, True, True),
+) -> np.ndarray:
     """Return the periodic image of ``p2`` nearest to ``p1`` (Cartesian).
 
     Rounding the fractional offset alone only yields the nearest image for
@@ -457,7 +484,8 @@ def _minimum_image(p1, p2, lattice, inv_lattice, pbc=(True, True, True)):
                 d2 = float(np.dot(cand - p1, cand - p1))
                 if d2 < best_d2:
                     best, best_d2 = cand, d2
-    return best
+    far: np.ndarray = best
+    return far
 
 
 class StructureRenderer(BaseRenderer):
@@ -466,7 +494,7 @@ class StructureRenderer(BaseRenderer):
     def __init__(self, section: Section, reader: QVFReader) -> None:
         super().__init__(section, reader)
         self._structure: StructureData | None = None
-        self._bonds: list[tuple[int, int]] | None = None
+        self._bonds: list[Bond] | None = None
         self._bonds_loaded = False
 
     def load_structure(self) -> StructureData:
@@ -495,6 +523,9 @@ class StructureRenderer(BaseRenderer):
         cartoon_color_mode: str = "chain",
         residue_selection: str = "",
         atom_colors: dict[int, tuple[float, float, float]] | None = None,
+        atom_color_mode: str = "element",
+        residue_visibility: str = "all",
+        show_hydrogen_bonds: bool = False,
     ) -> None:
         """Add atoms, bonds, and unit cell to a PyVista plotter.
 
@@ -510,8 +541,11 @@ class StructureRenderer(BaseRenderer):
           (roadmap D3); needs residue identity, so it falls back to
           ball-and-stick on a structure that carries none
 
-        ``cartoon_color_mode`` applies only to ``"cartoon"``: ``"chain"``
-        for one hue per chain, ``"structure"`` for helix / sheet / loop.
+        ``cartoon_color_mode`` colours ribbons by chain, structure, residue
+        or bfactor. ``atom_color_mode`` offers the same palettes for atoms and
+        bonds, defaulting to element colours. ``residue_visibility`` is all,
+        isolate or hide; ``show_hydrogen_bonds`` adds dashed geometric contacts
+        using explicit H in the input cell.
 
         ``residue_selection`` is a selection string (see
         :func:`parse_residue_selection`) shared by every representation.
@@ -533,6 +567,9 @@ class StructureRenderer(BaseRenderer):
                 cartoon_color_mode=cartoon_color_mode,
                 residue_selection=residue_selection,
                 atom_colors=atom_colors,
+                atom_color_mode=atom_color_mode,
+                residue_visibility=residue_visibility,
+                show_hydrogen_bonds=show_hydrogen_bonds,
             )
 
     def _add_structure_inner(
@@ -545,6 +582,9 @@ class StructureRenderer(BaseRenderer):
         cartoon_color_mode: str = "chain",
         residue_selection: str = "",
         atom_colors: dict[int, tuple[float, float, float]] | None = None,
+        atom_color_mode: str = "element",
+        residue_visibility: str = "all",
+        show_hydrogen_bonds: bool = False,
     ) -> None:
         """Internal implementation of add_to_plotter (profiled)."""
         if representation == "cartoon":
@@ -562,7 +602,10 @@ class StructureRenderer(BaseRenderer):
                     structure,
                     color_mode=cartoon_color_mode,
                     selection=residue_selection,
+                    visibility=residue_visibility,
                 )
+                if show_hydrogen_bonds:
+                    _add_hydrogen_bonds(plotter, structure, residue_selection, residue_visibility)
                 if structure.lattice_vectors is not None and any(structure.pbc):
                     _draw_unit_cell(
                         plotter, structure.lattice_vectors, structure.pbc
@@ -576,6 +619,8 @@ class StructureRenderer(BaseRenderer):
         structure = self.load() if show_bonds else self.load_structure()
         selection_terms, _rejected = parse_residue_selection(residue_selection)
         selected_atoms = _selected_atom_indices(structure, selection_terms)
+        visible_atoms = _visible_atom_indices(structure, selected_atoms, residue_visibility)
+        residue_colors = _biomolecule_atom_colors(structure, atom_color_mode)
 
         # Resolve per-atom radius based on representation style.
         def _atom_radius(z: int) -> float:
@@ -590,12 +635,12 @@ class StructureRenderer(BaseRenderer):
         def _atom_color(
             atom_idx: int,
             z: int,
-        ) -> tuple[float, float, float]:
+        ) -> Color:
             if atom_idx in selected_atoms:
                 return _RESIDUE_SELECTION_COLOR
             if atom_colors is not None and atom_idx in atom_colors:
                 return atom_colors[atom_idx]
-            return cpk_color(z)
+            return residue_colors.get(atom_idx, cpk_color(z))
 
         # ── Build replicated atom positions ───────────────────────────
         # Track the original atom index so each sphere actor has a unique
@@ -610,6 +655,8 @@ class StructureRenderer(BaseRenderer):
         rx, ry, rz = clamp_replication(replication, structure.pbc)
 
         for atom_idx, atom in enumerate(structure.atoms):
+            if atom_idx not in visible_atoms:
+                continue
             pos = atom.position.copy()
             # Use the parsed atomic number (CPK colours reach Z=96); deriving
             # it from the symbol via _symbol_to_num would drop every element
@@ -650,7 +697,7 @@ class StructureRenderer(BaseRenderer):
             # (display colour, radius) pair.
             from collections import defaultdict
 
-            groups: dict[tuple, list[np.ndarray]] = defaultdict(list)
+            groups: dict[tuple[Any, ...], list[np.ndarray]] = defaultdict(list)
             for atom_idx, symbol, z, pos in all_atoms:
                 color = _atom_color(atom_idx, z)
                 key = (color, _atom_radius(z))
@@ -730,7 +777,9 @@ class StructureRenderer(BaseRenderer):
         # we use minimum-image distances to find bonded pairs within cutoff
         # across cell boundaries.
         if show_bonds:
-            bonds = self._bonds
+            bonds = [
+                b for b in (self._bonds or []) if b[0] in visible_atoms and b[1] in visible_atoms
+            ]
             if bonds:
                 inv_lattice = np.linalg.inv(lattice) if lattice is not None else None
                 n_atoms = len(structure.atoms)
@@ -760,7 +809,7 @@ class StructureRenderer(BaseRenderer):
                     # actors overwrite one another.
                     base_positions = np.array([a.position for a in structure.atoms])
                     for cell_idx, offset in enumerate(cell_offsets):
-                        positions = base_positions + offset
+                        cell_positions = base_positions + offset
                         valid_pairs: list[tuple[int, int]] = []
                         valid_orders: list[float] = []
                         segments: list[tuple[np.ndarray, np.ndarray]] = []
@@ -771,10 +820,10 @@ class StructureRenderer(BaseRenderer):
                             i, j = int(bond[0]), int(bond[1])
                             order = float(bond[2]) if len(bond) > 2 else 1.0
                             if i < n_atoms and j < n_atoms:
-                                p1 = positions[i]
+                                p1 = cell_positions[i]
                                 p2 = _bond_far_endpoint(
                                     p1,
-                                    positions[j],
+                                    cell_positions[j],
                                     bond[3] if len(bond) > 3 else None,
                                     lattice,
                                     inv_lattice,
@@ -792,16 +841,18 @@ class StructureRenderer(BaseRenderer):
                         if valid_pairs:
                             _add_batched_bonds(
                                 plotter,
-                                positions,
+                                cell_positions,
                                 valid_pairs,
                                 orders=valid_orders,
+                                colors=[_residue_bond_color(residue_colors, i, j)
+                                        for i, j in valid_pairs] if residue_colors else None,
                                 name=f"bonds_batched_{cell_idx}",
                                 segments=segments,
                             )
                         if selected_pairs:
                             _add_batched_bonds(
                                 plotter,
-                                positions,
+                                cell_positions,
                                 selected_pairs,
                                 orders=selected_orders,
                                 colors=[_RESIDUE_SELECTION_COLOR] * len(selected_pairs),
@@ -841,7 +892,8 @@ class StructureRenderer(BaseRenderer):
                             color_override = (
                                 _RESIDUE_SELECTION_COLOR
                                 if i in selected_atoms and j in selected_atoms
-                                else None
+                                else _residue_bond_color(residue_colors, i, j)
+                                if residue_colors else None
                             )
                             if wireframe_bonds:
                                 _add_bond_wire(
@@ -863,6 +915,9 @@ class StructureRenderer(BaseRenderer):
                                     name=name,
                                     color_override=color_override,
                                 )
+
+        if show_hydrogen_bonds:
+            _add_hydrogen_bonds(plotter, structure, residue_selection, residue_visibility)
 
         # ── Unit cell wireframe ───────────────────────────────────────
         if lattice is not None and any(structure.pbc):
@@ -974,7 +1029,7 @@ def _add_batched_bonds(
     plotter: pv.Plotter,
     positions: np.ndarray,
     bond_pairs: list[tuple[int, int]],
-    colors: list[str] | None = None,
+    colors: Sequence[Color] | None = None,
     orders: list[float] | None = None,
     radius: float = 0.08,
     name: str = "bonds_batched",
@@ -1195,7 +1250,7 @@ def _add_bond_cylinders(
     order: float,
     *,
     name: str,
-    color_override: str | None = None,
+    color_override: Color | None = None,
 ) -> None:
     """Draw a bond as one or more parallel cylinders sized to its order.
 
@@ -1240,7 +1295,7 @@ def _add_bond_wire(
     order: float,
     *,
     name: str,
-    color_override: str | None = None,
+    color_override: Color | None = None,
 ) -> None:
     """Draw a bond as a thin line (wireframe representation).
 
@@ -1294,11 +1349,13 @@ _CARTOON_SIDES = 8
 # is equal in both, so it stays a round cord. These are display values,
 # not measurements of anything.
 _CARTOON_SS_WIDTH = {
+    "G": 0.75, "I": 1.40, "B": 0.55,
     "H": 1.10,   # helix — 2.2 A across, the flat band the eye tracks
     "E": 0.90,   # strand — 1.8 A across, narrower than the helix
     "C": 0.35,   # coil / loop — round cord
 }
 _CARTOON_SS_THICKNESS = {
+    "G": 0.16, "I": 0.24, "B": 0.18,
     "H": 0.20,   # 0.4 A edge-on: a band, not a cord
     "E": 0.18,
     "C": 0.35,   # equal to its width, so a loop is circular
@@ -1322,6 +1379,7 @@ _CARTOON_MIN_ARROW_RUN = 3
 # reads without a legend (PyMOL's default cartoon scheme): helices red,
 # sheets yellow, loops grey.
 _CARTOON_SS_COLOR = {
+    "G": (0xE8, 0x70, 0xA0), "I": (0xAA, 0x40, 0xBB), "B": (0xD0, 0x98, 0x32),
     "H": (0xE0, 0x36, 0x36),
     "E": (0xE8, 0xC4, 0x3A),
     "C": (0xB0, 0xB4, 0xBC),
@@ -1476,6 +1534,127 @@ def _selected_atom_indices(
     return selected
 
 
+def _true_runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """Half-open contiguous spans, without joining across hidden residues."""
+    edges = np.flatnonzero(np.diff(np.r_[False, mask, False].astype(int)))
+    return list(zip(edges[::2], edges[1::2], strict=True))
+
+
+def _visible_atom_indices(
+    structure: StructureData, selected: set[int], visibility: str
+) -> set[int]:
+    all_atoms = set(range(len(structure.atoms)))
+    if visibility == "isolate":
+        return selected
+    if visibility == "hide":
+        return all_atoms - selected
+    return all_atoms
+
+
+def _biomolecule_atom_colors(
+    structure: StructureData, mode: str
+) -> dict[int, tuple[float, float, float]]:
+    """Apply the ribbon palette to every atom in each CA-bearing residue."""
+    if mode not in ("chain", "structure", "residue", "bfactor"):
+        return {}
+    colors = {}
+    for order, (chain, residues) in enumerate(structure.chains().items()):
+        keys = structure.ca_residues(chain)
+        n = len(keys)
+        if not n:
+            continue
+        helper = {"structure": _cartoon_ss_colors, "residue": _cartoon_residue_colors,
+                  "bfactor": _cartoon_bfactor_colors}.get(mode)
+        rgb = helper(structure, chain, n, n) if helper else None
+        if rgb is None:
+            rgb = np.tile(_hex_to_rgb(_CHAIN_COLORS[order % len(_CHAIN_COLORS)]), (n, 1))
+        by_seq = {
+            seq: (float(rgb[i][0]) / 255, float(rgb[i][1]) / 255, float(rgb[i][2]) / 255)
+            for i, (_, seq, _) in enumerate(keys)
+        }
+        for seq, indices in residues:
+            if seq in by_seq:
+                colors.update(dict.fromkeys(indices, by_seq[seq]))
+    return colors
+
+
+def _residue_bond_color(
+    colors: dict[int, tuple[float, float, float]], i: int, j: int
+) -> tuple[float, float, float]:
+    left = colors.get(i, (0.6, 0.6, 0.6))
+    right = colors.get(j, (0.6, 0.6, 0.6))
+    return ((left[0] + right[0]) / 2, (left[1] + right[1]) / 2, (left[2] + right[2]) / 2)
+
+
+def hydrogen_bond_contacts(structure: StructureData) -> list[tuple[int, int, int]]:
+    """Geometric (donor, H, acceptor) candidates in the supplied coordinates.
+
+    Explicit H and N/O donors/acceptors only; no inferred protonation or
+    periodic images. Criteria: D-H <= 1.2 Å, D-A <= 3.0 Å, D-H-A >= 150°,
+    as in MDAnalysis HydrogenBondAnalysis (Smith, 2019 documentation). This
+    is a display heuristic, not an electronic/chemical bond assignment.
+    A cell list keeps the search local without requiring scipy.
+    """
+    from collections import defaultdict
+    from itertools import product
+
+    positions = np.array([atom.position for atom in structure.atoms])
+    cells = defaultdict(list)
+    for index, atom in enumerate(structure.atoms):
+        if atom.symbol in ("N", "O"):
+            cells[tuple(np.floor(positions[index] / 3.0).astype(int))].append(index)
+
+    def neighbors(point: np.ndarray) -> list[int]:
+        cell = np.floor(point / 3.0).astype(int)
+        return [index for shift in product((-1, 0, 1), repeat=3)
+                for index in cells.get(tuple(cell + shift), ())]
+
+    contacts = []
+    for h, atom in enumerate(structure.atoms):
+        if atom.symbol != "H":
+            continue
+        nearby = neighbors(positions[h])
+        donors = [(float(np.linalg.norm(positions[d] - positions[h])), d) for d in nearby]
+        donors = [(distance, d) for distance, d in donors if 0.1 < distance <= 1.2]
+        if not donors:
+            continue
+        _, donor = min(donors)
+        dh = positions[donor] - positions[h]
+        for acceptor in nearby:
+            if acceptor == donor:
+                continue
+            da = np.linalg.norm(positions[acceptor] - positions[donor])
+            ha = positions[acceptor] - positions[h]
+            length = np.linalg.norm(ha)
+            if not (1.5 < da <= 3.0 and length > 1.2):
+                continue
+            cosine = float(np.dot(dh, ha) / (np.linalg.norm(dh) * length))
+            if cosine <= np.cos(np.deg2rad(150.0)):
+                contacts.append((donor, h, acceptor))
+    return contacts
+
+
+def _add_hydrogen_bonds(
+    plotter: Any, structure: StructureData, selection: str = "", visibility: str = "all"
+) -> None:
+    terms, _ = parse_residue_selection(selection)
+    visible = _visible_atom_indices(structure, _selected_atom_indices(structure, terms), visibility)
+    points: list[np.ndarray] = []
+    for donor, hydrogen, acceptor in hydrogen_bond_contacts(structure):
+        if not {donor, hydrogen, acceptor} <= visible:
+            continue
+        start, end = structure.atoms[hydrogen].position, structure.atoms[acceptor].position
+        count = max(2, int(np.ceil(np.linalg.norm(end - start) / 0.3)))
+        for t in np.arange(count) / count:
+            points.extend((start + t * (end - start), start + (t + 0.55 / count) * (end - start)))
+    if points:
+        mesh = pv.PolyData(np.asarray(points, dtype=np.float32))
+        mesh.lines = np.column_stack((np.full(len(points) // 2, 2),
+                                      np.arange(len(points)).reshape(-1, 2))).ravel()
+        plotter.add_mesh(mesh, color="#45b8c8", line_width=2, lighting=False,
+                         name="hydrogen_bond_contacts", pickable=False)
+
+
 def _ca_residue_keys(
     structure: StructureData,
     chain_id: str | None = None,
@@ -1567,7 +1746,8 @@ def _cartoon_bfactor_colors(
         per_residue[i] = np.rint(cold + (warm - cold) * frac).astype(np.uint8)
 
     at = np.rint(np.linspace(0.0, n_residues - 1, n_samples)).astype(int)
-    return per_residue[at]
+    sampled: np.ndarray = per_residue[at]
+    return sampled
 
 
 def _cartoon_residue_colors(
@@ -1673,7 +1853,8 @@ def _cartoon_selection_mask(
     if not per_residue.any():
         return None
     at = np.linspace(0.0, n_residues - 1, n_samples)
-    return per_residue[np.rint(at).astype(int)]
+    mask: np.ndarray = per_residue[np.rint(at).astype(int)]
+    return mask
 
 
 def _add_cartoon(
@@ -1681,6 +1862,7 @@ def _add_cartoon(
     structure: StructureData,
     color_mode: str = "chain",
     selection: str = "",
+    visibility: str = "all",
 ) -> None:
     """Draw one ribbon per chain through the alpha-carbon trace.
 
@@ -1732,7 +1914,6 @@ def _add_cartoon(
             half_width, half_thickness = profile
 
         side, normal = _cartoon_ribbon_frames(trace, points)
-        mesh = _extrude_ribbon(points, side, normal, half_width, half_thickness)
 
         if color_mode == "structure":
             rgb = _cartoon_ss_colors(structure, chain_id, len(trace), n_samples)
@@ -1758,30 +1939,37 @@ def _add_cartoon(
             rgb = flat if rgb is None else rgb.copy()
             rgb[selected] = _CARTOON_SELECTION_COLOR
 
-        name = f"cartoon_chain_{chain_id or order}"
-        if rgb is not None:
-            # One colour per spline sample, held across that sample's
-            # whole cross-section ring, so a colour boundary is a clean
-            # cut across the ribbon rather than a diagonal smear.
-            mesh.point_data["cartoon_rgb"] = np.repeat(
-                rgb, _CARTOON_SIDES, axis=0
-            )
-            # rgb=True takes the array as literal colours rather than
-            # running it through a colour map.
-            plotter.add_mesh(
-                mesh,
-                scalars="cartoon_rgb",
-                rgb=True,
-                smooth_shading=True,
-                name=name,
-            )
-        else:
-            plotter.add_mesh(
-                mesh,
-                color=chain_color,
-                smooth_shading=True,
-                name=name,
-            )
+        keep = np.ones(n_samples, dtype=bool)
+        mask = selected if selected is not None else np.zeros(n_samples, dtype=bool)
+        if visibility == "isolate":
+            keep = mask
+        elif visibility == "hide":
+            keep = ~mask
+        labels = structure.secondary_structure(chain_id, detailed=True)
+        at = np.rint(np.linspace(0, len(trace) - 1, n_samples)).astype(int)
+        rectangular = np.array([labels[i] in ("E", "B") for i in at])
+        ca_indices = np.array([index for _, _, index in structure.ca_residues(chain_id)],
+                              dtype=np.int32)
+        runs = _true_runs(keep)
+        for part, (start, stop) in enumerate(runs):
+            if stop - start < 2:
+                continue
+            span = slice(start, stop)
+            mesh = _extrude_ribbon(points[span], side[span], normal[span],
+                                   half_width[span], half_thickness[span],
+                                   rectangular=rectangular[span])
+            samples = np.concatenate((np.repeat(np.arange(start, stop), _CARTOON_SIDES),
+                                      np.repeat([start, stop - 1], _CARTOON_SIDES)))
+            mesh.point_data["residue_atom_index"] = ca_indices[at[samples]]
+            name = f"cartoon_chain_{chain_id or order}"
+            if len(runs) > 1:
+                name += f"_part_{part}"
+            if rgb is not None:
+                mesh.point_data["cartoon_rgb"] = rgb[samples]
+                plotter.add_mesh(mesh, scalars="cartoon_rgb", rgb=True,
+                                 smooth_shading=True, name=name)
+            else:
+                plotter.add_mesh(mesh, color=chain_color, smooth_shading=True, name=name)
 
 
 def _hex_to_rgb(color: str) -> np.ndarray:
@@ -1906,8 +2094,9 @@ def _extrude_ribbon(
     half_width: np.ndarray,
     half_thickness: np.ndarray,
     n_sides: int = _CARTOON_SIDES,
+    rectangular: np.ndarray | None = None,
 ) -> pv.PolyData:
-    """Sweep an elliptical cross-section along an oriented path.
+    """Sweep elliptical or crisp rectangular sections along an oriented path.
 
     This is what replaces ``spline.tube()``: a tube can only vary one
     radius, so a strand came out a thick cord. Here each sample carries
@@ -1941,6 +2130,16 @@ def _extrude_ribbon(
         + (half_width[:, None] * cos[None, :])[:, :, None] * side[:, None, :]
         + (half_thickness[:, None] * sin[None, :])[:, :, None] * normal[:, None, :]
     )
+    if rectangular is not None and np.any(rectangular):
+        if n_sides != 8:
+            raise ValueError("Rectangular ribbons require eight corner vertices")
+        # Duplicate each corner so adjoining flat faces have independent normals.
+        square_x = np.array([1, 1, 1, -1, -1, -1, -1, 1])
+        square_y = np.array([-1, 1, 1, 1, 1, -1, -1, -1])
+        square = (points[:, None, :]
+                  + half_width[:, None, None] * square_x[None, :, None] * side[:, None, :]
+                  + half_thickness[:, None, None] * square_y[None, :, None] * normal[:, None, :])
+        ring[rectangular] = square[rectangular]
     verts = ring.reshape(-1, 3)
 
     # Surface normal as the cross product of the two parametric
@@ -1952,6 +2151,12 @@ def _extrude_ribbon(
         (half_width[:, None] * -sin[None, :])[:, :, None] * side[:, None, :]
         + (half_thickness[:, None] * cos[None, :])[:, :, None] * normal[:, None, :]
     )
+    if rectangular is not None and np.any(rectangular):
+        dx = np.array([0, 0, -1, -1, 0, 0, 1, 1])
+        dy = np.array([1, 1, 0, 0, -1, -1, 0, 0])
+        square_tangent = (half_width[:, None, None] * dx[None, :, None] * side[:, None, :]
+                          + half_thickness[:, None, None] * dy[None, :, None] * normal[:, None, :])
+        d_theta[rectangular] = square_tangent[rectangular]
     d_s = np.gradient(ring, axis=0)
     # cross(d_theta, d_s), not cross(d_s, d_theta): for a circular
     # cross-section the latter evaluates to -(outward radial).
@@ -1980,18 +2185,18 @@ def _extrude_ribbon(
         ]
     ).ravel()
 
-    # Cap both ends. The first is wound backwards so its face points out
-    # of the chain rather than into it.
-    caps = np.concatenate(
-        [
-            [n_sides],
-            np.arange(n_sides)[::-1],
-            [n_sides],
-            (n_samples - 1) * n_sides + np.arange(n_sides),
-        ]
-    ).astype(np.int64)
+    # Caps need separate vertices: sharing radial normals makes their faces
+    # shade like the side wall. Use the outward tangent at each endpoint.
+    cap_start = len(verts)
+    caps = np.concatenate(([n_sides], cap_start + np.arange(n_sides)[::-1],
+                           [n_sides], cap_start + n_sides + np.arange(n_sides))).astype(np.int64)
+    verts = np.concatenate((verts, ring[0], ring[-1]))
+    tangents = np.array([points[0] - points[1], points[-1] - points[-2]])
+    tangents /= np.maximum(np.linalg.norm(tangents, axis=1, keepdims=True), 1e-12)
+    all_normals = np.concatenate((normals.reshape(-1, 3),
+                                  np.repeat(tangents, n_sides, axis=0)))
     mesh = pv.PolyData(verts.astype(np.float32), faces=caps, strips=strips)
-    mesh.point_data["Normals"] = normals.reshape(-1, 3).astype(np.float32)
+    mesh.point_data["Normals"] = all_normals.astype(np.float32)
     mesh.point_data.active_normals_name = "Normals"
     return mesh
 
@@ -2012,12 +2217,12 @@ def _cartoon_ss_colors(
     gradient that means nothing.
     """
     try:
-        labels = structure.secondary_structure(chain_id)
+        labels = structure.secondary_structure(chain_id, detailed=True)
     except Exception:  # noqa: BLE001 — chain colour is a fine fallback
         return None
     if len(labels) != n_residues:
         return None
-    if not any(label in ("H", "E") for label in labels):
+    if not any(label in ("H", "G", "I", "E", "B") for label in labels):
         return None  # all coil — one flat grey says the same thing
 
     at = np.rint(np.linspace(0.0, n_residues - 1, n_samples)).astype(int)
@@ -2048,14 +2253,14 @@ def _cartoon_ribbon_profile(
     and smoothing it would round the barb off into a bulge.
     """
     try:
-        labels = structure.secondary_structure(chain_id)
+        labels = structure.secondary_structure(chain_id, detailed=True)
     except Exception:  # noqa: BLE001 — a ribbon is still better than nothing
         return None
     if len(labels) != n_residues:
         # Should not happen (both derive from the same trace), but a
         # mismatched profile would silently mis-shape the whole chain.
         return None
-    if not any(label in ("H", "E") for label in labels):
+    if not any(label in ("H", "G", "I", "E", "B") for label in labels):
         return None  # all coil — a uniform round cord says the same thing
 
     width = _cartoon_ss_profile(labels, _CARTOON_SS_WIDTH, n_samples)
@@ -2065,7 +2270,7 @@ def _cartoon_ribbon_profile(
 
 
 def _cartoon_ss_profile(
-    labels: str,
+    labels: Sequence[str],
     values: dict[str, float],
     n_samples: int,
 ) -> np.ndarray:
@@ -2077,7 +2282,7 @@ def _cartoon_ss_profile(
     # Nearest-residue resampling: the spline samples run along the trace,
     # so sample j sits at residue j * (n_residues - 1) / (n_samples - 1).
     at = np.linspace(0.0, n_residues - 1, n_samples)
-    out = per_residue[np.rint(at).astype(int)]
+    out: np.ndarray = per_residue[np.rint(at).astype(int)]
 
     taper = max(int(round(_CARTOON_TAPER_RESIDUES * _CARTOON_SAMPLES_PER_RESIDUE)), 1)
     if taper > 1 and len(out) > taper:
@@ -2088,7 +2293,7 @@ def _cartoon_ss_profile(
     return out
 
 
-def _strand_runs(labels: str) -> list[tuple[int, int]]:
+def _strand_runs(labels: Sequence[str]) -> list[tuple[int, int]]:
     """Inclusive ``(first, last)`` residue index of each contiguous ``E`` run."""
     runs: list[tuple[int, int]] = []
     start: int | None = None
@@ -2104,7 +2309,7 @@ def _strand_runs(labels: str) -> list[tuple[int, int]]:
     return runs
 
 
-def _apply_sheet_arrows(width: np.ndarray, labels: str, n_samples: int) -> None:
+def _apply_sheet_arrows(width: np.ndarray, labels: Sequence[str], n_samples: int) -> None:
     """Widen then taper the last residues of each strand run, in place.
 
     A beta-strand is drawn pointing at its C-terminus: the width steps

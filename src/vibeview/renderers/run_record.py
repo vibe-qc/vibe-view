@@ -15,7 +15,7 @@ archive itself — this gates the DOM, not the data).
 from __future__ import annotations
 
 import html
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from vibeview.renderers import BaseRenderer
 
@@ -246,7 +246,7 @@ def _ndjson_blocks(text: str) -> list[str]:
     import json as _json
 
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
     unparsed = 0
     for ln in lines:
         try:
@@ -266,7 +266,7 @@ def _ndjson_blocks(text: str) -> list[str]:
             *_log_blocks(text),
         ]
 
-    def _rows(chunk: list[dict], start: int) -> list[str]:
+    def _rows(chunk: list[dict[str, Any]], start: int) -> list[str]:
         out = []
         for i, event in enumerate(chunk, start=start):
             compact = _json.dumps(

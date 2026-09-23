@@ -105,7 +105,14 @@ class EquationOfStateRenderer(BaseRenderer):
         cite = ""
         # Overlay the fitted curve only when the parameters are complete and
         # sane (B0′ == 1 makes Murnaghan singular).
-        if None not in (V0, E0, B0, B0p) and B0p != 1.0 and V.size:
+        if (
+            V0 is not None
+            and E0 is not None
+            and B0 is not None
+            and B0p is not None
+            and B0p != 1.0
+            and V.size
+        ):
             vmin, vmax = float(V.min()), float(V.max())
             pad = 0.05 * ((vmax - vmin) or 1.0)
             grid = np.linspace(vmin - pad, vmax + pad, 200)
@@ -159,4 +166,4 @@ class EquationOfStateRenderer(BaseRenderer):
                 bgcolor="rgba(20,20,30,0.7)", bordercolor="#555", borderwidth=1,
                 font={"size": 12, "color": "#ccc"},
             )
-        return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs)
+        return str(fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs))

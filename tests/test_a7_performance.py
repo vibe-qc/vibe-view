@@ -25,10 +25,12 @@ import json
 import os
 import types
 import zipfile
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-import pytest
+
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
 
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "True")
 
@@ -40,7 +42,7 @@ def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-def _simple_volume_reader(kind: str = "volume.density") -> "QVFReader":
+def _simple_volume_reader(kind: str = "volume.density") -> QVFReader:
     """A tiny 10×10×10 density grid QVF."""
     from vibeview.qvf import QVFReader
 
@@ -74,7 +76,7 @@ def _simple_volume_reader(kind: str = "volume.density") -> "QVFReader":
 
 def _nacl_structure_reader(
     replication: tuple = (1, 1, 1),
-) -> tuple["QVFReader", types.SimpleNamespace]:
+) -> tuple[QVFReader, types.SimpleNamespace]:
     """A 2-atom NaCl-like periodic structure (Na + Cl) as a minimal QVF.
 
     Returns ``(reader, viewer_state_mock)`` where viewer_state_mock has
@@ -110,7 +112,7 @@ def _nacl_structure_reader(
     return reader
 
 
-def _trajectory_reader(n_frames: int = 5) -> "QVFReader":
+def _trajectory_reader(n_frames: int = 5) -> QVFReader:
     """Minimal trajectory with N frames and energy values."""
     from vibeview.qvf import QVFReader
 
@@ -171,6 +173,7 @@ class TestMeshCache:
 
     def test_put_then_hit(self):
         import pyvista as pv
+
         from vibeview.viewer_defaults import ViewerState
         vs = ViewerState()
         dummy = pv.Sphere()
@@ -181,6 +184,7 @@ class TestMeshCache:
 
     def test_isovalue_change_invalidates_cache(self):
         import pyvista as pv
+
         from vibeview.viewer_defaults import ViewerState
         vs = ViewerState()
         vs.put_cached_mesh("vol0", 0.05, mesh=pv.Sphere())
@@ -189,6 +193,7 @@ class TestMeshCache:
 
     def test_replication_change_invalidates_cache(self):
         import pyvista as pv
+
         from vibeview.viewer_defaults import ViewerState
         vs = ViewerState()
         vs.put_cached_mesh("vol0", 0.05, mesh=pv.Sphere())
@@ -201,6 +206,7 @@ class TestMeshCache:
         """A7-02 integration: _rebuild_volume must not re-march when only the
         colormap changes.  We count make_mesh calls by monkeypatching."""
         import pyvista as pv
+
         from vibeview.app import _rebuild_volume
         from vibeview.renderers.volume import VolumeRenderer
         from vibeview.viewer_defaults import ViewerState
@@ -264,6 +270,7 @@ class TestGlyphInstancing:
         The renderer must issue ≤ 2 atom draw calls (one glyph per element),
         not 16."""
         import pyvista as pv
+
         from vibeview.renderers.structure import StructureRenderer
 
         reader = _nacl_structure_reader()
@@ -285,6 +292,7 @@ class TestGlyphInstancing:
         (``atom_<idx>_<slot>``) for the charge-overlay and CPK-restore
         paths that need to address individual atoms."""
         import pyvista as pv
+
         from vibeview.renderers.structure import StructureRenderer
 
         reader = _nacl_structure_reader()
@@ -303,6 +311,7 @@ class TestGlyphInstancing:
         """The glyph mesh for a 2×2×2 NaCl supercell should contain points
         for all 16 atoms (8 Na + 8 Cl)."""
         import pyvista as pv
+
         from vibeview.renderers.structure import StructureRenderer
 
         reader = _nacl_structure_reader()

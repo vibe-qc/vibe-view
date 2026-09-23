@@ -7,13 +7,17 @@ Useful for screening calculations or benchmarking.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
 
-def _energy_eh(reader) -> float | None:
+
+def _energy_eh(reader: QVFReader) -> float | None:
     """SCF energy (Eh) from a reader's provenance, mirroring cli._energy_eh."""
     prov = getattr(reader.manifest, "provenance", None) or {}
     if hasattr(prov, "model_dump"):
@@ -101,7 +105,7 @@ def compare_batch(
     # Section matrix
     for kind in sorted(all_section_kinds):
         results["sections"][kind] = []
-        for path, reader in readers:
+        for _path, reader in readers:
             has_it = any(s.kind == kind for s in reader.sections)
             results["sections"][kind].append(has_it)
 
@@ -167,15 +171,13 @@ def compare_batch(
 
     # Close readers
     for _, reader in readers:
-        try:
+        with contextlib.suppress(Exception):
             reader.close()
-        except Exception:
-            pass
 
     return results
 
 
-def batch_compare_to_table(results: dict) -> str:
+def batch_compare_to_table(results: dict[str, Any]) -> str:
     """Format batch comparison results as a markdown table."""
     files = results.get("files", [])
     energies = results.get("energies", [])

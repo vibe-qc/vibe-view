@@ -13,12 +13,26 @@ what carbon looks like, including any per-element override the user set.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from vibeview.renderers.structure import cpk_color, cpk_radius
 from vibeview.tui.raster import Camera, Canvas
+
+if TYPE_CHECKING:
+    import pyvista as pv
+
+    from vibeview.qvf import (
+        Atom,
+        GridData,
+        QVFReader,
+        ReactionPathData,
+        StructureData,
+        TrajectoryData,
+    )
 
 _BOHR_TO_ANGSTROM = 0.529177210903
 
@@ -239,7 +253,12 @@ def fit_camera(
 # ── structure ─────────────────────────────────────────────────────────────
 
 
-def _atom_colors(atoms, color_mode: str, structure=None, notes=None) -> np.ndarray:
+def _atom_colors(
+    atoms: Sequence[Atom],
+    color_mode: str,
+    structure: StructureData | None = None,
+    notes: list[str] | None = None,
+) -> np.ndarray:
     """Per-atom RGB for the requested colouring scheme.
 
     ``notes`` collects human-readable reasons when the requested scheme
@@ -282,11 +301,11 @@ def _atom_colors(atoms, color_mode: str, structure=None, notes=None) -> np.ndarr
             span = hi - lo
             t = np.clip((np.nan_to_num(vals, nan=lo) - lo) / span, 0.0, 1.0)
             # blue (low) → white → red (high)
-            out = np.empty((len(atoms), 3))
-            out[:, 0] = 60 + 195 * t
-            out[:, 1] = 90 + 110 * (1.0 - np.abs(2 * t - 1))
-            out[:, 2] = 255 - 195 * t
-            return out
+            ramp = np.empty((len(atoms), 3))
+            ramp[:, 0] = 60 + 195 * t
+            ramp[:, 1] = 90 + 110 * (1.0 - np.abs(2 * t - 1))
+            ramp[:, 2] = 255 - 195 * t
+            return ramp
 
     if color_mode == "secondary" and structure is not None:
         colors = np.array([hex_to_rgb(cpk_color(a.atomic_number)) for a in atoms], dtype=np.float64)
@@ -311,7 +330,11 @@ def _atom_colors(atoms, color_mode: str, structure=None, notes=None) -> np.ndarr
                     for _seq, indices in all_chains.get(chain, [])
                     if any(i in ca_indices for i in indices)
                 ]
-                for indices, label in zip(residues, labels):
+                # strict=False: the two are meant to line up one-to-one, but
+                # a residue carrying two alpha carbons (an altloc) puts one
+                # entry in ``residues`` against two labels. Colour what lines
+                # up rather than dropping the chain out of the TUI.
+                for indices, label in zip(residues, labels, strict=False):
                     rgb = _SS_COLORS.get(label, _SS_COLORS["C"])
                     for idx in indices:
                         if 0 <= idx < len(colors):
@@ -323,7 +346,7 @@ def _atom_colors(atoms, color_mode: str, structure=None, notes=None) -> np.ndarr
     return np.array([hex_to_rgb(cpk_color(a.atomic_number)) for a in atoms], dtype=np.float64)
 
 
-def _backbone_scene(structure, color_mode: str) -> Scene | None:
+def _backbone_scene(structure: StructureData, color_mode: str) -> Scene | None:
     """The alpha-carbon trace, chain by chain, or None if there is none.
 
     An all-atom render of a solvated protein is not a picture of a protein:
@@ -391,7 +414,7 @@ def _backbone_scene(structure, color_mode: str) -> Scene | None:
     return scene
 
 
-def _cell_edges(lattice: np.ndarray, pbc) -> tuple[np.ndarray, np.ndarray]:
+def _cell_edges(lattice: np.ndarray, pbc: Sequence[bool]) -> tuple[np.ndarray, np.ndarray]:
     """Wireframe edges of the cell spanned by the *periodic* axes only.
 
     LATTICE CONVENTION: the ``structure`` section stores vectors as **rows**
@@ -419,11 +442,16 @@ def _cell_edges(lattice: np.ndarray, pbc) -> tuple[np.ndarray, np.ndarray]:
     return np.array(starts), np.array(ends)
 
 
-def _replication_offsets(lattice, pbc, replication) -> np.ndarray:
+def _replication_offsets(
+    lattice: np.ndarray | None, pbc: Sequence[bool] | None, replication: Sequence[int]
+) -> np.ndarray:
     """Translation vectors for a supercell view, periodic axes only."""
     if lattice is None:
         return np.zeros((1, 3))
-    counts = [max(1, int(r)) if flag else 1 for r, flag in zip(replication, pbc)]
+    # strict=True, as in qvf.clamp_replication: _resolve_pbc always returns a
+    # three-tuple, and the loop below indexes counts[0..2].
+    flags = pbc if pbc is not None else (True, True, True)
+    counts = [max(1, int(r)) if flag else 1 for r, flag in zip(replication, flags, strict=True)]
     offsets = []
     for i in range(counts[0]):
         for j in range(counts[1]):
@@ -433,7 +461,7 @@ def _replication_offsets(lattice, pbc, replication) -> np.ndarray:
 
 
 def structure_scene(
-    reader,
+    reader: QVFReader,
     *,
     structure_id: str = "structure",
     representation: str = "ball_and_stick",
@@ -508,7 +536,7 @@ def structure_scene(
         f"{atoms[i].symbol}{i + 1}" for _ in range(n_images) for i in range(len(atoms))
     ]
 
-    bonds = structure.bonds
+    bonds: Sequence[tuple[Any, ...]] | None = structure.bonds
     if bonds is None:
         bonds = reader.infer_bonds(structure) if wants_bonds and show_bonds else []
     if show_bonds and wants_bonds and bonds:
@@ -527,14 +555,14 @@ def structure_scene(
             # what the interactive renderer does — reuse its helper rather
             # than re-deriving it, since the naive round-the-fraction version
             # picks the wrong image in a hexagonal cell.
-            if periodic:
+            if periodic and lattice is not None:
                 from vibeview.renderers.structure import _minimum_image
 
                 inv_lattice = np.linalg.inv(lattice)
                 ends = np.array(
                     [
                         _minimum_image(s, e, lattice, inv_lattice, structure.pbc)
-                        for s, e in zip(starts, ends)
+                        for s, e in zip(starts, ends, strict=True)
                     ]
                 )
             scene.bond_starts = (starts[None] + offsets[:, None, :]).reshape(-1, 3)
@@ -546,7 +574,7 @@ def structure_scene(
     # left a note on the scene and assignment would discard it.
     scene.color_notes.extend(color_notes)
 
-    if show_cell and periodic:
+    if show_cell and periodic and lattice is not None:
         starts, ends = _cell_edges(lattice, structure.pbc)
         if len(starts):
             scene.line_starts = (starts[None] + offsets[:, None, :]).reshape(-1, 3)
@@ -558,7 +586,9 @@ def structure_scene(
 # ── volumes ───────────────────────────────────────────────────────────────
 
 
-def _polydata_to_mesh(poly, color, opacity, label) -> Mesh | None:
+def _polydata_to_mesh(
+    poly: pv.PolyData | None, color: tuple[int, int, int], opacity: float, label: str
+) -> Mesh | None:
     """Convert PyVista PolyData to a plain (verts, faces, normals) Mesh.
 
     VTK's contour and normals filters are pure computation — no render
@@ -593,7 +623,7 @@ def _polydata_to_mesh(poly, color, opacity, label) -> Mesh | None:
 
 
 def sampled_field_meshes(
-    grid,
+    grid: GridData,
     data: np.ndarray,
     *,
     isovalue: float = 0.05,
@@ -601,7 +631,7 @@ def sampled_field_meshes(
     grid_units: str = "angstrom",
     replication: tuple[int, int, int] = (1, 1, 1),
     lattice_vectors: np.ndarray | None = None,
-    pbc=None,
+    pbc: Sequence[bool] | None = None,
     opacity: float = 1.0,
 ) -> list[Mesh]:
     """Contour an in-memory scalar field into terminal-renderable meshes.
@@ -649,7 +679,7 @@ def sampled_field_meshes(
 
 
 def volume_meshes(
-    reader,
+    reader: QVFReader,
     section_id: str,
     *,
     isovalue: float = 0.05,
@@ -705,9 +735,12 @@ def volume_meshes(
 # ── frame sequences ───────────────────────────────────────────────────────
 
 
-def trajectory_frames(reader, section_id: str) -> tuple[np.ndarray, list[float] | None]:
+def trajectory_frames(
+    reader: QVFReader, section_id: str
+) -> tuple[np.ndarray, list[float] | None]:
     """``(coords [n_frames, n_atoms, 3] Å, per-frame energies or None)``."""
     kind = reader.get_section(section_id).kind
+    data: TrajectoryData | ReactionPathData
     if kind == "reaction.path":
         data = reader.read_reaction_path(section_id)
     else:
@@ -716,7 +749,7 @@ def trajectory_frames(reader, section_id: str) -> tuple[np.ndarray, list[float] 
 
 
 def vibration_frames(
-    reader,
+    reader: QVFReader,
     section_id: str,
     mode_index: int,
     *,
@@ -744,7 +777,7 @@ def vibration_frames(
     return coords, float(data.frequencies[idx])
 
 
-def reaction_path_cell(data) -> tuple[np.ndarray, np.ndarray] | None:
+def reaction_path_cell(data: ReactionPathData) -> tuple[np.ndarray, np.ndarray] | None:
     """Cell edges for a periodic reaction path, or None when molecular.
 
     ``reaction.path`` stores lattice vectors as **columns in bohr** — the

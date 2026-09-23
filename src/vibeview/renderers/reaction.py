@@ -24,7 +24,10 @@ import numpy as np
 from vibeview.renderers import BaseRenderer
 
 if TYPE_CHECKING:
+    import pyvista as pv
+
     from vibeview.qvf import (
+        GridData,
         QVFReader,
         ReactionPathData,
         ReactionWaypoint,
@@ -87,7 +90,8 @@ def _wrap_positions(
     frac_wrapped[:, :wrap_axes] = frac[:, :wrap_axes] - np.floor(
         frac[:, :wrap_axes]
     )
-    return frac_wrapped @ lattice_angstrom.T
+    wrapped: np.ndarray = frac_wrapped @ lattice_angstrom.T
+    return wrapped
 
 
 def _cell_edges(
@@ -147,7 +151,7 @@ class ReactionPathRenderer(BaseRenderer):
 
     @property
     def n_frames(self) -> int:
-        return self.load().coords.shape[0]
+        return int(self.load().coords.shape[0])
 
     @property
     def n_atoms(self) -> int:
@@ -200,7 +204,8 @@ class ReactionPathRenderer(BaseRenderer):
         if arr.ndim == 2:
             return arr * _BOHR_TO_ANGSTROM
         if arr.ndim == 3:
-            return arr[index] * _BOHR_TO_ANGSTROM
+            frame: np.ndarray = arr[index] * _BOHR_TO_ANGSTROM
+            return frame
         raise ValueError(
             f"reaction.path: lattice has unexpected ndim={arr.ndim} "
             f"(expected 2 or 3)"
@@ -271,7 +276,7 @@ class ReactionPathRenderer(BaseRenderer):
     def volume_isovalue(self) -> float | None:
         return self.load().volume_isovalue
 
-    def volume_grid(self):  # -> GridData | None
+    def volume_grid(self) -> GridData | None:
         """Shared real-space grid (bohr) for the per-frame volumes."""
         return self.load().volume_grid
 
@@ -302,7 +307,7 @@ class ReactionPathRenderer(BaseRenderer):
         self,
         index: int,
         isovalue: float | None = None,
-    ):  # -> pv.PolyData | None
+    ) -> pv.PolyData | None:
         """Marching-cubes isosurface of the density at path frame
         ``index``, ready to add to the 3D scene. None if this archive
         has no volumes. ``isovalue`` defaults to the archive's stored
@@ -313,6 +318,8 @@ class ReactionPathRenderer(BaseRenderer):
         from vibeview.renderers.volume import build_isosurface_mesh
 
         field = self.volume_data_for_frame(index)
+        if field is None:
+            return None
         iso = (
             isovalue
             if isovalue is not None
@@ -375,7 +382,7 @@ class ReactionPathRenderer(BaseRenderer):
         idx = max(0, min(current_frame, n - 1))
         return self._frame_pngs[idx]
 
-    def _prerender_all_frames(self, data) -> list[bytes]:
+    def _prerender_all_frames(self, data: ReactionPathData) -> list[bytes]:
         """Render one PNG per frame (frame indicator moves; everything else fixed)."""
         if not data.energies:
             return []
@@ -388,7 +395,7 @@ class ReactionPathRenderer(BaseRenderer):
             assert data.reaction_coordinate is not None
             xs = np.array(data.reaction_coordinate, dtype=np.float64)
         else:
-            xs = np.arange(n)
+            xs = np.arange(n, dtype=np.float64)
         x_label = self.energy_plot_x_label()
 
         pngs: list[bytes] = []

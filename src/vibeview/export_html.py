@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
 
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -170,7 +174,7 @@ window.addEventListener('resize', () => {{
 </html>"""
 
 
-def export_html(reader, path: Path, *, title: str | None = None) -> Path:
+def export_html(reader: QVFReader, path: Path, *, title: str | None = None) -> Path:
     """Export a QVF to a standalone HTML file with embedded Three.js viewer.
 
     Parameters

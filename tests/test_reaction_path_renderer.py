@@ -69,8 +69,10 @@ def _molecular_rxn_path_qvf() -> tuple[Path, str]:
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("rxn/meta.json", meta)
         zf.writestr("rxn/coords.dat", coords)
@@ -155,8 +157,10 @@ def _periodic_rxn_path_qvf(
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("rxn/meta.json", meta)
         zf.writestr("rxn/coords.dat", coords_bytes)
@@ -460,8 +464,10 @@ def _labelled_rxn_path_qvf(
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("rxn/meta.json", meta)
         zf.writestr("rxn/coords.dat", coords)
@@ -539,8 +545,10 @@ def _rxn_path_with_volumes_qvf(
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("rxn/meta.json", meta)
         zf.writestr("rxn/coords.dat", coords)

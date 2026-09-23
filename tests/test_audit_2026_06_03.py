@@ -3,7 +3,7 @@
 Each test pins one fix from that pass (see ``vibe-view/AUDIT_2026-06-03.md``):
 
 * H1 — stored ``volume.orbital`` / ``basis.ao`` render BOTH lobes (were +only).
-* H4 — combined bands+DOS reference both panels to a SINGLE Fermi zero.
+* H4 — bands and DOS respect their distinct QVF energy conventions (#25).
 * M5 — a degenerate 1×N ``scan.surface`` plots a line instead of crashing.
 * M6 — ``scf_history`` keeps the DIIS curve when one record omits ``diis_error``.
 * M7 — periodic explicit-bond minimum image is exact in skewed cells.
@@ -114,7 +114,7 @@ def test_stored_signed_volume_renders_both_lobes(kind: str, sec_id: str) -> None
 # ── H4: combined bands+DOS share a single Fermi reference ──────────────────
 
 
-def _bands_dos_reader(b_fermi: float, d_fermi: float):
+def _bands_dos_reader(b_fermi: float | None, d_fermi: float):
     from vibeview.qvf import QVFReader
 
     n_k, n_b = 4, 2
@@ -122,7 +122,7 @@ def _bands_dos_reader(b_fermi: float, d_fermi: float):
         [[[1.0, 2.0], [1.1, 2.1], [1.2, 2.2], [1.3, 2.3]]], dtype=np.float64
     )  # [1, n_k, n_b]
     kpath = json.dumps({
-        "n_kpoints": n_k, "n_bands": n_b, "n_spin": 1, "fermi": float(b_fermi),
+        "n_kpoints": n_k, "n_bands": n_b, "n_spin": 1, "fermi": b_fermi,
         "segments": [{"label_start": "G", "label_end": "X", "n_points": n_k}],
     }).encode()
     npts = 40
@@ -145,30 +145,48 @@ def _bands_dos_reader(b_fermi: float, d_fermi: float):
     return QVFReader(_make_qvf_bytes(sections, files)), eig
 
 
-def test_combined_bands_dos_single_fermi_reference() -> None:
-    """H4: when the bands carry fermi=0.0 (the writer's 'no Fermi' sentinel)
-    but the DOS has a real in-window E_F, both panels must reference that same
-    E_F. Previously the bands stayed unshifted while the DOS shifted, so they
-    sat on different zeros under one shared axis."""
+@pytest.mark.parametrize("b_fermi", [0.0, -10491.3])
+@pytest.mark.parametrize("d_fermi", [0.0, 0.5, 5475.1])
+def test_combined_bands_dos_respects_each_section_energy_convention(b_fermi, d_fermi):
+    """QVF DOS grids already reference E_F; absolute band energies do not (#25)."""
     from vibeview.renderers.bands import BandsRenderer
     from vibeview.renderers.dos import DOSRenderer, _bands_dos_figure
 
-    d_fermi = 0.5
-    reader, eig = _bands_dos_reader(b_fermi=0.0, d_fermi=d_fermi)
-    fig = _bands_dos_figure(
-        BandsRenderer(reader.get_section("bands0"), reader),
-        DOSRenderer(reader.get_section("dos0"), reader),
-    )
-    band_traces = [t for t in fig.data if (t.name or "").startswith("spin")]
-    assert band_traces, "no band traces in the combined figure"
-    # Band 1 (spin 1) must be referenced to the DOS Fermi level, not left at 0.
-    first = np.asarray(band_traces[0].y, dtype=float)
-    assert np.allclose(first, eig[0, :, 0] - d_fermi), (
-        "bands not shifted to the shared Fermi zero (H4 regression)"
-    )
-    assert not np.allclose(first, eig[0, :, 0]), "bands left unreferenced"
-    title = fig.layout.yaxis.title.text or ""
-    assert "E_F" in title, f"axis not labeled as Fermi-referenced: {title!r}"
+    reader, eig = _bands_dos_reader(b_fermi=b_fermi, d_fermi=d_fermi)
+    try:
+        fig = _bands_dos_figure(
+            BandsRenderer(reader.get_section("bands0"), reader),
+            DOSRenderer(reader.get_section("dos0"), reader),
+        )
+        band = next(t for t in fig.data if (t.name or "").startswith("spin"))
+        dos = next(t for t in fig.data if t.name == "DOS")
+        np.testing.assert_allclose(band.y, eig[0, :, 0] - b_fermi)
+        np.testing.assert_allclose(dos.y, np.linspace(-3.0, 3.0, len(dos.y)))
+        assert "E_F" in fig.layout.yaxis.title.text
+    finally:
+        reader.close()
+
+
+def test_combined_without_band_fermi_keeps_axes_independent():
+    from vibeview.renderers.bands import BandsRenderer
+    from vibeview.renderers.dos import DOSRenderer, _bands_dos_figure
+
+    reader, eig = _bands_dos_reader(b_fermi=None, d_fermi=5475.1)
+    try:
+        fig = _bands_dos_figure(
+            BandsRenderer(reader.get_section("bands0"), reader),
+            DOSRenderer(reader.get_section("dos0"), reader),
+        )
+        np.testing.assert_allclose(fig.data[0].y, eig[0, :, 0])
+        assert fig.layout.yaxis.title.text == "Energy (eV)"
+        assert "E_F" in fig.layout.yaxis2.title.text
+        assert fig.layout.yaxis.matches is None
+        assert fig.layout.yaxis2.matches is None
+        fermi_lines = [s for s in fig.layout.shapes if s.line.color == "#CC3333"]
+        assert len(fermi_lines) == 1
+        assert fermi_lines[0].yref == "y2"
+    finally:
+        reader.close()
 
 
 # ── M5: degenerate scan.surface plots a line, not a crash ──────────────────

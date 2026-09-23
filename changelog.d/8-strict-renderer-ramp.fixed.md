@@ -1,0 +1,1 @@
+The strict type gate now covers the bands, DOS, and crystal-builder modules: all 87 production source modules plus the four gated scripts. A checked inventory fails when a new source module is added without joining the gate. #33 closes with this.

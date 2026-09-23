@@ -7,6 +7,7 @@ in-process equivalent of ``vibe-view open <path>``.
 
 from __future__ import annotations
 
+import contextlib
 import socket
 import threading
 import time
@@ -38,10 +39,8 @@ def _wait_until_bound_and_open(
         except OSError:
             time.sleep(0.2)
             continue
-        try:
+        with contextlib.suppress(Exception):
             webbrowser.open(probe_url)
-        except Exception:
-            pass
         return
 
 

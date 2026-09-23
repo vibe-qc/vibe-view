@@ -19,6 +19,16 @@ vibe-view show ~/scratch/job.qvf          # one frame, then exit
 vibe-view tui  ~/scratch/job.qvf          # interactive
 ```
 
+For a first run without a remote calculation, create the bundled geometry:
+
+```sh
+vibe-view demo -o terminal-water.qvf
+vibe-view show terminal-water.qvf --labels
+```
+
+This file contains only a structure. The orbital and spectrum examples below
+need a calculated archive carrying those sections.
+
 ## Two commands
 
 | | `vibe-view show` | `vibe-view tui` |

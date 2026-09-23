@@ -27,6 +27,8 @@ import plotly.graph_objects as go
 from vibeview.renderers import BaseRenderer
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from vibeview.qvf import QVFReader, Section, SpectraData
 
 matplotlib.use("Agg")
@@ -99,10 +101,7 @@ def _style_for(section: Section, freqs: np.ndarray) -> _SpectrumStyle:
         return style
     # spectra.generic + unknown — adapt buffer/gamma to the data range
     # so the broadened envelope is visible regardless of X scale.
-    if len(freqs) > 0:
-        span = float(np.max(freqs) - np.min(freqs))
-    else:
-        span = 1.0
+    span = float(np.max(freqs) - np.min(freqs)) if len(freqs) > 0 else 1.0
     buf = max(span * 0.05, 0.01)
     gamma = max(span * 0.005, 0.001)
     label = getattr(section, "label", None) or "Spectrum"
@@ -335,7 +334,7 @@ class SpectraRenderer(BaseRenderer):
             showlegend=False,
         )
 
-        return fig.to_html(full_html=False, include_plotlyjs="cdn")
+        return str(fig.to_html(full_html=False, include_plotlyjs="cdn"))
 
     def to_csv(
         self,
@@ -388,7 +387,7 @@ _COMPARE_COLORS = ("#CC3333", "#3366CC", "#33AA55", "#CC8800", "#8844CC", "#00AA
 
 
 def render_comparison_html(
-    entries,
+    entries: Iterable[tuple[str, Section, QVFReader]],
     gamma_scale: float = 1.0,
     normalize: bool = False,
     x_unit: str = "native",
@@ -480,4 +479,4 @@ def render_comparison_html(
         legend={"orientation": "h", "y": -0.3},
         showlegend=True,
     )
-    return fig.to_html(full_html=False, include_plotlyjs="cdn")
+    return str(fig.to_html(full_html=False, include_plotlyjs="cdn"))

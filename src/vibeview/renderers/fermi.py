@@ -11,7 +11,7 @@ is centred in the view.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -47,7 +47,7 @@ def build_fermi_sheets(
     energies: np.ndarray,
     lattice_vectors: np.ndarray,
     band_indices: list[int] | None = None,
-) -> tuple[list[tuple[int, "pv.PolyData"]], np.ndarray]:
+) -> tuple[list[tuple[int, pv.PolyData]], np.ndarray]:
     """Build the Fermi sheets (E − E_F = 0 isosurfaces) in Cartesian k-space.
 
     ``energies`` is ``[nk1, nk2, nk3, n_bands]`` of E(k) − E_F (eV). Returns
@@ -87,7 +87,7 @@ def build_fermi_sheets(
     return sheets, recip
 
 
-def reciprocal_cell_edges(recip: np.ndarray) -> "pv.PolyData":
+def reciprocal_cell_edges(recip: np.ndarray) -> pv.PolyData:
     """Wireframe of the reciprocal cell parallelepiped, centred on γ.
 
     The 8 corners are Σ (±½) b_i; the 12 edges connect corners differing in
@@ -119,16 +119,16 @@ class FermiSurfaceRenderer(BaseRenderer):
     def __init__(self, section: Section, reader: QVFReader) -> None:
         super().__init__(section, reader)
         self._energies: np.ndarray | None = None
-        self._meta: dict | None = None
+        self._meta: dict[str, Any] | None = None
 
-    def load(self) -> tuple[np.ndarray, dict]:
+    def load(self) -> tuple[np.ndarray, dict[str, Any]]:
         """Read the energy mesh (E − E_F) + the mesh metadata JSON."""
         if self._energies is None:
             self._meta = self.reader._read_json_member(self.section_id, "mesh")
             self._energies = self.reader._read_binary_member(self.section_id, "energies")
         return self._energies, self._meta  # type: ignore[return-value]
 
-    def build_sheets(self) -> tuple[list[tuple[int, "pv.PolyData"]], np.ndarray, dict]:
+    def build_sheets(self) -> tuple[list[tuple[int, pv.PolyData]], np.ndarray, dict[str, Any]]:
         """Return (sheets, reciprocal-lattice, mesh-metadata)."""
         energies, meta = self.load()
         lattice = np.asarray(meta["lattice_vectors"], dtype=float)

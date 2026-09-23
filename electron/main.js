@@ -95,7 +95,7 @@ const APP_VERSION = CONFIG.version || app.getVersion();
 // VIBEVIEW_DESKTOP_CONFIG -- it is the only copy of the string left in this
 // file, and tests/test_release_codenames.py asserts it equals what the
 // catalogue resolves for the current version.
-const FALLBACK_CODENAME = "Lorensen's Loon";
+const FALLBACK_CODENAME = "Richardson's Robin";
 const APP_CODENAME = CONFIG.codename || FALLBACK_CODENAME;
 
 app.setName("vibe-view");

@@ -45,13 +45,13 @@ def get_renderer(section: Section, reader: QVFReader) -> BaseRenderer | None:
     from vibeview.renderers.coop import COOPRenderer
     from vibeview.renderers.dos import DOSRenderer
     from vibeview.renderers.eos import EquationOfStateRenderer
-    from vibeview.renderers.fermi import FermiSurfaceRenderer
     from vibeview.renderers.epr import EPRRenderer
+    from vibeview.renderers.fermi import FermiSurfaceRenderer
+    from vibeview.renderers.job_spec import JobSpecRenderer
     from vibeview.renderers.nmr import NMRRenderer
     from vibeview.renderers.phonon import PhononBandsRenderer, PhononDOSRenderer
     from vibeview.renderers.qtaim import QTAIMRenderer
     from vibeview.renderers.reaction import ReactionPathRenderer, ReactionWaypointsRenderer
-    from vibeview.renderers.job_spec import JobSpecRenderer
     from vibeview.renderers.run_record import RunRecordRenderer
     from vibeview.renderers.scan_surface import ScanSurfaceRenderer
     from vibeview.renderers.scf_history import SCFHistoryRenderer

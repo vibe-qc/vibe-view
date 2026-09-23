@@ -45,6 +45,7 @@ def format_banner(reader: QVFReader) -> str:
     for section in reader.sections:
         section_id = section.id
         error = reader.section_error(section_id)
+        detail: str | None
         if error is not None:
             status = "error, sha256 mismatch"
             detail = error

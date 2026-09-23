@@ -26,12 +26,16 @@ class PrivacyHookTests(unittest.TestCase):
             env = os.environ.copy()
             env.pop("VIBE_PRIVACY_TERMS_FILE", None)
             if policy is not None:
-                policy_path = repo / "private-terms" if policy == "in-tree" else repo.parent / (repo.name + ".private-terms")
+                if policy == "in-tree":
+                    policy_path = repo / "private-terms"
+                else:
+                    policy_path = repo.parent / (repo.name + ".private-terms")
                 if policy != "missing":
                     policy_path.write_text(policy)
                 self.addCleanup(policy_path.unlink, missing_ok=True)
                 if local:
-                    subprocess.run(["git", "-C", str(repo), "config", "--local", "privacy.termsFile", str(policy_path)], check=True)
+                    cmd = ["git", "-C", str(repo), "config", "--local", "privacy.termsFile"]
+                    subprocess.run([*cmd, str(policy_path)], check=True)
                 else:
                     env["VIBE_PRIVACY_TERMS_FILE"] = str(policy_path)
             result = subprocess.run(

@@ -90,9 +90,10 @@ PYVISTA_OFF_SCREEN=True .venv/bin/python -m pytest tests/test_<area>.py -q   # w
 PYVISTA_OFF_SCREEN=True .venv/bin/python -m pytest tests -q                 # everything, 10-20 min
 ```
 
-The Sphinx toolchain is not in any extra yet (#19). To build the docs,
-install the pins listed under `.docs_deps` in `.gitlab-ci.yml` into a
-separate venv, then run `cd docs && make strict`.
+The Sphinx toolchain is the `[docs]` extra. To build the docs, run
+`.venv/bin/pip install -e '.[docs]'`, then `cd docs && make strict`. That is
+the same install `.docs_deps` performs in CI, so a local build and the
+published one use one set of pins.
 
 - **Check which tree you are testing.** Run
   `python -c "import vibeview; print(vibeview.__file__)"`. Both
@@ -135,9 +136,14 @@ This is how work normally goes. Use judgment when a case doesn't fit.
   when you change shared machinery (reader lifecycle in `app.py`, `qvf.py`, a
   renderer many panels use) or before a release. Name the tests you ran in the
   commit message or merge request.
-- **CI is a second check, not the first.** Pushes to `main` run `test`,
-  `qvf-conformance` and `docs-build`, and `release-candidate/*` branches run
-  the release gate. #22 tracks tidying these rules.
+- **CI is a second check, not the first.** The gate is the merge request:
+  its pipeline runs `lint`, `types`, `test` and `qvf-conformance`, and
+  `docs-build` when the change touches the site. `release-candidate/*` runs
+  all of them before a tag.
+  `main` and `release` build only the docs — a commit on either was already
+  proved, on `main` by the merge request that landed it and on `release` by
+  the candidate pipeline it fast-forwards onto. The matrix is a table at the
+  top of `.gitlab-ci.yml`, and `tests/test_ci_rules.py` enforces it.
 - **Keep `main` working.** Land in small increments, and gate unfinished
   features rather than leaving half-wired code paths.
 - **CHANGELOG.** Add user-visible changes to `[Unreleased]`. Changes that
@@ -202,9 +208,15 @@ vibe-view consumes QVF; it doesn't own the producer or the format.
   dependency forces the absent branch instead:
   `monkeypatch.setitem(sys.modules, "rdkit", None)`. `CONTRIBUTING.md`
   explains why.
-- **ruff is configured in `pyproject.toml`.** The tree carries pre-existing
-  findings (#8), so don't add new ones. Counts depend on the invocation, so
-  always quote the command beside the number.
+- **ruff and mypy are gated.** `ruff check .` is clean and the `lint` job
+  keeps it that way. `mypy` with no arguments checks every source module
+  under full strict, and the `types` job keeps it that way; `[tool.mypy].files`
+  lists them, and `tests/test_type_ramp.py` fails when a new source module is
+  added without joining the list. `vibeview.app` alone relaxes
+  `disallow_untyped_decorators`, because trame's decorators are untyped. The
+  test suite is not type-checked. pyvista 0.49's stubs misread a few `Plotter`
+  methods; call those through `plotter_compat`, which holds the one
+  `type: ignore` each.
 - **Cite published algorithms in code.** When you implement one, name the
   paper in a comment beside the code, as the secondary-structure and ribbon
   code does.

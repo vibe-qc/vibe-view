@@ -223,8 +223,10 @@ class TestPlotlyRendering:
             "source": {"program": "x", "version": "1", "calculation": "t"},
             "sections": sections,
         }
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        with zipfile.ZipFile(tmp, "w") as zf:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+            zipfile.ZipFile(tmp, "w") as zf,
+        ):
             zf.writestr("manifest.json", json.dumps(manifest))
             zf.writestr("s/k.json", kpath)
             zf.writestr("s/e.dat", evals)
@@ -278,8 +280,10 @@ class TestPlotlyRendering:
             "source": {"program": "x", "version": "1", "calculation": "t"},
             "sections": sections,
         }
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        with zipfile.ZipFile(tmp, "w") as zf:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+            zipfile.ZipFile(tmp, "w") as zf,
+        ):
             zf.writestr("manifest.json", json.dumps(manifest))
             zf.writestr("s/sp.json", spectrum)
         try:

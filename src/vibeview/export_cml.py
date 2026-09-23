@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 import numpy as np
 
 
-def export_cml(reader: "QVFReader", output_path: str) -> str:
+def export_cml(reader: QVFReader, output_path: str) -> str:
     """Export molecular structure as a CML file.
 
     Parameters
@@ -48,7 +48,7 @@ def export_cml(reader: "QVFReader", output_path: str) -> str:
 
     # Atom array
     atom_array = ET.SubElement(mol, "atomArray")
-    for i, (symbol, pos) in enumerate(zip(symbols, positions)):
+    for i, (symbol, pos) in enumerate(zip(symbols, positions, strict=True)):
         ET.SubElement(
             atom_array,
             "atom",

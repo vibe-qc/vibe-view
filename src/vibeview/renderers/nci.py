@@ -30,6 +30,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     import pyvista as pv
+    from matplotlib.colors import LinearSegmentedColormap
 
     from vibeview.qvf import GridData
 
@@ -38,7 +39,7 @@ RDG_ISOVALUE = 0.3       # s(r) isosurface value defining the NCI surface
 COLOR_CLIM = 0.05        # sign(λ₂)ρ color range, atomic units (±0.05 a.u.)
 
 
-def nci_colormap():
+def nci_colormap() -> LinearSegmentedColormap:
     """Blue→green→red diverging colormap (the NCIPLOT sign(λ₂)ρ convention).
 
     Blue at the negative clim (attractive), green at zero (van der Waals), red
@@ -85,8 +86,9 @@ def sign_lambda2_rho(rho: np.ndarray, voxel_vectors: np.ndarray) -> np.ndarray:
     hess[..., 1, 2] = hess[..., 2, 1] = hyz
 
     # eigvalsh returns eigenvalues in ascending order: λ₁ ≤ λ₂ ≤ λ₃.
-    lam2 = np.linalg.eigvalsh(hess)[..., 1]
-    return np.sign(lam2) * rho
+    lam2: np.ndarray = np.linalg.eigvalsh(hess)[..., 1]
+    field: np.ndarray = np.sign(lam2) * rho
+    return field
 
 
 def build_nci_mesh(
@@ -94,7 +96,7 @@ def build_nci_mesh(
     color_data: np.ndarray | None,
     grid: GridData,
     isovalue: float = RDG_ISOVALUE,
-) -> "pv.PolyData | None":
+) -> pv.PolyData | None:
     """Contour the RDG field at ``isovalue``; carry sign(λ₂)ρ onto the surface.
 
     Builds a PyVista grid with the RDG field as ``rdg`` and (when available)
@@ -132,7 +134,7 @@ def build_nci_mesh(
     if color_data is not None:
         mesh.point_data["color"] = _oriented(color_data).ravel(order="F")
 
-    contour = mesh.contour(isosurfaces=[isovalue], scalars="rdg")
+    contour: pv.PolyData = mesh.contour(isosurfaces=[isovalue], scalars="rdg")
     if contour.n_points == 0:
         return None
     return contour

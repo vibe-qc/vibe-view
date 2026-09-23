@@ -9,7 +9,6 @@ existing mesh-level ``_replicate_mesh`` in ``volume.py``.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 
 class TestPeriodicReplication:

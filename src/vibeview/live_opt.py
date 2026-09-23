@@ -63,9 +63,11 @@ Design (roadmap §4, locked decision 2):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 # Viewer-side defaults (also the worker's fallbacks).
 DEFAULT_ENGINE = "msindo"
@@ -79,6 +81,11 @@ _EMIT_MIN_INTERVAL_S = 0.15  # worker-side step-event rate limit
 # engine so the shared loop always works in Ha + angstrom.
 _HARTREE_EV = 27.211386245988
 _BOHR_PER_ANGSTROM = 1.8897259886
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    EnergyGradient = Callable[[np.ndarray], tuple[float, np.ndarray]]
 
 
 def build_request(
@@ -152,7 +159,7 @@ class LiveOptService:
         self._timeout_s = timeout_s
         # Injectable for tests (a canned-JSON fake worker script).
         self._worker_cmd = worker_cmd or _default_worker_cmd()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
         self._proc: asyncio.subprocess.Process | None = None
 
     @property
@@ -202,10 +209,8 @@ class LiveOptService:
     def _kill_proc(self) -> None:
         proc, self._proc = self._proc, None
         if proc is not None and proc.returncode is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
 
     async def _debounced_run(
         self,
@@ -303,10 +308,8 @@ async def probe_worker(timeout_s: float = 60.0) -> dict[str, Any]:
             out, _ = await proc.communicate()
     except Exception as exc:
         if proc is not None and proc.returncode is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
         return {"available": False, "reason": f"probe failed: {exc}"}
     for line in out.splitlines():
         event = parse_event(line)
@@ -343,11 +346,12 @@ def probe() -> dict[str, Any]:
     return {"available": True, "reason": "", "engines": engines}
 
 
-def _msindo_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
+def _msindo_engine(
+    numbers: list[int], charge: int, emit: Callable[[dict[str, Any]], None]
+) -> EnergyGradient:
     """Return ``fun(coords_A) -> (E_hartree, grad_ha_bohr[n,3])`` on the
     MSINDO surface (analytic gradient)."""
     import numpy as np
-
     from vibeqc.semiempirical.methods.msindo import eff_core_charge, run_msindo
     from vibeqc.semiempirical.methods.msindo_gradient_analytic import (
         msindo_gradient_analytic,
@@ -358,7 +362,7 @@ def _msindo_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]
     n_electrons = sum(eff_core_charge(z) for z in numbers) - charge
     multiplicity = 1 if n_electrons % 2 == 0 else 2
 
-    def fun(coords_a):
+    def fun(coords_a: np.ndarray) -> tuple[float, np.ndarray]:
         result = run_msindo(numbers, coords_a, charge=charge, multiplicity=multiplicity)
         grad = msindo_gradient_analytic(
             numbers, coords_a, charge=charge, multiplicity=multiplicity
@@ -368,7 +372,9 @@ def _msindo_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]
     return fun
 
 
-def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
+def _mace_engine(
+    numbers: list[int], charge: int, emit: Callable[[dict[str, Any]], None]
+) -> EnergyGradient:
     """Return ``fun(coords_A) -> (E_hartree, grad_ha_bohr[n,3])`` on the
     default MIT-licensed MACE model (vibeqc.mlip; vibe-qc's MLIP
     exception). The energy is the model's reference-shifted DFT-surface
@@ -376,7 +382,6 @@ def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
     academic models are deliberately not reachable from live-opt.
     """
     import numpy as np
-
     from vibeqc.mlip import MLIPOptions
     from vibeqc.mlip._mace_models import resolve_model
     from vibeqc.mlip.mace import mace_calculator
@@ -402,7 +407,7 @@ def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
     atoms = Atoms(numbers=numbers, positions=[[0.0, 0.0, 0.0]] * len(numbers))
     atoms.calc = calc
 
-    def fun(coords_a):
+    def fun(coords_a: np.ndarray) -> tuple[float, np.ndarray]:
         atoms.positions = np.asarray(coords_a, dtype=float)
         e_ha = float(atoms.get_potential_energy()) / _HARTREE_EV
         forces = np.asarray(atoms.get_forces(), dtype=float)  # eV/A
@@ -416,7 +421,7 @@ def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
 _ENGINE_BUILDERS = {"msindo": _msindo_engine, "mace": _mace_engine}
 
 
-def _run_optimization(request: dict[str, Any], emit: Callable[[dict], None]) -> None:
+def _run_optimization(request: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> None:
     """Optimize the requested geometry, emitting one event per iteration.
 
     Mirrors ``vibeqc.semiempirical.methods.msindo.msindo_optimize``
@@ -448,7 +453,7 @@ def _run_optimization(request: dict[str, Any], emit: Callable[[dict], None]) -> 
 
     numbers = [_SYMBOL_TO_Z.get(s, 0) for s in symbols]
     if 0 in numbers:
-        unknown = sorted({s for s, z in zip(symbols, numbers) if z == 0})
+        unknown = sorted({s for s, z in zip(symbols, numbers, strict=True) if z == 0})
         raise ValueError(f"unknown element symbol(s): {', '.join(unknown)}")
 
     free = [i for i in range(len(numbers)) if i not in frozen]

@@ -52,7 +52,7 @@ def _project_2d(positions: np.ndarray) -> np.ndarray:
 
 
 def export_pdf(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     width: float = 6.0,  # inches
@@ -199,7 +199,7 @@ def export_pdf(
                     )
 
     # Draw atoms
-    for symbol, pos in zip(symbols, coords2d):
+    for symbol, pos in zip(symbols, coords2d, strict=True):
         r = radii.get(symbol, 0.25)
         color = _CPK.get(symbol, "#888888")
         circle = Circle(
@@ -223,7 +223,15 @@ def export_pdf(
     return output_path
 
 
-def _export_pdf_fallback_pil(reader, output_path, width, height, style, background, dpi):
+def _export_pdf_fallback_pil(
+    reader: QVFReader,
+    output_path: str,
+    width: float,
+    height: float,
+    style: str,
+    background: str,
+    dpi: int,
+) -> str:
     """Fallback export using PIL when matplotlib is unavailable.
 
     Constraint: writing PNG bytes to a ``.pdf`` path produces an invalid PDF.
@@ -260,7 +268,7 @@ def _export_pdf_fallback_pil(reader, output_path, width, height, style, backgrou
     x_min, x_max = coords2d[:, 0].min() - margin, coords2d[:, 0].max() + margin
     y_min, y_max = coords2d[:, 1].min() - margin, coords2d[:, 1].max() + margin
 
-    def _to_pixel(p):
+    def _to_pixel(p: np.ndarray) -> tuple[float, float]:
         x = (p[0] - x_min) / (x_max - x_min) * (w_px - 40) + 20
         y = h_px - ((p[1] - y_min) / (y_max - y_min) * (h_px - 40) + 20)
         return x, y
@@ -279,7 +287,7 @@ def _export_pdf_fallback_pil(reader, output_path, width, height, style, backgrou
         "Cl": (31, 240, 31),
     }
 
-    for symbol, pos in zip(symbols, coords2d):
+    for symbol, pos in zip(symbols, coords2d, strict=True):
         x, y = _to_pixel(pos)
         r = dpi * 0.12
         color = _CPK.get(symbol, (136, 136, 136))

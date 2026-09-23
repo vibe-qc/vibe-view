@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from vibeview.renderers import BaseRenderer
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from vibeview.qvf import AtomPropertiesData, QVFReader, Section
 
 
@@ -36,7 +38,7 @@ class AtomPropertiesRenderer(BaseRenderer):
         """
         data = self.load()
 
-        def _table(title: str, charges) -> str:
+        def _table(title: str, charges: np.ndarray) -> str:
             total = sum(charges)
             rows = [
                 f"<tr><th>Atom</th><th>{title}</th></tr>",
@@ -50,18 +52,20 @@ class AtomPropertiesRenderer(BaseRenderer):
             return f"<table>{''.join(rows)}</table>"
 
         blocks: list[str] = []
-        if charge_kind is None or charge_kind == "mulliken":
-            if data.mulliken_charges is not None:
-                blocks.append(_table("Mulliken", data.mulliken_charges))
-        if charge_kind is None or charge_kind == "loewdin":
-            if data.loewdin_charges is not None:
-                blocks.append(_table("Löwdin", data.loewdin_charges))
-        if charge_kind is None or charge_kind == "hirshfeld":
-            if data.hirshfeld_charges is not None:
-                blocks.append(_table("Hirshfeld", data.hirshfeld_charges))
-        if charge_kind is None or charge_kind == "iao":
-            if data.iao_charges is not None:
-                blocks.append(_table("IAO", data.iao_charges))
+        if (charge_kind is None or charge_kind == "mulliken") and (
+            data.mulliken_charges is not None
+        ):
+            blocks.append(_table("Mulliken", data.mulliken_charges))
+        if (charge_kind is None or charge_kind == "loewdin") and (
+            data.loewdin_charges is not None
+        ):
+            blocks.append(_table("Löwdin", data.loewdin_charges))
+        if (charge_kind is None or charge_kind == "hirshfeld") and (
+            data.hirshfeld_charges is not None
+        ):
+            blocks.append(_table("Hirshfeld", data.hirshfeld_charges))
+        if (charge_kind is None or charge_kind == "iao") and data.iao_charges is not None:
+            blocks.append(_table("IAO", data.iao_charges))
         if data.spin_populations is not None:
             blocks.append(_table("Spin pop.", data.spin_populations))
         body = "".join(blocks) if blocks else "<p>No charge data in this section.</p>"

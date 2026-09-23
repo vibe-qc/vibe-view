@@ -30,6 +30,7 @@ DEFAULTS: dict[str, Any] = {
     "auto_save_interval": 60,
     "recent_files": [],
     "max_recent_files": 20,
+    "relocalize_backend_python": "",
 }
 
 
@@ -82,4 +83,5 @@ def add_recent_file(filepath: str) -> None:
 
 def get_recent_files() -> list[str]:
     """Return the list of recently opened files."""
-    return load_settings().get("recent_files", [])
+    recent: list[str] = load_settings().get("recent_files", [])
+    return recent

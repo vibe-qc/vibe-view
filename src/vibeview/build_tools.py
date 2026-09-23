@@ -6,6 +6,8 @@ replication for periodic systems.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 # ── Fragment library ────────────────────────────────────────────────────
@@ -196,9 +198,9 @@ COVALENT_RADII: dict[int, float] = {
 
 
 def add_hydrogens(
-    atoms: list[dict],
+    atoms: list[dict[str, Any]],
     charge: int = 0,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Add hydrogen atoms to saturate all open valences.
 
     Parameters
@@ -289,10 +291,10 @@ def add_hydrogens(
 
 
 def build_supercell(
-    atoms: list[dict],
+    atoms: list[dict[str, Any]],
     lattice_vectors: list[list[float]],
     replication: tuple[int, int, int],
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Replicate atoms for a supercell.
 
     Parameters

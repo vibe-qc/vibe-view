@@ -24,9 +24,11 @@ class TestRecent:
         Electron desktop app's Open Recent submenu."""
         from vibeview.recent import _recent_path
 
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": td}):
-                assert _recent_path() == Path(td) / "vibe-view" / "recent.json"
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.dict(os.environ, {"XDG_CACHE_HOME": td}),
+        ):
+            assert _recent_path() == Path(td) / "vibe-view" / "recent.json"
 
     def test_add_and_get(self) -> None:
         from vibeview.recent import add_recent, get_recent

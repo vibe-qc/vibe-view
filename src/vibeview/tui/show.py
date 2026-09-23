@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from vibeview.kinds import classify_section
 from vibeview.qvf import QVFReader
@@ -111,7 +112,15 @@ def render_section(
     return grid
 
 
-def _label_atoms(grid, scene, canvas, camera, cols, rows, mode) -> None:
+def _label_atoms(
+    grid: braille.CellGrid,
+    scene: scenelib.Scene,
+    canvas: Canvas,
+    camera: Camera,
+    cols: int,
+    rows: int,
+    mode: str,
+) -> None:
     import numpy as np
 
     xy, z = scenelib.atom_screen_positions(scene, canvas, camera)
@@ -143,7 +152,7 @@ def show(
     size: tuple[int, int] | None = None,
     plain: bool = False,
     info: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """Render one section of ``path`` as a printable string."""
     reader = QVFReader(path)
@@ -175,7 +184,7 @@ def show_all(
     *,
     size: tuple[int, int] | None = None,
     plain: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """Render every graphable section, in a reading order, one after another."""
     reader = QVFReader(path)

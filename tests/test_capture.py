@@ -9,7 +9,6 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 
 def _make_qvf(sections: list[dict], files: dict[str, bytes] | None = None) -> Path:
@@ -23,8 +22,10 @@ def _make_qvf(sections: list[dict], files: dict[str, bytes] | None = None) -> Pa
         },
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         if files:
             for path, data in files.items():
@@ -113,9 +114,8 @@ class TestCaptureStructure:
 
         sec, data = _make_structure_section()
         path = _make_qvf([sec], {"sections/structure.json": data})
-        out = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -147,9 +147,8 @@ class TestCaptureStructure:
             },
         }
         path = _make_qvf([bonds_sec], {"sections/bonds.json": bonds_json})
-        out = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -168,9 +167,8 @@ class TestCaptureStructure:
 
         sec, data = _make_structure_section()
         path = _make_qvf([sec], {"sections/structure.json": data})
-        out = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -198,9 +196,8 @@ class TestCaptureVolume:
             "sections/vol_dens_0/data.dat": values_data,
         }
         path = _make_qvf([struct_sec, vol_sec], files)
-        out = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -220,9 +217,8 @@ class TestCaptureVolume:
 
         sec, data = _make_structure_section()
         path = _make_qvf([sec], {"sections/structure.json": data})
-        out = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as out:
+            out_path = Path(out.name)
         try:
             # capture_volume uses get_section which raises for missing sections
             # - should be caught and return False per the function signature
@@ -295,9 +291,8 @@ class TestCaptureBands:
             "sections/bands_0/eigenvalues.dat": eig_bytes,
         }
         path = _make_qvf([struct_sec, bands_sec], files)
-        out = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -353,9 +348,8 @@ class TestCapture2DHtml:
             "sections/dos_total/dos.dat": dos_bytes,
         }
         path = _make_qvf([struct_sec, dos_sec], files)
-        out = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -408,9 +402,8 @@ class TestCapture2DHtml:
             "sections/scf_hist0.json": scf_bytes,
         }
         path = _make_qvf([struct_sec, scf_sec], files)
-        out = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -459,9 +452,8 @@ class TestCapture2DHtml:
             "sections/bond_orders.json": bo_bytes,
         }
         path = _make_qvf([struct_sec, bo_sec], files)
-        out = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -507,9 +499,8 @@ class TestCapture2DHtml:
             "sections/spectra_ir.json": spec_bytes,
         }
         path = _make_qvf([struct_sec, spec_sec], files)
-        out = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:
@@ -585,9 +576,8 @@ class TestCapture2DHtml:
             "sections/wf/coef.dat": coef_bytes,
         }
         path = _make_qvf([struct_sec, wf_sec], files)
-        out = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
-        out_path = Path(out.name)
-        out.close()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as out:
+            out_path = Path(out.name)
         try:
             reader = QVFReader(path)
             try:

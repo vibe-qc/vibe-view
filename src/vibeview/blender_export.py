@@ -19,7 +19,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -383,7 +382,7 @@ print("Ready! Render with: bpy.ops.render.render(write_still=True)")
 
 
 def export_blender_script(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     style: str = "ball_and_stick",

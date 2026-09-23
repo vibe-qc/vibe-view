@@ -324,7 +324,7 @@ def _unit_cell_edges(
 
 
 def export_povray(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     style: str = "ball_and_stick",
@@ -368,7 +368,6 @@ def export_povray(
         return result
 
     # Extract atom data from StructureData
-    symbols = [a.symbol for a in sdata.atoms]
     z_list = [a.atomic_number for a in sdata.atoms]
     positions = np.array([a.position for a in sdata.atoms], dtype=float)
 
@@ -391,7 +390,7 @@ def export_povray(
 
     # Write atoms
     parts.append("\n// ── Atoms ──")
-    for pos, z, r in zip(positions, z_list, radii):
+    for pos, z, r in zip(positions, z_list, radii, strict=True):
         parts.append(_atom_sphere(pos, z, radius=r))
 
     # Detect and write bonds

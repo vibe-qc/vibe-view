@@ -10,10 +10,26 @@ content would corrupt the display.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
 import numpy as np
 from rich.markup import escape
 
 from vibeview.kinds import classify_section
+
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
+
+
+def _num(value: object, default: float = 0.0) -> float:
+    """A numeric field out of a schema-free dict, or ``default``."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 _H = "bold #d7dce8"  # section heading
 _K = "#8a93a8"  # key
@@ -46,7 +62,7 @@ _ELECTRON_OCCUPATION = "electron_occupation"
 _TRANSITION_WEIGHT = "transition_weight"
 
 
-def _kv(key: str, value, width: int = 22) -> str:
+def _kv(key: str, value: object, width: int = 22) -> str:
     if value is None or value == "":
         return ""
     return f"[{_K}]{key:<{width}}[/] [{_V}]{escape(str(value))}[/]"
@@ -62,9 +78,10 @@ def _table(headers: list[str], rows: list[list[str]], widths: list[int] | None =
             max(len(headers[i]), *(len(r[i]) for r in rows)) if rows else len(headers[i])
             for i in range(len(headers))
         ]
-    head = "  ".join(f"[{_K}]{h:<{w}}[/]" for h, w in zip(headers, widths))
+    head = "  ".join(f"[{_K}]{h:<{w}}[/]" for h, w in zip(headers, widths, strict=True))
     body = [
-        "  ".join(f"[{_V}]{escape(cell):<{w}}[/]" for cell, w in zip(row, widths)) for row in rows
+        "  ".join(f"[{_V}]{escape(cell):<{w}}[/]" for cell, w in zip(row, widths, strict=True))
+        for row in rows
     ]
     if len(rows) >= _MAX_ROWS:
         body.append(f"[{_K}]… truncated at {_MAX_ROWS} rows[/]")
@@ -74,7 +91,7 @@ def _table(headers: list[str], rows: list[list[str]], widths: list[int] | None =
 # ── overview ──────────────────────────────────────────────────────────────
 
 
-def overview(reader) -> str:
+def overview(reader: QVFReader) -> str:
     """File-level summary: provenance, lifecycle, and the section inventory."""
     manifest = reader.manifest
     source = reader.source
@@ -119,7 +136,7 @@ def overview(reader) -> str:
 # ── structure ─────────────────────────────────────────────────────────────
 
 
-def structure_table(reader, limit: int = _MAX_ROWS) -> str:
+def structure_table(reader: QVFReader, limit: int = _MAX_ROWS) -> str:
     """Cartesian geometry, cell parameters, and the bond list."""
     structure = reader.read_structure()
     atoms = structure.atoms
@@ -194,7 +211,7 @@ def structure_table(reader, limit: int = _MAX_ROWS) -> str:
 # ── per-kind panes ────────────────────────────────────────────────────────
 
 
-def atom_properties(reader, section_id: str) -> str:
+def atom_properties(reader: QVFReader, section_id: str) -> str:
     data = reader.read_atom_properties(section_id)
     structure = reader.read_structure()
     symbols = [a.symbol for a in structure.atoms]
@@ -219,14 +236,14 @@ def atom_properties(reader, section_id: str) -> str:
     return _lines(f"[{_H}]Atom properties[/]", _table(headers, rows + [totals]))
 
 
-def bond_orders(reader, section_id: str) -> str:
+def bond_orders(reader: QVFReader, section_id: str) -> str:
     data = reader.read_bond_orders(section_id)
     rows = [
         [
             str(pair.get("i", "")),
             str(pair.get("j", "")),
-            f"{float(pair.get('order', 0.0)):.4f}",
-            f"{float(pair.get('distance_ang', 0.0)):.4f}" if "distance_ang" in pair else "-",
+            f"{_num(pair.get('order')):.4f}",
+            f"{_num(pair.get('distance_ang')):.4f}" if "distance_ang" in pair else "-",
         ]
         for pair in (data.pairs or [])[:_MAX_ROWS]
     ]
@@ -238,21 +255,21 @@ def bond_orders(reader, section_id: str) -> str:
     )
 
 
-def _natural_value_semantics(data) -> str | None:
+def _natural_value_semantics(data: object) -> str | None:
     """Resolve explicitly declared natural-orbital value semantics."""
     explicit = getattr(data, "occupation_semantics", None)
-    if explicit in {_ELECTRON_OCCUPATION, _TRANSITION_WEIGHT}:
+    if isinstance(explicit, str) and explicit in {_ELECTRON_OCCUPATION, _TRANSITION_WEIGHT}:
         return explicit
     return None
 
 
 def _frontier_orbitals(
-    occ,
+    occ: np.ndarray | None,
     n_orbitals: int,
     orbital_kind: str,
-    n_electrons=None,
+    n_electrons: int | None = None,
     occupation_semantics: str | None = None,
-):
+) -> tuple[int | None, int | None, str | None]:
     """``(homo, lumo, undefined_reason)`` for one spin block.
 
     An orbital is occupied or it is not. For canonical sets and natural sets
@@ -334,7 +351,7 @@ def _frontier_orbitals(
     return homo, lumo, None
 
 
-def wavefunction(reader, section_id: str) -> str:
+def wavefunction(reader: QVFReader, section_id: str) -> str:
     """MO listing — energies, occupations, symmetry labels, HOMO/LUMO gap."""
     data = reader.read_wavefunction_gto(section_id)
     # The electron count is what separates an occupancy vector from a set of
@@ -353,7 +370,12 @@ def wavefunction(reader, section_id: str) -> str:
         _kv("spherical (pure)", data.pure),
     ]
 
-    def block(title, energies, occupations, labels):
+    def block(
+        title: str,
+        energies: Sequence[float] | np.ndarray | None,
+        occupations: Sequence[float] | np.ndarray | None,
+        labels: Sequence[str] | None,
+    ) -> str:
         if energies is None:
             return ""
         energies = np.asarray(energies, dtype=float)
@@ -427,7 +449,7 @@ def wavefunction(reader, section_id: str) -> str:
 
         gap = ""
         if homo is not None and lumo is not None and lumo < len(energies):
-            if data.orbital_kind == "natural":
+            if data.orbital_kind == "natural" and occ is not None:
                 # No energy gap here. A natural orbital's eigenvalue is its
                 # occupation number, not an orbital energy, so subtracting two
                 # of whatever a producer put in `energies` would dress a
@@ -466,7 +488,7 @@ def wavefunction(reader, section_id: str) -> str:
     return _lines(*out)
 
 
-def citations(reader, section_id: str) -> str:
+def citations(reader: QVFReader, section_id: str) -> str:
     data = reader.read_citations(section_id)
     return _lines(
         f"[{_H}]Citations (BibTeX)[/]",
@@ -476,7 +498,7 @@ def citations(reader, section_id: str) -> str:
     )
 
 
-def run_record(reader, section_id: str, log_tail: int = _MAX_LOG_LINES) -> str:
+def run_record(reader: QVFReader, section_id: str, log_tail: int = _MAX_LOG_LINES) -> str:
     """Program invocation, its verbatim input, and the tail of its log."""
     data = reader.read_run_record(section_id)
     sequence, total = reader.run_record_position(section_id)
@@ -508,7 +530,7 @@ def run_record(reader, section_id: str, log_tail: int = _MAX_LOG_LINES) -> str:
     return _lines(*out)
 
 
-def job_spec(reader, section_id: str) -> str:
+def job_spec(reader: QVFReader, section_id: str) -> str:
     data = reader.read_job_spec(section_id)
     out = [
         f"[{_H}]Job spec[/]",
@@ -531,7 +553,7 @@ def job_spec(reader, section_id: str) -> str:
     return _lines(*out)
 
 
-def symmetry(reader, section_id: str) -> str:
+def symmetry(reader: QVFReader, section_id: str) -> str:
     data = reader.read_symmetry(section_id)
     return _lines(
         f"[{_H}]Symmetry[/]",
@@ -539,7 +561,7 @@ def symmetry(reader, section_id: str) -> str:
     )
 
 
-def tensor_pane(reader, section_id: str, title: str) -> str:
+def tensor_pane(reader: QVFReader, section_id: str, title: str) -> str:
     """NMR / EPR sections — schema-free dicts, so surface every key found."""
     read = reader.read_nmr if title == "NMR" else reader.read_epr
     raw = read(section_id).raw or {}
@@ -561,17 +583,18 @@ def tensor_pane(reader, section_id: str, title: str) -> str:
     return _lines(*out)
 
 
-def qtaim(reader, section_id: str) -> str:
+def qtaim(reader: QVFReader, section_id: str) -> str:
     data = reader.read_topology_qtaim(section_id)
     rows = []
     for point in (data.points or [])[:_MAX_ROWS]:
-        position = point.get("position") or [0, 0, 0]
+        raw_position = point.get("position")
+        position = raw_position if isinstance(raw_position, list | tuple) else [0, 0, 0]
         rows.append(
             [
                 str(point.get("type", "")),
-                " ".join(f"{float(c):8.4f}" for c in position),
-                f"{float(point.get('rho', 0.0)):.5f}",
-                f"{float(point.get('laplacian', 0.0)):+.5f}",
+                " ".join(f"{_num(c):8.4f}" for c in position),
+                f"{_num(point.get('rho')):.5f}",
+                f"{_num(point.get('laplacian')):+.5f}",
             ]
         )
     out = [f"[{_H}]QTAIM topology[/]", _table(["type", "position (Å)", "ρ", "∇²ρ"], rows)]
@@ -581,7 +604,7 @@ def qtaim(reader, section_id: str) -> str:
     return _lines(*out)
 
 
-def vibrations_table(reader, section_id: str) -> str:
+def vibrations_table(reader: QVFReader, section_id: str) -> str:
     data = reader.read_vibrations(section_id)
     frequencies = np.asarray(data.frequencies, dtype=float)
     rows = []
@@ -605,7 +628,7 @@ def vibrations_table(reader, section_id: str) -> str:
     )
 
 
-def generic_section(reader, section_id: str) -> str:
+def generic_section(reader: QVFReader, section_id: str) -> str:
     """Fallback: whatever the manifest records about a section we can't chart."""
     section = reader.get_section(section_id)
     status, detail = classify_section(section.kind)

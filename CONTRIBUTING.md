@@ -161,6 +161,24 @@ provided the test's **core assertions still run unconditionally**. The rule
 bans hiding a whole test behind a capability nobody has, not gating an
 additional check that genuinely needs one.
 
+## Building the documentation
+
+```sh
+.venv/bin/pip install -e '.[docs]'
+cd docs && make strict
+```
+
+`[docs]` is the Sphinx toolchain, and the editable install is what lets
+autodoc import `vibeview` for the SDK reference. `.gitlab-ci.yml`'s
+`.docs_deps` installs the same extra, so a local build uses the pins the
+published site was rendered with — there is no second list to keep in step.
+`scripts/build_site.sh` wraps the same `sphinx-build` and adds `robots.txt`,
+`sitemap.xml` and `.build-info`; run it to reproduce the live site exactly.
+
+`make strict` builds with `-W`, which is how a broken cross-reference gets
+caught here rather than on the published site. The CI build deliberately does
+not use `-W`: a warning must not block a release.
+
 ## QVF schemas are vendored, and pinned
 
 `src/vibeview/schema.json` and `schema_v2.json` are vendored copies of the QVF
@@ -175,11 +193,66 @@ deliberate act: move the pin and bump `QVF_TAG` in `.gitlab-ci.yml` in the same
 commit. **A failing pin is not a licence to update the constant** — find out
 which side moved first.
 
+## What CI runs, and where
+
+The merge request is the gate. `main` and `release` are not.
+
+| ref / source | `lint` | `types` | `test` | `qvf-conformance` | `docs-build` | deploy |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| merge request | yes | yes | yes | yes | when the change touches the site | no |
+| `release-candidate/*` | yes | yes | yes | yes | yes | no |
+| `web` (manual) | yes | yes | yes | yes | yes | manual |
+| `main` | no | no | no | no | yes | no |
+| `release` | no | no | no | no | yes | yes |
+
+The deploy column belongs to the external include, not to `.gitlab-ci.yml`;
+it is in the table so the table is the whole picture.
+
+`lint` runs `ruff check .` and `types` runs a bare `mypy`.
+Both live in their own `lint` stage ahead of `test`: they need no display, no
+GL stack and no `qvf` clone, so they fail fast on a finding rather than after
+the full suite. All four gate jobs share `.rules_product_gate`, so a ref
+either gets the whole gate or none of it.
+
+A commit on `main` was proved by the merge request that landed it, and the
+branch is proved as a whole by the `release-candidate/*` pipeline before a tag
+is spent. `release` only ever fast-forwards onto a commit whose candidate
+pipeline is already green, so repeating the suite there re-proves an identical
+tree — that duplicate is what #22 fixed. `docs-build` still runs on both:
+`main` so the rendered site is downloadable from the pipeline, `release`
+because the deployment jobs in the external include publish the `public/` it
+produces.
+
+`test` is also what builds the wheel and sdist into `dist/`, so those artifacts
+now come from the candidate pipeline rather than from a second build on
+`release` — one canonical set per release, attached to the SHA the tag names.
+
+Two exceptions are deliberate:
+
+- **`web` runs every validation job**, on any admitted ref. It is how an
+  operator re-proves `main` or `release` on demand without inventing a branch.
+  Deployment still requires a separate manual action, including on `release`.
+  The conditional local CI include enforces that order while the configured
+  external include supplies the deployment script and environment.
+- **Merge requests build the docs only on a relevant change.** The `changes:`
+  list on `docs-build` includes package/toolchain metadata, CI and site build
+  scripts, docs configuration/theme/assets, and the modules and schemas that
+  autodoc imports. Add to it when the site gains another input; ordinary
+  UI-only changes keep the narrower gate.
+
+Branches other than `main`, `release` and `release-candidate/*` get no
+pipeline unless they have an open merge request. The table lives at the top of
+`.gitlab-ci.yml`, and `tests/test_ci_rules.py` evaluates the file against it —
+if you change a rule, change that test in the same commit.
+
 ## Before you open a merge request
 
-- Run the affected lanes locally and name them. Pushes to `main` also run the
-  `test`, `qvf-conformance` and `docs-build` jobs; treat that as a second
-  check, not the first.
+- Run the affected lanes locally and name them. Your merge request runs
+  `lint`, `types`, `test` and `qvf-conformance` too, but treat that as a
+  second check, not the first: it is the last gate before the change is on
+  `main`, not a substitute for having run the thing you changed. `ruff check
+  tests/ src/ scripts/` and `mypy` take seconds and catch the two that fail
+  first.
 - Keep `main` release-ready: no half-finished code paths, docs in parity,
   `CHANGELOG.md` `[Unreleased]` reflecting what you actually landed.
 - If your change touches one of the seven files vibe-qc's `build-test` job runs
@@ -219,8 +292,20 @@ why in the commit message.
 - **Python 3.11+.** PEP 8, four-space indent. Start every module with
   `from __future__ import annotations`. Type hints on public API; local
   helpers can skip them.
-- `ruff check` with the config in `pyproject.toml`. The tree carries
-  pre-existing findings; do not add new ones.
+- `ruff check .` with the config in `pyproject.toml`. The whole checkout is
+  clean, including `electron/desktop-launcher.py`, the `docs/*.py` scripts
+  and the `.githooks/` tests, and the `lint` CI job keeps it that way, so a
+  new finding fails the pipeline. Quote the command beside any count you
+  report: a narrower path list reads a different number.
+- `mypy` with no arguments checks every source module under `strict = true`,
+  and the `types` CI job keeps them clean. `[tool.mypy].files` lists them all,
+  and `tests/test_type_ramp.py` fails when a new source module is added
+  without joining the list. `vibeview.app` alone relaxes
+  `disallow_untyped_decorators`, because trame's decorators are untyped (#33).
+  The test suite is not type-checked; `mypy tests` shows what it would say.
+  `python_version` is `3.12`, not the `3.11` support floor: numpy's bundled
+  stubs use `type` statements, which mypy rejects below 3.12, and the stub
+  syntax error aborts the run before any of our code is checked.
 - Prefer editing existing modules over introducing new ones. If a new file is
   the right choice, follow its neighbours' layout.
 - **Imports of optional extras are lazy**, inside the function that needs them,

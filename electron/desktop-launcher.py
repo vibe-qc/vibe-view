@@ -11,7 +11,6 @@ import subprocess
 import sys
 import time
 import webbrowser
-from pathlib import Path
 
 
 def main():
@@ -28,9 +27,9 @@ def main():
     if args.file:
         url += f"?file={args.file}"
 
-    print(f"vibe-view desktop launcher")
+    print("vibe-view desktop launcher")
     print(f"  Server: http://127.0.0.1:{port}")
-    print(f"  Press Ctrl+C to quit")
+    print("  Press Ctrl+C to quit")
 
     # Start the vibe-view server
     server = subprocess.Popen(
@@ -63,7 +62,7 @@ def main():
     # Open browser
     if not args.no_browser:
         webbrowser.open(url)
-        print(f"  Browser opened")
+        print("  Browser opened")
 
     # Keep running until Ctrl+C
     try:

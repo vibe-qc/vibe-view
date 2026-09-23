@@ -7,10 +7,6 @@ capture_structure, slice_qvf, and error-handling paths.
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
-import numpy as np
 import pytest
 
 # ── Info / inspection ────────────────────────────────────────────────────

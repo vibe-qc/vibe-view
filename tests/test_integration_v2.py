@@ -12,7 +12,6 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 
 class TestInputParserIntegration:
@@ -253,8 +252,8 @@ class TestCrystalBuilderIntegration:
             atoms.append({"symbol": "X", "position": [0.0, 0.0, i * 2.5]})
 
         new_cell, new_atoms = miller_slab(cell, atoms, (0, 0, 1), n_layers=3, vacuum=10.0)
-        assert len(new_atoms) > 0
-        assert len(new_atoms) <= len(atoms)
+        assert len(new_atoms) == 3 * len(atoms)  # three repetitions of the cell
+        assert abs(np.linalg.norm(new_cell[2]) - (3 * 20.0 + 2 * 10.0)) < 1e-9
 
     def test_fractional_roundtrip(self):
         from vibeview.crystal_builder import (
@@ -498,18 +497,15 @@ class TestVersionConsistency:
         # The test_offscreen.py should reference the same version
         import ast
 
-        from vibeview import __version__ as pkg_version
 
         tp = Path(__file__).parent / "test_offscreen.py"
         tree = ast.parse(tp.read_text())
-        found = False
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Constant)
                 and isinstance(node.value, str)
                 and "dev" in node.value
             ):
-                found = True
                 break
         # At minimum, version string exists somewhere
         # (exact match checked in test_offscreen.py itself)

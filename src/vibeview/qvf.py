@@ -13,13 +13,19 @@ import hashlib
 import io
 import json
 import zipfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Union
+from typing import IO, Any
 
 import jsonschema
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# A bond as every reader path emits it: ``(i, j, order, image)``, where
+# ``image`` is the integer lattice translation applied to ``j``. In-cell bonds
+# carry ``(0, 0, 0)``; see ``_dedupe_bonds`` for why the image is identity.
+Bond = tuple[int, int, float, tuple[int, int, int]]
 
 # ── Pydantic models for manifest.json ─────────────────────────────────────
 
@@ -226,7 +232,7 @@ _NON_METALS = frozenset(
 )
 
 
-def _metal_metal_pairs_are_bonds(structure) -> bool:
+def _metal_metal_pairs_are_bonds(structure: StructureData) -> bool:
     """Should two metal atoms be joined by a stick in this structure?
 
     Only in a structure that is entirely metal. The radii here are
@@ -250,7 +256,9 @@ def _metal_metal_pairs_are_bonds(structure) -> bool:
     return seen_metal
 
 
-def _periodic_shifts(lattice, pbc):
+def _periodic_shifts(
+    lattice: np.ndarray, pbc: Sequence[bool]
+) -> list[tuple[tuple[int, int, int], np.ndarray]]:
     """Lattice translations whose image shell can reach into the cell.
 
     Only axes flagged periodic are translated, and only by one cell: a
@@ -263,7 +271,7 @@ def _periodic_shifts(lattice, pbc):
     for axis in range(3):
         periodic = axis < len(pbc) and pbc[axis]
         ranges.append((-1, 0, 1) if periodic else (0,))
-    shifts = []
+    shifts: list[tuple[tuple[int, int, int], np.ndarray]] = []
     for ia in ranges[0]:
         for ib in ranges[1]:
             for ic in ranges[2]:
@@ -275,7 +283,11 @@ def _periodic_shifts(lattice, pbc):
     return shifts
 
 
-def _dedupe_bonds(bonds, ghost_of, ghost_shift=None):
+def _dedupe_bonds(
+    bonds: Sequence[tuple[int, int, float]],
+    ghost_of: np.ndarray | None,
+    ghost_shift: Sequence[Sequence[int]] | np.ndarray | None = None,
+) -> list[Bond]:
     """Map image indices back to real atoms and drop true repeats.
 
     Emits ``(i, j, order, image)`` where ``image`` is the integer lattice
@@ -296,22 +308,24 @@ def _dedupe_bonds(bonds, ghost_of, ghost_shift=None):
     the bond, so it is kept.
     """
     seen: set[tuple[int, int, tuple[int, int, int]]] = set()
-    out: list[tuple[int, int, float, tuple[int, int, int]]] = []
+    out: list[Bond] = []
     for i, j, order in bonds:
+        image: tuple[int, int, int]
         if ghost_of is None:
             a, b, image = int(i), int(j), (0, 0, 0)
         else:
             a, b = int(ghost_of[i]), int(ghost_of[j])
             shift_i = ghost_shift[i] if ghost_shift is not None else (0, 0, 0)
             shift_j = ghost_shift[j] if ghost_shift is not None else (0, 0, 0)
-            image = tuple(int(x) for x in (np.asarray(shift_j) - np.asarray(shift_i)))
+            delta = np.asarray(shift_j) - np.asarray(shift_i)
+            image = (int(delta[0]), int(delta[1]), int(delta[2]))
         if a == b and not any(image):
             continue
         # Canonical orientation: lower index first, and for a self-pair the
         # lexicographically larger image, so +n and -n are one bond.
-        if a > b or (a == b and image < tuple(-x for x in image)):
+        if a > b or (a == b and image < (-image[0], -image[1], -image[2])):
             a, b = b, a
-            image = tuple(-x for x in image)
+            image = (-image[0], -image[1], -image[2])
         key = (a, b, image)
         if key in seen:
             continue
@@ -321,7 +335,7 @@ def _dedupe_bonds(bonds, ghost_of, ghost_shift=None):
     return out
 
 
-def _infer_bonds_by_radii(structure) -> list[tuple[int, int, float]]:
+def _infer_bonds_by_radii(structure: StructureData) -> list[Bond]:
     """Covalent-radius bond inference over a uniform cell list.
 
     The pair test is unchanged: i-j bond when
@@ -476,7 +490,7 @@ _MIN_HELIX_RUN = 4
 _MIN_STRAND_RUN = 3
 
 
-def _virtual_angle(p0, p1, p2) -> float:
+def _virtual_angle(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray) -> float:
     """CA(i-1)-CA(i)-CA(i+1) angle, degrees."""
     a, b = p0 - p1, p2 - p1
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
@@ -485,7 +499,7 @@ def _virtual_angle(p0, p1, p2) -> float:
     return float(np.degrees(np.arccos(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))))
 
 
-def _virtual_dihedral(p0, p1, p2, p3) -> float:
+def _virtual_dihedral(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
     """CA(i)-CA(i+1)-CA(i+2)-CA(i+3) dihedral, degrees, signed.
 
     The sign convention here is fixed by measurement, not by assertion:
@@ -533,7 +547,7 @@ def _assign_secondary_structure(trace: np.ndarray) -> list[str]:
         return []
     labels = ["C"] * n
 
-    def dist(i, k):
+    def dist(i: int, k: int) -> float:
         if i + k >= n:
             return float("nan")
         return float(np.linalg.norm(trace[i + k] - trace[i]))
@@ -595,7 +609,7 @@ def _assign_secondary_structure(trace: np.ndarray) -> list[str]:
     core = list(labels)
     spread = list(labels)
     for i, label in enumerate(core):
-        reach = {"H": 4, "E": 3}.get(label)
+        reach = {"H": 4, "E": 4}.get(label)
         if reach is None:
             continue
         for k in range(i + 1, min(i + reach, n)):
@@ -666,7 +680,7 @@ def _opt_float(value: Any) -> float | None:
 _SS_TYPE_TO_LABEL = {"helix": "H", "sheet": "E", "coil": "C"}
 
 
-def _resolve_pbc(raw: dict) -> tuple[tuple[bool, bool, bool], int]:
+def _resolve_pbc(raw: dict[str, Any]) -> tuple[tuple[bool, bool, bool], int]:
     """Resolve per-axis periodicity from a ``structure`` payload.
 
     ``pbc`` is normative when present: it is per-axis, so it is strictly more
@@ -891,7 +905,7 @@ class StructureData:
             return np.zeros((0, 3), dtype=np.float64)
         return np.asarray(picked, dtype=np.float64)
 
-    def _supplied_labels(self, chain: str) -> list[str] | None:
+    def _supplied_labels(self, chain: str, *, detailed: bool = False) -> list[str] | None:
         """Per-CA labels for ``chain`` from the supplied ranges, or None.
 
         None when nothing was supplied for this chain, so the caller falls
@@ -912,6 +926,14 @@ class StructureData:
             if start is None or end is None:
                 continue
             label = _SS_TYPE_TO_LABEL.get(str(entry.get("type", "")), "C")
+            if detailed:
+                # Optional viewer extension within the schema's open range
+                # object. Keep the normative helix/sheet/coil type unchanged.
+                subtype = str(entry.get("subtype", ""))
+                if label == "H":
+                    label = {"alpha": "H", "pi": "I", "3_10": "G"}.get(subtype, "H")
+                elif label == "E" and subtype == "bridge":
+                    label = "B"
             ranges.append((min(start, end), max(start, end), label))
         if not ranges:
             return None
@@ -925,13 +947,19 @@ class StructureData:
             out.append(label)
         return out
 
-    def secondary_structure(self, chain_id: str | None = None) -> list[str]:
+    def secondary_structure(
+        self, chain_id: str | None = None, *, detailed: bool = False
+    ) -> list[str]:
         """Per-alpha-carbon secondary structure, aligned with
         :meth:`backbone_trace`.
 
         One character per CA: ``"H"`` helix, ``"E"`` extended strand,
         ``"C"`` coil. The list is always the same length as the trace for
         the same ``chain_id``, so a renderer can zip the two.
+
+        With ``detailed=True``, supplied subtype annotations additionally
+        return ``G`` (3-10 helix), ``I`` (pi helix) and ``B`` (beta bridge).
+        Geometric assignment always returns the coarse H/E/C labels.
 
         A producer-supplied ``secondary_structure`` range list wins, per
         chain, over the geometric assignment described below (spec § 5.1
@@ -972,7 +1000,7 @@ class StructureData:
         for chain in chains:
             if chain_id is not None and chain != chain_id:
                 continue
-            supplied = self._supplied_labels(chain)
+            supplied = self._supplied_labels(chain, detailed=detailed)
             if supplied is not None:
                 out.extend(supplied)
                 continue
@@ -1102,7 +1130,7 @@ class RunRecordData:
     input_size: int
     log_text: str | None
     log_size: int
-    files: dict
+    files: dict[str, Any]
     attachment_roles: list[str]
 
 
@@ -1119,10 +1147,10 @@ class JobSpecData:
     functional: str | None
     charge: int | None
     multiplicity: int | None
-    kpoints: list | None
-    tasks: list
-    options: dict
-    raw: dict
+    kpoints: list[Any] | None
+    tasks: list[Any]
+    options: dict[str, Any]
+    raw: dict[str, Any]
 
 
 @dataclass
@@ -1136,7 +1164,7 @@ class NMRData:
     decide what to surface.
     """
 
-    raw: dict
+    raw: dict[str, Any]
 
 
 @dataclass
@@ -1149,7 +1177,7 @@ class EPRData:
     decide what to surface.
     """
 
-    raw: dict
+    raw: dict[str, Any]
 
 
 @dataclass
@@ -1162,7 +1190,7 @@ class SymmetryData:
     schema. The renderer surfaces every key it finds.
     """
 
-    raw: dict
+    raw: dict[str, Any]
 
 
 @dataclass
@@ -1210,7 +1238,7 @@ class BasisShell:
     """One contracted shell of the GTO basis (§ 1.5)."""
 
     center: int  # 0-based atom index
-    l: int  # angular momentum
+    l: int  # noqa: E741 — `l` is the QVF field name for angular momentum
     exponents: np.ndarray  # [n_prim] bohr^-2
     coefficients: np.ndarray  # [n_prim] contraction coefficients (normalized primitives)
     pure: bool = True  # spherical (True) or Cartesian (False)
@@ -1268,6 +1296,8 @@ class WavefunctionGTOData:
     occupation_semantics: str | None = None
     # Explicit Bloch wavevector metadata; None retains legacy cluster semantics.
     k_point: np.ndarray | None = None
+    # Session-only provenance/descriptors returned by the external worker.
+    relocalization: dict[str, Any] | None = None
 
 
 @dataclass
@@ -1353,7 +1383,7 @@ class ScanSurfaceData:
     geometries: np.ndarray | None = None  # (nA*nB, n_atoms, 3) Å
 
 
-def _parse_bond_pairs(raw: Any) -> list[tuple[int, int, float]]:
+def _parse_bond_pairs(raw: Any) -> list[Bond]:
     """Parse a QVF bonds payload into ``(i, j, order, image)`` tuples.
 
     The writer emits a per-pair ``order`` (single=1.0, double=2.0,
@@ -1367,7 +1397,7 @@ def _parse_bond_pairs(raw: Any) -> list[tuple[int, int, float]]:
     if not isinstance(pairs, list):
         raise QVFError("bonds payload field 'pairs' is not a list")
 
-    bonds: list[tuple[int, int, float]] = []
+    bonds: list[Bond] = []
     for idx, pair in enumerate(pairs):
         if not isinstance(pair, dict):
             raise QVFError(f"bonds pair {idx} is not a JSON object")
@@ -1446,7 +1476,7 @@ def _consumer_usable_kinds() -> frozenset[str]:
 # ── QVFReader ─────────────────────────────────────────────────────────────
 
 
-QVFSource = Union[str, Path, bytes, bytearray, memoryview, IO[bytes]]
+QVFSource = str | Path | bytes | bytearray | memoryview | IO[bytes]
 """Anything `QVFReader` can open: a filesystem path, raw zip bytes, or a
 seekable binary file-like object (BytesIO, an opened file, etc.).
 
@@ -1641,6 +1671,7 @@ class QVFReader:
         # (:mod:`vibeview.relocalize`), which asks vibe-qc for a
         # localization criterion the file does not contain.
         self._wavefunction_overlays: dict[str, WavefunctionGTOData] = {}
+        self.geometry_revision = 0
 
     @property
     def manifest(self) -> Manifest:
@@ -1722,7 +1753,7 @@ class QVFReader:
         v = self.provenance.get("checkpoint")
         return v if isinstance(v, dict) else {}
 
-    def run_record_sections(self) -> list["Section"]:
+    def run_record_sections(self) -> list[Section]:
         """All ``run.record`` sections in run-history order.
 
         Ordered by their ``sequence`` field (spec § 5.8; a record without
@@ -1732,7 +1763,7 @@ class QVFReader:
         """
         records = [s for s in self.sections if s.kind == "run.record"]
 
-        def _seq(item: tuple[int, "Section"]) -> tuple[int, int]:
+        def _seq(item: tuple[int, Section]) -> tuple[int, int]:
             index, section = item
             extras = getattr(section, "model_extra", None) or {}
             seq = extras.get("sequence")
@@ -1879,7 +1910,13 @@ class QVFReader:
 
     # ── Eager data extraction ─────────────────────────────────────────
 
-    def set_edit_overlay(self, positions, symbols, *, lattice_vectors=None) -> None:
+    def set_edit_overlay(
+        self,
+        positions: np.ndarray | Sequence[Sequence[float]],
+        symbols: Sequence[str],
+        *,
+        lattice_vectors: np.ndarray | Sequence[Sequence[float]] | None = None,
+    ) -> None:
         """Record viewer-side edited geometry (see ``_edit_overlay``).
 
         ``positions`` is an (n, 3) sequence in angstroms, ``symbols`` the
@@ -1910,6 +1947,10 @@ class QVFReader:
             for sym, pos in zip(symbols, positions, strict=True)
         ]
         self._edit_overlay = atoms
+        self.geometry_revision += 1
+        self.clear_wavefunction_overlays(
+            [sid for sid in self.wavefunction_overlay_ids if sid.startswith("wf_relocalized_")]
+        )
         if lattice is not None:
             self._edit_lattice_overlay = lattice.copy()
 
@@ -1917,6 +1958,10 @@ class QVFReader:
         """Drop viewer-side edits; read_structure() returns the file again."""
         self._edit_overlay = None
         self._edit_lattice_overlay = None
+        self.geometry_revision += 1
+        self.clear_wavefunction_overlays(
+            [sid for sid in self.wavefunction_overlay_ids if sid.startswith("wf_relocalized_")]
+        )
 
     @property
     def has_edit_overlay(self) -> bool:
@@ -1942,13 +1987,15 @@ class QVFReader:
             self._section_by_id[section_id] = section
             self._manifest.sections.append(section)
 
-    def clear_wavefunction_overlays(self) -> None:
-        """Drop every viewer-computed wavefunction and its synthetic section."""
-        for section_id in list(self._wavefunction_overlays):
+    def clear_wavefunction_overlays(self, section_ids: list[str] | None = None) -> None:
+        """Drop selected (or all) viewer-computed wavefunctions and their sections."""
+        for section_id in list(self._wavefunction_overlays) if section_ids is None else section_ids:
+            if section_id not in self._wavefunction_overlays:
+                continue
             section = self._section_by_id.pop(section_id, None)
             if section is not None and section in self._manifest.sections:
                 self._manifest.sections.remove(section)
-        self._wavefunction_overlays.clear()
+            self._wavefunction_overlays.pop(section_id)
 
     @property
     def wavefunction_overlay_ids(self) -> list[str]:
@@ -2073,12 +2120,12 @@ class QVFReader:
             ),
         )
 
-    def read_bonds(self, section_id: str) -> list[tuple[int, int, float]]:
+    def read_bonds(self, section_id: str) -> list[Bond]:
         """Read a canonical ``bonds`` section as ``(i, j, order, image)``."""
         raw = self._read_json_member(section_id, "bonds")
         return _parse_bond_pairs(raw)
 
-    def infer_bonds(self, structure: StructureData) -> list[tuple[int, int, float]]:
+    def infer_bonds(self, structure: StructureData) -> list[Bond]:
         """Infer bonds from covalent radii when no explicit bonds section.
 
         Inferred bonds carry order 1.0 (covalent-radius inference cannot
@@ -2109,11 +2156,15 @@ class QVFReader:
                 # Build a lookup map: (i, j) → order
                 order_map: dict[tuple[int, int], float] = {}
                 for p in bo_data.pairs:
-                    i = int(p.get("i", -1))
-                    j = int(p.get("j", -1))
+                    raw_i, raw_j, raw_order = p.get("i"), p.get("j"), p.get("order", 1.0)
+                    if not isinstance(raw_i, int) or not isinstance(raw_j, int):
+                        continue
+                    i, j = raw_i, raw_j
                     if i >= 0 and j >= 0:
                         key = (min(i, j), max(i, j))
-                        order_map[key] = float(p.get("order", 1.0))
+                        order_map[key] = (
+                            float(raw_order) if isinstance(raw_order, int | float) else 1.0
+                        )
                 # Override bond orders where we have bond_orders data.
                 bonds = [
                     (i, j, order_map.get((min(i, j), max(i, j)), order), image)
@@ -2310,7 +2361,7 @@ class QVFReader:
             if "mo_coefficients" in self.get_section(section_id).members:
                 coeffs = self._read_binary_member(section_id, "mo_coefficients")
 
-        def _decode_coefficients(values):
+        def _decode_coefficients(values: np.ndarray | None) -> np.ndarray | None:
             if values is None:
                 return None
             encoding = meta_raw.get("coefficient_encoding")
@@ -2338,7 +2389,7 @@ class QVFReader:
             if k_point.shape != (3,) or not np.isfinite(k_point).all():
                 raise QVFError("k_point must contain three finite numbers")
 
-        def _optional_array(key: str, dtype) -> np.ndarray | None:
+        def _optional_array(key: str, dtype: type[np.generic]) -> np.ndarray | None:
             raw = meta_raw.get(key)
             if raw is None:
                 return None
@@ -2638,7 +2689,7 @@ class QVFReader:
 
         input_text, input_size = _text_and_size("input")
         log_text, log_size = _text_and_size("log")
-        files: dict = {}
+        files: dict[str, Any] = {}
         if "files" in section.members:
             raw_files = self._read_json_member(section_id, "files")
             if isinstance(raw_files, dict):
@@ -2706,7 +2757,7 @@ class QVFReader:
         :attr:`ATTACHMENT_DOWNLOAD_MAX_BYTES`.
         """
         section = self.get_section(section_id)
-        files = {}
+        files: dict[str, Any] = {}
         if "files" in section.members:
             raw = self._read_json_member(section_id, "files")
             if isinstance(raw, dict):
@@ -2720,7 +2771,8 @@ class QVFReader:
                 size = int(self._zf.getinfo(member.path).file_size)
             except KeyError:
                 continue
-            entry = files.get(role) if isinstance(files.get(role), dict) else {}
+            raw_entry = files.get(role)
+            entry: dict[str, Any] = raw_entry if isinstance(raw_entry, dict) else {}
             out.append(
                 {
                     "role": role,
@@ -2814,9 +2866,10 @@ class QVFReader:
                 f"topology.qtaim section {section_id!r}: "
                 "'critical_points' member is not a JSON object"
             )
+        raw_paths = raw.get("bond_paths")
         return QTAIMData(
             points=list(raw.get("points", [])),
-            bond_paths=list(raw.get("bond_paths")) if raw.get("bond_paths") else None,
+            bond_paths=list(raw_paths) if raw_paths else None,
         )
 
     def read_dos_coop(self, section_id: str) -> DOSCOOPData:

@@ -5,7 +5,9 @@ Used by ``vibe-view config`` CLI command.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
+from typing import Any
 
 
 def _config_path() -> Path:
@@ -49,18 +51,11 @@ def init_config() -> Path:
     return path
 
 
-def read_config() -> dict:
+def read_config() -> dict[str, Any]:
     """Read the config file. Returns empty dict if it doesn't exist."""
     path = _config_path()
     if not path.exists():
         return {}
-    try:
-        import tomllib
-    except ImportError:
-        try:
-            import tomli as tomllib
-        except ImportError:
-            return {}
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
@@ -68,13 +63,13 @@ def read_config() -> dict:
         return {}
 
 
-def get(key: str, default=None):
+def get(key: str, default: Any = None) -> Any:
     """Read a single config key (e.g. ``'server.port'``)."""
-    config = read_config()
+    node: Any = read_config()
     parts = key.split(".")
     for part in parts:
-        if isinstance(config, dict):
-            config = config.get(part)
+        if isinstance(node, dict):
+            node = node.get(part)
         else:
             return default
-    return config if config is not None else default
+    return node if node is not None else default

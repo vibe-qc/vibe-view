@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import html
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from vibeview.renderers import BaseRenderer
 
@@ -48,7 +48,7 @@ def _kv_strip(items: dict[str, object]) -> str:
     )
 
 
-def _table(rows: list[dict], columns: list[str], caption: str) -> str:
+def _table(rows: list[dict[str, Any]], columns: list[str], caption: str) -> str:
     """Render a list-of-dicts as an HTML table with the named columns.
 
     Cells default to "—" when a row lacks the column. Rows with no
@@ -85,7 +85,7 @@ def _table(rows: list[dict], columns: list[str], caption: str) -> str:
     )
 
 
-def _shift_columns(shifts: list[dict]) -> list[str]:
+def _shift_columns(shifts: list[dict[str, Any]]) -> list[str]:
     """Pick a sensible column order for chemical shifts: the
     conventional keys first, then any extras in encounter order."""
     preferred = [

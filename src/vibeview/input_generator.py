@@ -156,6 +156,7 @@ def _structure_calculation_params(
 
     params: dict[str, Any] = {"atoms": list(atoms)}
     raw_pbc = getattr(sdata, "pbc", None)
+    pbc: tuple[bool, ...]
     if raw_pbc is None:
         pbc = (False, False, False)
     else:

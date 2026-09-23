@@ -13,6 +13,29 @@ if TYPE_CHECKING:
     from vibeview.qvf import QTAIMData, QVFReader, Section
 
 
+def _as_float(value: object) -> float | None:
+    """A scalar field of a critical point, or None when absent or malformed."""
+    if value is None or isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _as_vector(value: object) -> list[float] | None:
+    """A numeric sequence field (position, atom pair), or None."""
+    if not isinstance(value, list | tuple):
+        return None
+    out: list[float] = []
+    for item in value:
+        number = _as_float(item)
+        if number is None:
+            return None
+        out.append(number)
+    return out
+
+
 # CP type → colour mapping (standard QTAIM convention).
 _CP_COLOURS: dict[str, str] = {
     "bcp": "#FF8800",  # orange — bond critical point (3,-1)
@@ -75,19 +98,16 @@ class QTAIMRenderer(BaseRenderer):
         # ── Critical-point spheres ──────────────────────────────────
         for pt in data.points:
             cp_type = str(pt.get("type", "bcp"))
-            pos = pt.get("position")
+            pos = _as_vector(pt.get("position"))
             if pos is None or len(pos) != 3:
                 continue
             colour = _CP_COLOURS.get(cp_type, "#888888")
             radius = _CP_RADIUS.get(cp_type, 0.12)
             # A BCP's Laplacian sign is the interaction type; show it rather
             # than colouring every BCP the same orange.
-            if cp_type == "bcp" and pt.get("laplacian") is not None:
-                colour = (
-                    _SHARED_SHELL_COLOUR
-                    if float(pt["laplacian"]) < 0.0
-                    else _CLOSED_SHELL_COLOUR
-                )
+            laplacian = _as_float(pt.get("laplacian"))
+            if cp_type == "bcp" and laplacian is not None:
+                colour = _SHARED_SHELL_COLOUR if laplacian < 0.0 else _CLOSED_SHELL_COLOUR
             sphere = pv.Sphere(center=pos, radius=radius, theta_resolution=8, phi_resolution=8)
             plotter.add_mesh(
                 sphere,
@@ -101,7 +121,7 @@ class QTAIMRenderer(BaseRenderer):
         if data.bond_paths:
             for bp in data.bond_paths:
                 path = bp.get("path")
-                if not path or len(path) < 2:
+                if not isinstance(path, list | tuple) or len(path) < 2:
                     continue
                 pts = np.array(path, dtype=float)
                 # Create a polyline from the vertices.
@@ -127,20 +147,15 @@ class QTAIMRenderer(BaseRenderer):
         status = f"QTAIM: {n_pts} critical points"
         if n_paths:
             status += f", {n_paths} bond paths"
-        n_shared = sum(
-            1
+        bcp_laplacians = [
+            value
             for p in data.points
             if str(p.get("type")) == "bcp"
-            and p.get("laplacian") is not None
-            and float(p["laplacian"]) < 0.0
-        )
-        n_closed = sum(
-            1
-            for p in data.points
-            if str(p.get("type")) == "bcp"
-            and p.get("laplacian") is not None
-            and float(p["laplacian"]) >= 0.0
-        )
+            for value in [_as_float(p.get("laplacian"))]
+            if value is not None
+        ]
+        n_shared = len([value for value in bcp_laplacians if value < 0.0])
+        n_closed = len(bcp_laplacians) - n_shared
         if n_shared or n_closed:
             status += f" ({n_shared} shared-shell, {n_closed} closed-shell)"
         return status
@@ -174,18 +189,16 @@ class QTAIMRenderer(BaseRenderer):
         for point in data.points:
             if str(point.get("type")) != "bcp":
                 continue
-            pair = point.get("atom_pair")
+            pair = _as_vector(point.get("atom_pair"))
             label = (
                 f"{_atom(int(pair[0]))}–{_atom(int(pair[1]))}"
-                if pair and len(pair) == 2
+                if pair is not None and len(pair) == 2
                 else "—"
             )
-            rho = point.get("rho")
-            laplacian = point.get("laplacian")
-            ellipticity = point.get("ellipticity")
-            verdict = _interaction_label(
-                None if laplacian is None else float(laplacian)
-            )
+            rho = _as_float(point.get("rho"))
+            laplacian = _as_float(point.get("laplacian"))
+            ellipticity = _as_float(point.get("ellipticity"))
+            verdict = _interaction_label(laplacian)
             colour = (
                 _SHARED_SHELL_COLOUR
                 if verdict == "shared-shell"
@@ -194,9 +207,9 @@ class QTAIMRenderer(BaseRenderer):
             rows.append(
                 "<tr>"
                 f"<td style='text-align:left'>{label}</td>"
-                f"<td>{'' if rho is None else f'{float(rho):.4f}'}</td>"
-                f"<td>{'' if laplacian is None else f'{float(laplacian):+.4f}'}</td>"
-                f"<td>{'' if ellipticity is None else f'{float(ellipticity):.3f}'}</td>"
+                f"<td>{'' if rho is None else f'{rho:.4f}'}</td>"
+                f"<td>{'' if laplacian is None else f'{laplacian:+.4f}'}</td>"
+                f"<td>{'' if ellipticity is None else f'{ellipticity:.3f}'}</td>"
                 f"<td style='text-align:left;color:{colour}'>{verdict}</td>"
                 "</tr>"
             )

@@ -309,7 +309,7 @@ CLI, the Python SDK and troubleshooting.
 Build it from a checkout:
 
 ```sh
-pip install sphinx myst-parser furo sphinx-copybutton sphinx-design linkify-it-py
+pip install -e '.[docs]'  # the Sphinx toolchain, pinned in pyproject.toml
 cd docs && make html      # renders into docs/_build/html
 cd docs && make strict    # the same build with -W; run this before pushing docs
 ```

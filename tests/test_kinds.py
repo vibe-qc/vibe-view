@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vibeview.kinds import LAZY_KINDS, SUPPORTED_KINDS, classify_section, is_lazy_kind
+from vibeview.kinds import SUPPORTED_KINDS, classify_section, is_lazy_kind
 
 
 class TestSupportedKinds:

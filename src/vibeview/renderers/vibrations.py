@@ -52,7 +52,7 @@ class VibrationsRenderer(BaseRenderer):
             return
         if len(structure.atoms) != len(data.atoms):
             return
-        for vib_atom, struct_atom in zip(data.atoms, structure.atoms):
+        for vib_atom, struct_atom in zip(data.atoms, structure.atoms, strict=True):
             vib_atom.position = np.asarray(struct_atom.position, dtype=float)
             if not vib_atom.atomic_number:
                 vib_atom.atomic_number = struct_atom.atomic_number

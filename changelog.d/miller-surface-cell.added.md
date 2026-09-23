@@ -1,0 +1,1 @@
+Miller slabs now support general orientations of nonsingular cells, including (111), (110), and (210). The integer surface basis retains the parent cell volume and handedness, and each requested layer repeats its contents along the normal. Atoms remain in the parent Cartesian frame; vacuum adds twice its value to the cell length without centering the atoms.

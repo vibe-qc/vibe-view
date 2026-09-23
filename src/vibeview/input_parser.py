@@ -22,8 +22,9 @@ Used by ``vibe-view open input.py`` (v1.1 import) and the parameter panel.
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 class InputParseResult:
@@ -79,11 +80,14 @@ def _scale_seq(seq: Any, scalar: float) -> Any:
 
 def _matmul(left: Any, right: Any) -> Any:
     """NumPy semantics for ``(n,) @ (n, n)``: a row vector times a matrix."""
-    return [sum(a * row[i] for a, row in zip(left, right)) for i in range(len(right[0]))]
+    return [
+        sum(a * row[i] for a, row in zip(left, right, strict=True))
+        for i in range(len(right[0]))
+    ]
 
 
 def _transpose(matrix: Any) -> Any:
-    return [list(row) for row in zip(*matrix)]
+    return [list(row) for row in zip(*matrix, strict=True)]
 
 
 def _evaluate(node: ast.expr | None, env: dict[str, Any]) -> Any:
@@ -142,6 +146,8 @@ def _evaluate(node: ast.expr | None, env: dict[str, Any]) -> Any:
             value = _evaluate(node.args[0], env)
             return int(value) if _is_num(value) else _UNRESOLVED
         if func_name in ("tolist", "copy") and not node.args:
+            if not isinstance(node.func, ast.Attribute):
+                return _UNRESOLVED
             return _evaluate(node.func.value, env)
         if func_name == "Atom":
             z_value = _evaluate(node.args[0] if node.args else None, env)
@@ -168,8 +174,10 @@ def _evaluate(node: ast.expr | None, env: dict[str, Any]) -> Any:
         target = generator.target
         if isinstance(target, ast.Name):
             names = [target.id]
-        elif isinstance(target, ast.Tuple):
-            names = [elt.id for elt in target.elts]
+        elif isinstance(target, ast.Tuple) and all(
+            isinstance(elt, ast.Name) for elt in target.elts
+        ):
+            names = [elt.id for elt in target.elts if isinstance(elt, ast.Name)]
         else:
             return _UNRESOLVED
         out = []
@@ -177,7 +185,7 @@ def _evaluate(node: ast.expr | None, env: dict[str, Any]) -> Any:
             if len(names) == 1:
                 env[names[0]] = item
             elif _is_seq(item) and len(item) == len(names):
-                for name, value in zip(names, item):
+                for name, value in zip(names, item, strict=True):
                     env[name] = value
             else:
                 return _UNRESOLVED
@@ -207,9 +215,7 @@ def parse_input_source(source: str) -> InputParseResult:
                     value = _evaluate(stmt.value, env)
                     if value is not _UNRESOLVED:
                         env[target.id] = value
-            elif isinstance(stmt, ast.FunctionDef):
-                run_stmts(stmt.body)
-            elif (
+            elif isinstance(stmt, ast.FunctionDef) or (
                 isinstance(stmt, ast.If)
                 and isinstance(stmt.test, ast.Compare)
                 and isinstance(stmt.test.left, ast.Name)
@@ -298,7 +304,7 @@ def _parse_molecule_call(
 def _parse_molecule_atoms(node: ast.Call) -> list[dict[str, Any]]:
     """Extract atoms from a literal ``Molecule([Atom(...), ...])`` list —
     positional or the ``atoms=[...]`` keyword form used in the docs."""
-    atoms = []
+    atoms: list[dict[str, Any]] = []
     first_arg = _arg_or_kwarg(node, 0, "atoms")
     if first_arg is None or not isinstance(first_arg, ast.List):
         return atoms
@@ -362,6 +368,8 @@ def _parse_runner_call(
     any ``run_*`` entry point (the input library uses several)."""
     for kw in node.keywords:
         key = kw.arg
+        if key is None:  # a ``**kwargs`` splat carries no name to record
+            continue
         if key == "basis":
             if (
                 isinstance(kw.value, ast.Call)
@@ -414,9 +422,14 @@ def _eval_literal(node: ast.expr) -> Any:
     """Safely evaluate a Python literal (numbers, strings, None, True/False)."""
     if isinstance(node, ast.Constant):
         return node.value
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        if isinstance(node.operand, ast.Constant):
-            return -node.operand.value
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+        and isinstance(node.operand.value, int | float | complex)
+        and not isinstance(node.operand.value, bool)
+    ):
+        return -node.operand.value
     if isinstance(node, ast.List):
         return [_eval_literal(e) for e in node.elts]
     if isinstance(node, ast.Tuple):

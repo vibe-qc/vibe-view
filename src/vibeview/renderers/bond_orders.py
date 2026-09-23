@@ -11,6 +11,25 @@ if TYPE_CHECKING:
     from vibeview.qvf import BondOrdersData, QVFReader, Section
 
 
+def _as_float(value: object, default: float = 0.0) -> float:
+    """A pair field as a float; the metadata is untyped JSON, so guard it."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 class BondOrdersRenderer(BaseRenderer):
     """Renders bond-order analysis as an HTML table."""
 
@@ -31,23 +50,24 @@ class BondOrdersRenderer(BaseRenderer):
             return "<p>No bond-order data in this section.</p>"
 
         threshold = 0.05  # filter noise
-        visible = [p for p in pairs if float(p.get("order", 0)) > threshold]
-        visible.sort(key=lambda p: float(p.get("order", 0)), reverse=True)
+        visible = [p for p in pairs if _as_float(p.get("order")) > threshold]
+        visible.sort(key=lambda p: _as_float(p.get("order")), reverse=True)
 
         rows: list[str] = []
         csv_lines = ["pair,i,j,order,distance_ang"]
         for p in visible:
-            i = int(p.get("i", 0))
-            j = int(p.get("j", 0))
-            order = float(p.get("order", 0))
-            dist = p.get("distance_ang")
+            i = _as_int(p.get("i"))
+            j = _as_int(p.get("j"))
+            order = _as_float(p.get("order"))
+            raw_dist = p.get("distance_ang")
+            dist = _as_float(raw_dist) if raw_dist is not None else None
             si = str(p.get("symbol_i", ""))
             sj = str(p.get("symbol_j", ""))
             label = f"{si}{i + 1}–{sj}{j + 1}" if si and sj else f"{i + 1}–{j + 1}"
-            dist_str = f"{float(dist):.3f} Å" if dist is not None else ""
+            dist_str = f"{dist:.3f} Å" if dist is not None else ""
             rows.append(f"<tr><td>{label}</td><td>{order:.3f}</td><td>{dist_str}</td></tr>")
             csv_lines.append(
-                f"{label},{i},{j},{order:.4f},{float(dist):.4f}"
+                f"{label},{i},{j},{order:.4f},{dist:.4f}"
                 if dist is not None
                 else f"{label},{i},{j},{order:.4f},"
             )
@@ -56,7 +76,7 @@ class BondOrdersRenderer(BaseRenderer):
         csv_b64 = base64.b64encode(csv_text.encode()).decode()
 
         # Summary statistics.
-        orders = [float(p.get("order", 0)) for p in visible]
+        orders = [_as_float(p.get("order")) for p in visible]
         avg_order = sum(orders) / len(orders) if orders else 0.0
         summary = (
             f"<p style='margin:4px 0;font-size:11px;color:#888'>"

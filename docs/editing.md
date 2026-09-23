@@ -117,6 +117,18 @@ vibe-view supercell si.qvf --nx 2 --ny 2 --nz 2 -o si_2x2x2.qvf
 The crystal-builder helpers behind it are importable for scripts: a
 space-group search, conversion between a lattice matrix and cell parameters,
 Miller-plane slab cutting with a vacuum gap, and supercell replication.
+`miller_slab` works for any orientation of a nonsingular cell: it builds the (hkl)
+surface cell from two lattice vectors that lie in the plane and one that steps
+a single interplanar spacing along the normal, repeats the parent cell's atoms
+`n_layers` times along that step, and adds `2 * vacuum` to the cell length
+along the normal. The atoms are not shifted to center them in that padding,
+so the gaps on either side need not be equal. The in-plane vectors and the
+atoms stay in the parent crystal's Cartesian frame, so the slab overlays the
+bulk it was cut from. The determinant-one surface basis preserves the input
+cell's handedness. `n_layers`
+counts repetitions of the cell, so a conventional fcc cell gives one atomic
+plane per layer for (111) and two for (001); indices with a common factor,
+such as (002), name the same plane family as their reduced form.
 
 ```python
 from vibeview.crystal_builder import (
@@ -126,7 +138,7 @@ from vibeview.crystal_builder import (
 search_space_groups("Fm-3m")                          # [{'number': 225, ...}]
 cell = cell_from_abc(5.43, 5.43, 5.43, 90, 90, 90)
 a, b, c, alpha, beta, gamma = abc_from_cell(cell)
-new_cell, slab_atoms = miller_slab(cell, atoms, hkl=(0, 0, 1), n_layers=3, vacuum=15.0)
+new_cell, slab_atoms = miller_slab(cell, atoms, hkl=(1, 1, 1), n_layers=3, vacuum=15.0)
 super_cell, super_atoms = replicate_cell(cell, atoms, nx=2, ny=2, nz=2)
 ```
 

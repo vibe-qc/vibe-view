@@ -8,6 +8,7 @@ programmatic equivalents of the ``vibe-view`` CLI commands.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -30,10 +31,8 @@ def info(source: QVFSource) -> dict[str, Any]:
         for sec in reader.sections:
             sec_size = 0
             for m in sec.members.values():
-                try:
+                with contextlib.suppress(Exception):
                     sec_size += reader._zf.getinfo(m.path).file_size
-                except Exception:
-                    pass
             total_size += sec_size
             sections_out.append(
                 {
@@ -231,7 +230,7 @@ def get_volume(source: QVFSource, section_id: str) -> dict[str, Any] | None:
 # ── Tabular data ─────────────────────────────────────────────────────────
 
 
-def get_table(source: QVFSource, kind: str) -> tuple[list[str], list[list]]:
+def get_table(source: QVFSource, kind: str) -> tuple[list[str], list[list[Any]]]:
     """Extract tabular data (same as ``vibe-view table --kind``)."""
     from vibeview.tables import extract_table
 
@@ -275,7 +274,7 @@ def validate(source: QVFSource) -> dict[str, Any]:
 # ── Capture ──────────────────────────────────────────────────────────────
 
 
-def capture_structure(source: QVFSource, path: str | Path, **kwargs) -> bool:
+def capture_structure(source: QVFSource, path: str | Path, **kwargs: Any) -> bool:
     """Render the structure to a PNG file."""
     reader, should_close = _reader(source)
     from vibeview.capture import capture_structure as _cap
@@ -289,7 +288,9 @@ def capture_structure(source: QVFSource, path: str | Path, **kwargs) -> bool:
             reader.close()
 
 
-def capture_volume(source: QVFSource, section_id: str, path: str | Path, **kwargs) -> bool:
+def capture_volume(
+    source: QVFSource, section_id: str, path: str | Path, **kwargs: Any
+) -> bool:
     """Render a volume section to a PNG file."""
     reader, should_close = _reader(source)
     from vibeview.capture import capture_volume as _cap
@@ -307,7 +308,7 @@ def render_terminal(
     *,
     size: tuple[int, int] = (100, 30),
     plain: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """Render a section as terminal text and return it.
 
@@ -353,10 +354,18 @@ def slice_qvf(
     keep: list[str] | None = None,
     drop: list[str] | None = None,
 ) -> Path:
-    """Extract a subset of sections into a new QVF file.  Returns output path."""
+    """Extract sections without discarding metadata. Refuse dangling references.
+
+    Viewer hints for removed sections are pruned. All other source fields and
+    kept member bytes are preserved; the output is validated before replacement.
+    """
     import json as _json
+    import os
+    import tempfile
     import zipfile
 
+    if keep and drop:
+        raise ValueError("keep and drop are mutually exclusive")
     reader, should_close = _reader(source)
     out_path = Path(output)
     if out_path.suffix != ".qvf":
@@ -371,52 +380,46 @@ def slice_qvf(
             if drop_ids:
                 if sec.id in drop_ids or sec.kind in drop_ids:
                     continue
-            elif keep_ids:
-                if sec.id not in keep_ids and sec.kind not in keep_ids:
-                    continue
+            elif keep_ids and sec.id not in keep_ids and sec.kind not in keep_ids:
+                continue
             to_keep.append(sec)
 
-        kept_paths: set[str] = set()
-        new_sections = []
-        for sec in to_keep:
-            new_members = {}
-            for name, member in sec.members.items():
-                m = {"path": member.path, "format": member.format, "sha256": member.sha256}
-                if member.dtype:
-                    m["dtype"] = member.dtype
-                if member.shape:
-                    m["shape"] = member.shape
-                new_members[name] = m
-                kept_paths.add(member.path)
-            sec_dict: dict = {"id": sec.id, "kind": sec.kind, "members": new_members}
-            if getattr(sec, "label", None):
-                sec_dict["label"] = sec.label
-            new_sections.append(sec_dict)
-
-        src = reader.manifest.source
-        manifest = {
-            "qvf_version": reader.manifest.qvf_version,
-            "source": {
-                "program": src.program,
-                "version": src.version,
-                "calculation": src.calculation,
-            },
-            "sections": new_sections,
-        }
-        # Preserve provenance + viewer_defaults — dropping them would strip
-        # method/energy metadata and producer hints from the sliced file.
-        prov = (reader.manifest.model_extra or {}).get("provenance")
-        if prov is not None:
-            manifest["provenance"] = prov
-        if reader.manifest.viewer_defaults is not None:
-            manifest["viewer_defaults"] = reader.manifest.viewer_defaults.model_dump()
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf_out:
-            zf_out.writestr("manifest.json", _json.dumps(manifest))
-            # Copy members from the reader's own open zip handle so
-            # in-memory sources (reader._path is None) are sliced too —
-            # reopening by path silently skipped them entirely.
-            for mp in sorted(kept_paths):
-                zf_out.writestr(mp, reader._zf.read(mp))
+        if not to_keep:
+            raise ValueError("No sections to keep")
+        # Read the original JSON: model round-tripping loses unknown source
+        # and member fields even though they are allowed by the QVF schema.
+        manifest = _json.loads(reader._zf.read("manifest.json"))
+        kept_ids = {sec.id for sec in to_keep}
+        removed_ids = {sec.id for sec in reader.sections} - kept_ids
+        manifest["sections"] = [s for s in manifest["sections"] if s["id"] in kept_ids]
+        for section in manifest["sections"]:
+            for key, value in section.items():
+                if (
+                    (key.endswith("_ref") or key in ("operand_a", "operand_b"))
+                    and isinstance(value, str) and value in removed_ids
+                ):
+                    raise ValueError(f"Section {section['id']!r} still references {value!r}")
+        hints = manifest.get("viewer_defaults", {})
+        if "auto_open" in hints:
+            hints["auto_open"] = [sid for sid in hints["auto_open"] if sid not in removed_ids]
+        for sid in removed_ids:
+            hints.pop(sid, None)
+        kept_paths = {m.path for sec in to_keep for m in sec.members.values()}
+        # A temporary sibling also makes slicing onto the input path safe.
+        with tempfile.NamedTemporaryFile(dir=out_path.parent, suffix=".qvf", delete=False) as f:
+            temporary = Path(f.name)
+        try:
+            with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as zf_out:
+                zf_out.writestr("manifest.json", _json.dumps(manifest),
+                                compress_type=zipfile.ZIP_STORED)
+                for mp in sorted(kept_paths):
+                    zf_out.writestr(mp, reader._zf.read(mp))
+            result = validate(temporary)
+            if not result["valid"]:
+                raise ValueError(f"Invalid slice: {result['error']}")
+            os.replace(temporary, out_path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return out_path
     finally:
         if should_close:
@@ -438,14 +441,14 @@ def _close(reader: QVFReader, should_close: bool) -> None:
         reader.close()
 
 
-def _get_prov(reader: QVFReader) -> dict:
+def _get_prov(reader: QVFReader) -> dict[str, Any]:
     prov = getattr(reader.manifest, "provenance", None) or {}
     if hasattr(prov, "model_dump"):
         prov = prov.model_dump()
     return prov if isinstance(prov, dict) else {}
 
 
-def _energy_eh(prov: dict) -> float | None:
+def _energy_eh(prov: dict[str, Any]) -> float | None:
     e = prov.get("scf_energy", {})
     if isinstance(e, dict):
         e = e.get("value")
