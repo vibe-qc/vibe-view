@@ -20,11 +20,54 @@ Each section carries an `id` (unique within the file), a `kind` (what it is —
 see [What vibe-view can show you](capabilities.md)), and its members. Every
 member declares a **`sha256`**.
 
-That digest is not decorative. vibe-view verifies it **before use**, on every
-member, every time. A section whose payload does not match its declared digest
-is reported as `error, sha256 mismatch` and is not rendered — it is never
-drawn from bytes that failed their own integrity check. `vibe-view validate`
-runs that check across the whole archive and nothing else.
+That digest is not decorative. vibe-view verifies each member **before use**.
+A section whose payload does not match its declared digest is reported as
+`error, sha256 mismatch`. Missing or corrupt ZIP members are reported as
+`error, member read error`; invalid JSON, text encoding or binary shape as
+`error, invalid payload`. These failures stop the member read and are recorded for the section,
+including when its data is first requested lazily.
+Phonon DOS metadata is required, and a present bond-order section must be
+read successfully before its values can enrich structure bonds; neither
+failure is silently replaced by defaults. `vibe-view validate` checks member
+integrity across the whole archive; it does not validate every payload's
+scientific contents.
+
+Structure reads also validate the atom and periodicity payload against the
+vendored `StructurePayload` schema, retaining nonempty display labels longer
+than three characters for compatibility (such as `Z999`). Coordinates and lattice vectors must be
+finite, and periodic cells must be invertible. Pre-conformance archives with
+only `dimensionality` retain the documented leading-axis fallback; explicit
+`pbc` flags must be three booleans and agree with `dimensionality` when present.
+
+Explicit bonds and bond-order analyses reject malformed pair indices and
+present orders instead of coercing them or drawing a different atom. Indices
+must be nonnegative integers and lie within the original file structure when
+that context exists. Errors identify the section and pair and are recorded as
+`invalid payload`. Omitted explicit bond orders still default to 1.0;
+standalone analysis tables remain readable without an atom-count upper bound.
+Edit overlays do not change the bounds of archived analyses. This validation
+does not remap those analyses after atom edits or add explicit bond-image
+extensions.
+
+Volume grids require a finite three-coordinate origin, three finite voxel step
+vectors, and three nonnegative integer dimensions matching the binary field
+exactly. This also applies to reaction-path volume grids and direct volume-data
+reads. Negative axes, skew grids, empty dimensions and singleton dimensions
+remain supported; validation does not change the grid's bohr units or reject
+nonfinite scalar samples.
+
+Trajectory and reaction-path coordinates must be finite arrays shaped
+`[n_frames, n_atoms, 3]`, with one metadata identity per atom. Zero-frame
+archives remain readable. Optional energies may be absent, null, empty or a
+shorter prefix, but supplied values must be finite numbers. Waypoint indices
+must identify an existing frame: booleans, fractional indices and numeric
+strings are rejected instead of moving the label to a different frame.
+Integral JSON numbers such as `1.0` remain valid indices. These failures name
+the owning section and member and are recorded as `invalid payload`.
+
+Reaction lattice/dimension synchronization, reaction-coordinate lengths and
+decimated volume-frame mappings retain their existing behavior; these checks
+do not normalize reaction lattice units or remap frame metadata.
 
 ## Why an archive and not a directory of files
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestMaterialPresets:
     def test_import(self):
@@ -42,7 +40,7 @@ class TestMaterialPresets:
     def test_all_presets_valid(self):
         from vibeview.material_presets import MATERIAL_PRESETS
 
-        for name, preset in MATERIAL_PRESETS.items():
+        for _name, preset in MATERIAL_PRESETS.items():
             assert preset.name
             assert 0 <= preset.atom_roughness <= 1
             assert 0 <= preset.atom_metallic <= 1

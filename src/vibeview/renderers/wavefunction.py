@@ -24,19 +24,28 @@ isosurface UI just works.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterator, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from vibeview.qvf import GridData
 from vibeview.renderers import BaseRenderer
+from vibeview.units import ANGSTROM_TO_BOHR as _ANGSTROM_TO_BOHR
+from vibeview.units import BOHR_TO_ANGSTROM as _BOHR_TO_ANGSTROM
+from vibeview.units import HARTREE_TO_EV
 
 if TYPE_CHECKING:
     from vibeview.qvf import BasisShell, QVFReader, Section, WavefunctionGTOData
 
 
-_ANGSTROM_TO_BOHR = 1.0 / 0.529177210903
-_BOHR_TO_ANGSTROM = 0.529177210903
+
+# Which part of a (possibly complex) orbital value to draw.
+_COMPONENT_SELECTORS: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "real": np.real,
+    "imag": np.imag,
+    "magnitude": np.abs,
+}
 
 _OCC_THRESHOLD = 1e-3  # occupation above which an MO counts as occupied
 _OCC_ELECTRON_TOL = 0.05
@@ -46,7 +55,7 @@ _ELECTRON_OCCUPATION = "electron_occupation"
 _TRANSITION_WEIGHT = "transition_weight"
 
 
-def _frontier_indices(occupations, n_mo: int) -> tuple[int, int]:
+def _frontier_indices(occupations: np.ndarray | None, n_mo: int) -> tuple[int, int]:
     """Return ``(homo_index, lumo_index)`` for one spin block.
 
     A canonical HOMO/LUMO exists only for integer occupations. Fractional
@@ -67,7 +76,7 @@ def _frontier_indices(occupations, n_mo: int) -> tuple[int, int]:
     return (homo, lumo)
 
 
-def _natural_frontier_indices(occupations, n_mo: int) -> tuple[int, int]:
+def _natural_frontier_indices(occupations: np.ndarray | None, n_mo: int) -> tuple[int, int]:
     """HONO/LUNO indices for a confirmed natural-occupation spin block."""
     if occupations is None or n_mo <= 0:
         return (-1, -1)
@@ -85,8 +94,8 @@ def _natural_frontier_indices(occupations, n_mo: int) -> tuple[int, int]:
 def _mo_row_title(
     spin_label: str,
     index: int,
-    energy,
-    occ,
+    energy: float | None,
+    occ: float | None,
     sym_label: str,
     marker: str,
     occupation_label: str = "occ",
@@ -108,7 +117,11 @@ def _mo_row_title(
 
 
 def _localized_row_title(
-    index: int, symbols, populations, n_centres, threshold: float = 0.10
+    index: int,
+    symbols: Sequence[str] | None,
+    populations: np.ndarray | Sequence[float] | None,
+    n_centres: int | None,
+    threshold: float = 0.10,
 ) -> str:
     """Picker label for a localized orbital, e.g. ``"#3  C1-H4 bond  (2c)"``.
 
@@ -178,11 +191,11 @@ class WavefunctionRenderer(BaseRenderer):
         """
         wf = self.load()
         explicit = getattr(wf, "occupation_semantics", None)
-        if explicit in {_ELECTRON_OCCUPATION, _TRANSITION_WEIGHT}:
+        if isinstance(explicit, str) and explicit in {_ELECTRON_OCCUPATION, _TRANSITION_WEIGHT}:
             return explicit
         return None
 
-    def mo_table(self) -> list[dict]:
+    def mo_table(self) -> list[dict[str, Any]]:
         """Rows describing every MO, for the UI picker.
 
         Each row carries a **composite** ``value`` of the form
@@ -195,7 +208,8 @@ class WavefunctionRenderer(BaseRenderer):
         parses spin + index back out of ``value``.
         """
         wf = self.load()
-        rows: list[dict] = []
+        rows: list[dict[str, Any]] = []
+        blocks: tuple[tuple[str, np.ndarray | None, np.ndarray | None, np.ndarray | None], ...]
         if wf.spin == "unrestricted":
             blocks = (
                 ("alpha", wf.alpha_energies, wf.alpha_occupations, wf.mo_coefficients_alpha),
@@ -439,7 +453,7 @@ class WavefunctionRenderer(BaseRenderer):
         if wf.orbital_kind and wf.orbital_kind != "canonical":
             title = f"{wf.orbital_kind.capitalize()} Orbital Energy Diagram"
         if gap_eh is not None:
-            title += f" (gap {gap_eh * 27.2114:.2f} eV)"
+            title += f" (gap {gap_eh * HARTREE_TO_EV:.2f} eV)"
 
         fig.update_layout(
             title=title,
@@ -467,7 +481,7 @@ class WavefunctionRenderer(BaseRenderer):
             "{type:'vibeview-mo-click',key:String(key)},'*');});}"
             "bind();})();</script>"
         )
-        return fig.to_html(full_html=False, include_plotlyjs="cdn") + click_js
+        return str(fig.to_html(full_html=False, include_plotlyjs="cdn")) + click_js
 
     def evaluate_mo(
         self,
@@ -512,7 +526,7 @@ class WavefunctionRenderer(BaseRenderer):
             from vibeview.renderers.periodic_wavefunction import evaluate_gamma_mo
 
             grid, values = evaluate_gamma_mo(self, wf, coeffs, n_per_dim)
-            values = {"real": np.real, "imag": np.imag, "magnitude": np.abs}[component](values)
+            values = _COMPONENT_SELECTORS[component](values)
             return grid, values.astype(np.float32)
 
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
@@ -539,7 +553,7 @@ class WavefunctionRenderer(BaseRenderer):
             voxel_vectors=vox_ang.astype(np.float64),
             shape=(nx, ny, nz),
         )
-        values = {"real": np.real, "imag": np.imag, "magnitude": np.abs}[component](values)
+        values = _COMPONENT_SELECTORS[component](values)
         return grid, values.astype(np.float32, copy=False)
 
     def evaluate_density(
@@ -740,6 +754,7 @@ class WavefunctionRenderer(BaseRenderer):
         ys = np.linspace(lo[1], hi[1], ny)
         zs = np.linspace(lo[2], hi[2], nz)
 
+        blocks: tuple[tuple[np.ndarray | None, np.ndarray | None], ...]
         if wf.spin == "unrestricted":
             blocks = (
                 (wf.mo_coefficients_alpha, wf.alpha_occupations),
@@ -830,6 +845,7 @@ class WavefunctionRenderer(BaseRenderer):
         ys = np.linspace(lo[1], hi[1], ny)
         zs = np.linspace(lo[2], hi[2], nz)
 
+        blocks: tuple[tuple[np.ndarray | None, np.ndarray | None], ...]
         if wf.spin == "unrestricted":
             blocks = (
                 (wf.mo_coefficients_alpha, wf.alpha_occupations),
@@ -889,6 +905,7 @@ class WavefunctionRenderer(BaseRenderer):
         ys = np.linspace(lo[1], hi[1], ny)
         zs = np.linspace(lo[2], hi[2], nz)
 
+        blocks: tuple[tuple[np.ndarray | None, np.ndarray | None, float], ...]
         if wf.spin == "unrestricted":
             blocks = (
                 (wf.mo_coefficients_alpha, wf.alpha_occupations, 1.0),
@@ -935,7 +952,7 @@ class WavefunctionRenderer(BaseRenderer):
     # ── helpers ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _require_molecular_field(wf, *, real_only=False):
+    def _require_molecular_field(wf: WavefunctionGTOData, *, real_only: bool = False) -> None:
         if wf.k_point is not None:
             raise ValueError(
                 "A single k-point orbital block cannot supply the total periodic field. "
@@ -949,17 +966,15 @@ class WavefunctionRenderer(BaseRenderer):
 
     def _mo_row(self, wf: WavefunctionGTOData, index: int, spin: str) -> np.ndarray:
         if wf.spin == "unrestricted":
-            if spin == "beta":
-                coeffs = wf.mo_coefficients_beta
-            else:
-                coeffs = wf.mo_coefficients_alpha
+            coeffs = wf.mo_coefficients_beta if spin == "beta" else wf.mo_coefficients_alpha
         else:
             coeffs = wf.mo_coefficients
         if coeffs is None:
             raise ValueError(f"No MO coefficients present for spin={spin!r}")
         if index < 0 or index >= coeffs.shape[0]:
             raise IndexError(f"MO index {index} out of range [0, {coeffs.shape[0]})")
-        return coeffs[index]
+        row: np.ndarray = coeffs[index]
+        return row
 
     def _structure_symbols(self, structure_ref: str) -> list[str] | None:
         """Element symbols from the referenced structure, for orbital labels.
@@ -1013,7 +1028,15 @@ class WavefunctionRenderer(BaseRenderer):
         gx, gy, gz = np.meshgrid(xs, ys, zs, indexing="ij")
         return self._evaluate_at_points(wf, mo_coeffs, atom_pos_bohr, gx, gy, gz)
 
-    def _evaluate_at_points(self, wf, mo_coeffs, atom_pos_bohr, gx, gy, gz):
+    def _evaluate_at_points(
+        self,
+        wf: WavefunctionGTOData,
+        mo_coeffs: np.ndarray,
+        atom_pos_bohr: np.ndarray,
+        gx: np.ndarray,
+        gy: np.ndarray,
+        gz: np.ndarray,
+    ) -> np.ndarray:
         """Evaluate a coefficient row at Cartesian points (all coordinates in bohr)."""
         result = np.zeros(gx.shape, dtype=np.result_type(mo_coeffs.dtype, np.float64))
 
@@ -1064,7 +1087,7 @@ class WavefunctionRenderer(BaseRenderer):
 
             # Contracted radial / scalar part: sum_p c_p * N(α_p) * exp(-α_p r²)
             radial = np.zeros_like(r2)
-            for alpha, c in zip(shell.exponents, shell.coefficients):
+            for alpha, c in zip(shell.exponents, shell.coefficients, strict=True):
                 norm = _primitive_norm(int(shell.l), float(alpha))
                 radial += c * norm * np.exp(-alpha * r2)
 
@@ -1154,7 +1177,7 @@ class WavefunctionRenderer(BaseRenderer):
             radial = np.zeros_like(r2)
             # d(radial)/d(r^2); the chain rule to d/dx brings the 2*dx.
             radial_d = np.zeros_like(r2)
-            for alpha, c in zip(shell.exponents, shell.coefficients):
+            for alpha, c in zip(shell.exponents, shell.coefficients, strict=True):
                 norm = _primitive_norm(int(shell.l), float(alpha))
                 gauss = c * norm * np.exp(-alpha * r2)
                 radial += gauss
@@ -1255,7 +1278,7 @@ class WavefunctionRenderer(BaseRenderer):
             radial = np.zeros_like(r2)
             radial_d = np.zeros_like(r2)
             radial_dd = np.zeros_like(r2)
-            for alpha, c in zip(shell.exponents, shell.coefficients):
+            for alpha, c in zip(shell.exponents, shell.coefficients, strict=True):
                 a = float(alpha)
                 gauss = c * _primitive_norm(int(shell.l), a) * np.exp(-a * r2)
                 radial += gauss
@@ -1331,7 +1354,7 @@ class WavefunctionRenderer(BaseRenderer):
         relative to each other and distorted the rendered orbital shape.
         See ``tests/test_wavefunction_normalization.py``.
         """
-        l = shell.l
+        l = shell.l  # noqa: E741 — `l` is the angular-momentum quantum number
         if not shell.pure:
             return list(_cartesian_factors(l, dx, dy, dz))
         racah = math.sqrt(4.0 * math.pi / (2 * l + 1))
@@ -1341,7 +1364,7 @@ class WavefunctionRenderer(BaseRenderer):
 # ── Primitive normalisation ───────────────────────────────────────────────
 
 
-def _primitive_norm(l: int, alpha: float) -> float:
+def _primitive_norm(l: int, alpha: float) -> float:  # noqa: E741 — angular momentum
     """Normalisation constant for a real primitive Gaussian.
 
     N = (2α/π)^(3/4) · sqrt[(8α)^l · l! / (2l)!]
@@ -1357,7 +1380,7 @@ def _primitive_norm(l: int, alpha: float) -> float:
     The angular factors carry no further per-component normalisation --
     see :func:`_cartesian_factors` for why that is deliberate.
     """
-    pref = (2.0 * alpha / math.pi) ** 0.75
+    pref = float((2.0 * alpha / math.pi) ** 0.75)
     if l == 0:
         return pref
     fac = (8.0 * alpha) ** l * math.factorial(l) / math.factorial(2 * l)
@@ -1367,7 +1390,12 @@ def _primitive_norm(l: int, alpha: float) -> float:
 # ── Cartesian angular factors (libint lexicographic) ──────────────────────
 
 
-def _cartesian_factors(l: int, x: np.ndarray, y: np.ndarray, z: np.ndarray):
+def _cartesian_factors(
+    l: int,  # noqa: E741 — angular momentum
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+) -> Iterator[np.ndarray]:
     """Yield Cartesian-Gaussian angular factors x^i y^j z^k in libint
     order: i+j+k=l, i descending then j descending.
 
@@ -1405,7 +1433,7 @@ def _cartesian_factors(l: int, x: np.ndarray, y: np.ndarray, z: np.ndarray):
 # remaining per-m angular normalisation is captured below.
 
 
-def _solid_harmonic_terms(l: int) -> list[list[tuple[float, int, int, int]]]:
+def _solid_harmonic_terms(l: int) -> list[list[tuple[float, int, int, int]]]:  # noqa: E741 — angular momentum
     """Monomial expansion of the angular factors :func:`_spherical_factors`
     yields, as ``[(coefficient, i, j, k), ...]`` per m with ``x^i y^j z^k``.
 
@@ -1481,7 +1509,7 @@ def _angular_terms(shell: BasisShell) -> list[list[tuple[float, int, int, int]]]
     the Racah factor that strips the surface normalisation back out of the
     pure factors.
     """
-    l = int(shell.l)
+    l = int(shell.l)  # noqa: E741 — angular momentum
     if not shell.pure:
         terms: list[list[tuple[float, int, int, int]]] = []
         for i in range(l, -1, -1):
@@ -1527,7 +1555,12 @@ def _differentiate_terms(
     return out
 
 
-def _spherical_factors(l: int, x: np.ndarray, y: np.ndarray, z: np.ndarray):
+def _spherical_factors(
+    l: int,  # noqa: E741 — angular momentum
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+) -> Iterator[np.ndarray]:
     """Yield the (2l+1) real-spherical angular factors at the grid points,
     ordered m = -l, ..., +l.
 

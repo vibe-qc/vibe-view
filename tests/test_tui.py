@@ -26,6 +26,8 @@ from vibeview.tui import show as showmod
     [((True, True, True), 12), ((True, True, False), 4), ((True, False, False), 1)],
 )
 def test_cell_edges_only_span_periodic_axes(pbc, n_edges):
+    from vibeview.renderers.cell import cell_edges
+
     """Synthesized lattice columns are bookkeeping, never cell edges.
 
     A 2D slab's third column is a 30-bohr normal that is numerically
@@ -33,15 +35,17 @@ def test_cell_edges_only_span_periodic_axes(pbc, n_edges):
     drawing by rank would put a box around every slab.
     """
     lattice = np.diag([3.0, 4.0, 30.0])
-    starts, ends = scenelib._cell_edges(lattice, pbc)
+    starts, ends = cell_edges(lattice, pbc)
     assert len(starts) == n_edges
     if not pbc[2]:
         assert np.allclose(starts[:, 2], 0.0) and np.allclose(ends[:, 2], 0.0)
 
 
 def test_cell_edges_shear_with_a_hexagonal_lattice():
+    from vibeview.renderers.cell import cell_edges
+
     lattice = np.array([[4.92, 0.0, 0.0], [2.46, 4.26, 0.0], [0.0, 0.0, 7.94]])
-    starts, ends = scenelib._cell_edges(lattice, (True, True, False))
+    starts, ends = cell_edges(lattice, (True, True, False))
     edges = ends - starts
     assert any(np.allclose(e, lattice[1], atol=1e-9) for e in edges)
 

@@ -40,8 +40,10 @@ class COOPRenderer(BaseRenderer):
         projections = np.asarray(data.projections, dtype=float)
         integrated = np.asarray(data.integrated, dtype=float)
         meta = data.meta or {}
-        pair_labels = meta.get("pair_labels", [])
-        fermi = meta.get("fermi_energy_ev")
+        raw_labels = meta.get("pair_labels", [])
+        pair_labels = [str(p) for p in raw_labels] if isinstance(raw_labels, list) else []
+        raw_fermi = meta.get("fermi_energy_ev")
+        fermi = float(raw_fermi) if isinstance(raw_fermi, int | float) else None
         label = self.kind_label
 
         n_pairs = projections.shape[0]
@@ -69,7 +71,10 @@ class COOPRenderer(BaseRenderer):
                     mode="lines",
                     line={"color": colours[i % len(colours)], "width": 1.5},
                     name=name,
-                    hovertemplate=f"{p_label}<br>E: %{{x:.3f}}<br>{label}: %{{y:.4f}}<extra></extra>",
+                    hovertemplate=(
+                        f"{p_label}<br>E: %{{x:.3f}}<br>"
+                        f"{label}: %{{y:.4f}}<extra></extra>"
+                    ),
                 )
             )
 
@@ -79,7 +84,7 @@ class COOPRenderer(BaseRenderer):
         # Fermi line if present.
         if fermi is not None:
             fig.add_vline(
-                x=float(fermi),
+                x=fermi,
                 line={"color": "#CC3333", "width": 1, "dash": "dash"},
                 annotation_text="E<sub>F</sub>",
                 annotation_position="top",
@@ -98,4 +103,4 @@ class COOPRenderer(BaseRenderer):
             legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5),
         )
 
-        return fig.to_html(full_html=False, include_plotlyjs="cdn")
+        return str(fig.to_html(full_html=False, include_plotlyjs="cdn"))

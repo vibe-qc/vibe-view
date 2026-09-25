@@ -7,42 +7,12 @@ in-process equivalent of ``vibe-view open <path>``.
 
 from __future__ import annotations
 
-import socket
-import threading
-import time
-import webbrowser
 from typing import TYPE_CHECKING
+
+from vibeview.netutil import announce_when_bound
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader, QVFSource
-
-
-def _wait_until_bound_and_open(
-    host: str,
-    port: int,
-    *,
-    timeout: float = 10.0,
-) -> None:
-    """Poll the port until uvicorn binds, then open the browser. Background
-    thread, daemon. Matches the CLI's helper at
-    ``vibeview.cli._wait_until_bound_and_announce`` minus the click
-    echo lines (programmatic callers do their own UI).
-    """
-    probe_host = "127.0.0.1" if host == "0.0.0.0" else host
-    probe_url = f"http://{probe_host}:{port}"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((probe_host, port), timeout=0.5):
-                pass
-        except OSError:
-            time.sleep(0.2)
-            continue
-        try:
-            webbrowser.open(probe_url)
-        except Exception:
-            pass
-        return
 
 
 def launch_qvf(
@@ -72,37 +42,21 @@ def launch_qvf(
         context that has its own UI.
 
     Blocks until the Trame server stops (Ctrl+C). On return the
-    underlying :class:`QVFReader` is closed.
+    reader is closed if this function opened it. A supplied reader remains
+    open and its lifetime stays under the caller's control.
     """
+    from vibeview.api import closing_reader
     from vibeview.app import create_app, serve
     from vibeview.banner import print_banner
-    from vibeview.qvf import QVFReader
 
-    owns_reader = False
-    if isinstance(source, QVFReader):
-        reader = source
-    else:
-        reader = QVFReader(source)
-        owns_reader = True
-
-    try:
+    with closing_reader(source) as reader:
         if print_banner_to_stdout:
             print_banner(reader)
 
-        if open_browser:
-            # Deferred to a watcher thread so the open() fires after
-            # uvicorn binds. Avoids the race where the browser opens
-            # before the port is listening (the user-visible failure
-            # mode was an "Unable to connect" page in Firefox even
-            # though the CLI banner already said "server starting").
-            threading.Thread(
-                target=_wait_until_bound_and_open,
-                kwargs={"host": host, "port": port},
-                daemon=True,
-            ).start()
-
         app = create_app(reader)
+        if open_browser:
+            # Opens once uvicorn has bound, never before (an early open()
+            # showed "Unable to connect"), and only after create_app so
+            # the render stack's cold start does not eat the bind timeout.
+            announce_when_bound(host, port, open_browser=True)
         serve(app, host=host, port=port)
-    finally:
-        if owns_reader:
-            reader.close()

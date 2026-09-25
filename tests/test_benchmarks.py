@@ -9,9 +9,6 @@ way to track performance regressions.  Run with:
 from __future__ import annotations
 
 import time
-from pathlib import Path
-
-import pytest
 
 
 class TestStructureRenderingBenchmarks:

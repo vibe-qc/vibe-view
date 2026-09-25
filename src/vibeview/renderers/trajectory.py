@@ -6,19 +6,15 @@ updates with the current frame.
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._mpl import agg_pyplot, figure_to_png
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader, Section, TrajectoryData
-
-matplotlib.use("Agg")
 
 
 class TrajectoryRenderer(BaseRenderer):
@@ -37,7 +33,7 @@ class TrajectoryRenderer(BaseRenderer):
     @property
     def n_frames(self) -> int:
         data = self.load()
-        return data.coords.shape[0]
+        return int(data.coords.shape[0])
 
     @property
     def n_atoms(self) -> int:
@@ -80,7 +76,7 @@ class TrajectoryRenderer(BaseRenderer):
         idx = max(0, min(current_frame, n - 1))
         return self._frame_pngs[idx]
 
-    def _prerender_all_frames(self, data) -> list[bytes]:
+    def _prerender_all_frames(self, data: TrajectoryData) -> list[bytes]:
         """Render one PNG per trajectory frame (frame indicator varies;
         everything else is identical). Called once at section load."""
         energies = np.array(data.energies)
@@ -90,7 +86,7 @@ class TrajectoryRenderer(BaseRenderer):
 
         pngs: list[bytes] = []
         for frame in range(n):
-            fig, ax = plt.subplots(figsize=(6, 2.5))
+            fig, ax = agg_pyplot().subplots(figsize=(6, 2.5))
             ax.plot(
                 range(n), energies, "o-",
                 color="#3366CC", markersize=3, linewidth=1.0,
@@ -103,9 +99,5 @@ class TrajectoryRenderer(BaseRenderer):
             ax.set_ylabel("Energy (a.u.)")
             ax.grid(True, alpha=0.3)
             fig.tight_layout()
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=100)
-            plt.close(fig)
-            buf.seek(0)
-            pngs.append(buf.read())
+            pngs.append(figure_to_png(fig))
         return pngs

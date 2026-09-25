@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from vibeview.kinds import classify_section
 from vibeview.qvf import QVFReader
@@ -86,13 +87,23 @@ def render_section(
         coords, _energies = scenelib.trajectory_frames(reader, section_id)
         positions = coords[frame % len(coords)]
 
-    scene = scenelib.structure_scene(
-        reader,
-        representation=representation,
-        color_mode=color_mode,
-        replication=replication,
-        positions_override=positions,
-    )
+    if positions is not None:
+        scene = scenelib.frame_scene(
+            reader,
+            section_id,
+            positions,
+            frame_index=frame % len(coords),
+            representation=representation,
+            color_mode=color_mode,
+            replication=replication,
+        )
+    else:
+        scene = scenelib.structure_scene(
+            reader,
+            representation=representation,
+            color_mode=color_mode,
+            replication=replication,
+        )
     if kind in _VOLUME_KINDS:
         scene.meshes = scenelib.volume_meshes(
             reader, section_id, isovalue=isovalue, replication=replication
@@ -111,7 +122,15 @@ def render_section(
     return grid
 
 
-def _label_atoms(grid, scene, canvas, camera, cols, rows, mode) -> None:
+def _label_atoms(
+    grid: braille.CellGrid,
+    scene: scenelib.Scene,
+    canvas: Canvas,
+    camera: Camera,
+    cols: int,
+    rows: int,
+    mode: str,
+) -> None:
     import numpy as np
 
     xy, z = scenelib.atom_screen_positions(scene, canvas, camera)
@@ -143,7 +162,7 @@ def show(
     size: tuple[int, int] | None = None,
     plain: bool = False,
     info: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """Render one section of ``path`` as a printable string."""
     reader = QVFReader(path)
@@ -175,7 +194,7 @@ def show_all(
     *,
     size: tuple[int, int] | None = None,
     plain: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """Render every graphable section, in a reading order, one after another."""
     reader = QVFReader(path)

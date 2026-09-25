@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vibeview.bonds import in_cell, structure_bonds
+
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
 
@@ -52,7 +54,7 @@ def _project_2d(positions: np.ndarray) -> np.ndarray:
 
 
 def export_pdf(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     width: float = 6.0,  # inches
@@ -89,11 +91,11 @@ def export_pdf(
         Path to the generated file.
     """
     try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
         from matplotlib.patches import Circle
+
+        from vibeview.renderers._mpl import agg_pyplot
+
+        plt = agg_pyplot()
     except ImportError:
         # Fallback: export PNG via PIL
         return _export_pdf_fallback_pil(reader, output_path, width, height, style, background, dpi)
@@ -182,24 +184,20 @@ def export_pdf(
     else:
         radii = {s: 0.06 for s in set(symbols)}
 
-    # Draw bonds
+    # Draw bonds: the viewer's connectivity, without the bonds that cross a
+    # periodic cell face, which a flat figure cannot place.
     if style != "space_filling":
-        cov_r = [cov_radii_tbl.get(s, 0.35) for s in symbols]
-        for i in range(len(symbols)):
-            for j in range(i + 1, len(symbols)):
-                d = np.linalg.norm(positions[i] - positions[j])
-                threshold = (cov_r[i] + cov_r[j]) * 1.2
-                if 0.4 < d < threshold:
-                    ax.plot(
-                        [coords2d[i, 0], coords2d[j, 0]],
-                        [coords2d[i, 1], coords2d[j, 1]],
-                        color="#666666",
-                        linewidth=2.0,
-                        solid_capstyle="round",
-                    )
+        for i, j, _order, _image in in_cell(structure_bonds(sdata)):
+            ax.plot(
+                [coords2d[i, 0], coords2d[j, 0]],
+                [coords2d[i, 1], coords2d[j, 1]],
+                color="#666666",
+                linewidth=2.0,
+                solid_capstyle="round",
+            )
 
     # Draw atoms
-    for symbol, pos in zip(symbols, coords2d):
+    for symbol, pos in zip(symbols, coords2d, strict=True):
         r = radii.get(symbol, 0.25)
         color = _CPK.get(symbol, "#888888")
         circle = Circle(
@@ -223,7 +221,15 @@ def export_pdf(
     return output_path
 
 
-def _export_pdf_fallback_pil(reader, output_path, width, height, style, background, dpi):
+def _export_pdf_fallback_pil(
+    reader: QVFReader,
+    output_path: str,
+    width: float,
+    height: float,
+    style: str,
+    background: str,
+    dpi: int,
+) -> str:
     """Fallback export using PIL when matplotlib is unavailable.
 
     Constraint: writing PNG bytes to a ``.pdf`` path produces an invalid PDF.
@@ -260,7 +266,7 @@ def _export_pdf_fallback_pil(reader, output_path, width, height, style, backgrou
     x_min, x_max = coords2d[:, 0].min() - margin, coords2d[:, 0].max() + margin
     y_min, y_max = coords2d[:, 1].min() - margin, coords2d[:, 1].max() + margin
 
-    def _to_pixel(p):
+    def _to_pixel(p: np.ndarray) -> tuple[float, float]:
         x = (p[0] - x_min) / (x_max - x_min) * (w_px - 40) + 20
         y = h_px - ((p[1] - y_min) / (y_max - y_min) * (h_px - 40) + 20)
         return x, y
@@ -279,7 +285,7 @@ def _export_pdf_fallback_pil(reader, output_path, width, height, style, backgrou
         "Cl": (31, 240, 31),
     }
 
-    for symbol, pos in zip(symbols, coords2d):
+    for symbol, pos in zip(symbols, coords2d, strict=True):
         x, y = _to_pixel(pos)
         r = dpi * 0.12
         color = _CPK.get(symbol, (136, 136, 136))

@@ -12,6 +12,7 @@ Keep the patterns and the allowlist in sync with the hook.
 from __future__ import annotations
 
 import re
+import runpy
 import subprocess
 from pathlib import Path
 
@@ -26,7 +27,6 @@ _ALLOWED_USERS = ("USER", "Shared", "runner", "root", "user")
 
 _HOME_PATH = re.compile(r"/(?:Users|home)/([A-Za-z][A-Za-z0-9_.-]*)")
 # Private names are configured externally; never publish the denylist itself.
-import runpy
 _PRIVATE_TERMS = runpy.run_path(str(_ROOT / ".githooks/private_terms.py"))["load_terms"](_ROOT)
 
 

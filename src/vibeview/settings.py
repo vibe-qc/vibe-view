@@ -8,15 +8,9 @@ background, material preset, measurement units, etc.
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 from typing import Any
 
-
-def _settings_path() -> Path:
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "vibe-view" / "settings.json"
-
+from vibeview.paths import settings_path
 
 DEFAULTS: dict[str, Any] = {
     "dark_background": True,
@@ -30,12 +24,13 @@ DEFAULTS: dict[str, Any] = {
     "auto_save_interval": 60,
     "recent_files": [],
     "max_recent_files": 20,
+    "relocalize_backend_python": "",
 }
 
 
 def load_settings() -> dict[str, Any]:
     """Load user settings from disk, merging with defaults."""
-    path = _settings_path()
+    path = settings_path()
     settings = dict(DEFAULTS)
     if path.exists():
         try:
@@ -48,7 +43,7 @@ def load_settings() -> dict[str, Any]:
 
 def save_settings(settings: dict[str, Any]) -> None:
     """Persist user settings to disk."""
-    path = _settings_path()
+    path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2))
 
@@ -82,4 +77,5 @@ def add_recent_file(filepath: str) -> None:
 
 def get_recent_files() -> list[str]:
     """Return the list of recently opened files."""
-    return load_settings().get("recent_files", [])
+    recent: list[str] = load_settings().get("recent_files", [])
+    return recent

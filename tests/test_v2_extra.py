@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +32,7 @@ class TestSVGExport:
         reader = QVFReader(sample_qvf)
         out = tmp_path / "test.svg"
         try:
-            svg = export_svg(reader, str(out))
+            export_svg(reader, str(out))
             assert Path(out).exists()
             content = Path(out).read_text()
             assert "<svg" in content
@@ -95,7 +94,7 @@ class TestPDFExport:
         reader = QVFReader(sample_qvf)
         out = tmp_path / "test.png"
         try:
-            result = export_pdf(reader, str(out))
+            export_pdf(reader, str(out))
             assert Path(out).exists()
         finally:
             reader.close()
@@ -118,10 +117,8 @@ class TestJupyterIntegration:
         from vibeview.jupyter import (
             _render_structure,
             _sniff_qvf,
-            export_notebook_cell,
             qvf_to_html,
             qvf_to_image,
-            register_ipython_magic,
         )
 
         assert callable(qvf_to_html)
@@ -246,7 +243,6 @@ class TestBatchCompare:
     def test_align_uses_kabsch_superposition(self, tmp_path):
         """Regression: align=True used non-superposing rmsd. A rigidly rotated
         copy of the same structure must give RMSD ~ 0 after Kabsch fit."""
-        import numpy as np
 
         from vibeview.batch_compare import compare_batch
 
@@ -287,10 +283,6 @@ class TestSettings:
     def test_import(self):
         from vibeview.settings import (
             DEFAULTS,
-            get_setting,
-            load_settings,
-            save_settings,
-            set_setting,
         )
 
         assert isinstance(DEFAULTS, dict)
@@ -368,7 +360,6 @@ class TestAnimationTools:
         """render_reaction_video plays the NEB band frame-by-frame. Uses the
         committed neb_h3 showcase (structure + 7-frame reaction.path) and
         the ffmpeg-free GIF path so it runs anywhere Pillow is present."""
-        from pathlib import Path
 
         from vibeview.animation import render_reaction_video
         from vibeview.qvf import QVFReader

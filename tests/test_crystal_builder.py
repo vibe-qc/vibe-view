@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 
 class TestCrystalBuilder:
@@ -92,5 +91,5 @@ class TestCrystalBuilder:
             {"symbol": "C", "position": [0.0, 0.0, 5.0]},
         ]
         new_cell, new_atoms = miller_slab(cell, atoms, (0, 0, 1), n_layers=2, vacuum=10.0)
-        assert len(new_atoms) <= 3
+        assert len(new_atoms) == 2 * 3  # each layer repeats the cell's atoms
         assert new_cell.shape == (3, 3)

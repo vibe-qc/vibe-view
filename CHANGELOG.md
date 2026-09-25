@@ -5,23 +5,390 @@ All notable changes to vibe-view are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-This file starts at the first public commit. Development before `9585e28`
-(tagged `v2.15.2`) took place in a private monorepo whose history was
-deliberately not transferred — see the [README](README.md#history).
+Standalone release records begin with `v2.15.2`, the first public commit
+(`9585e28`). The earlier v2.0.0 entry is retained as monorepo history; that
+repository history was not transferred — see the [README](README.md#history).
+
+Public snapshot tags are linked where available. Older releases without a
+public tag link to their historical notes in the v2.18.1 snapshot; v2.0.0 has
+no tag in this standalone repository.
 
 ## [Unreleased]
 
-### Changed
-- Public source is usable without private URL rewriting or omitted agent guides.
-  Site CI settings and release coordination stay outside the product repository.
-- Installer launcher records use external private state with verified migration
-  from the legacy checkout record; ordinary virtualenv locations are unchanged.
+## [v2.19.0] - 2026-09-25 - *Phong's Pheasant*
 
+This release consolidates the viewer's shared plumbing (#34): one QVF writer
+for every import, one bond rule, one unit-cell module, shared command-line
+options, headless scene setup, table styling, network helpers and worker
+lifecycle. It also hardens QVF readers and importers against malformed input
+and fixes periodic-surface, terminal-chart and archive-merge defects (#35 to
+#40).
+
+### Added
+
+- Miller slabs now support general orientations of nonsingular cells,
+  including (111), (110), and (210). The integer surface basis retains the
+  parent cell volume and handedness, and each requested layer repeats its
+  contents along the normal. Atoms remain in the parent Cartesian frame;
+  vacuum adds twice its value to the cell length without centering the atoms.
+  This shipped in v2.18.1 without a changelog entry and is recorded here.
+
+### Changed
+
+- Every archive vibe-view writes (the XYZ, CIF, PDB, GRO, Gaussian, Mol2,
+  SDF, cube, vibe-qc input, ASE and TREXIO imports, the molecule builder,
+  and the `h-add` and `supercell` commands) now comes from one writer with
+  one member layout (`sections/<id>/<member>.json|.bin`), a sha256 per
+  member, deflate compression and `source` naming the program and version
+  that actually wrote it (vibe-view, not vibe-qc or ASE). `dimensionality`
+  is derived from `pbc`, so an ASE import of a molecule in a box is no
+  longer flagged periodic, and Mol2/SDF bonds are written once, as the
+  structure's `bonds` member, instead of twice. (#34, #40)
+- Scientific conversions now share the established CODATA 2018 factors.
+  CLI, SDK and batch energy differences use full-precision eV and kcal/mol
+  factors; live optimization uses the reciprocal of the same bohr/Å factor
+  as geometry import and rendering. (#34, #36, #38, #40)
+- One bond rule everywhere. The browser edit overlay and measurement panel,
+  the terminal, the hydrogen-adding tool and the CML, SVG, PDF, POV-Ray,
+  Blender and HTML exports all use the viewer's covalent-radius inference
+  (Cordero radii plus 0.45 Å, periodic images, no metal-metal bonds in ionic
+  solids) and honour an archive's explicit bonds. Exports previously used
+  their own 1.2× rules with ten-element radius tables, so heavy atoms were
+  unbonded and a molecule's connectivity differed between outputs. CML now
+  writes explicit bond orders, and POV-Ray draws bonds across cell faces.
+  (#34, #40)
+- Unit-cell geometry is shared by every front end: the browser, terminal, POV-
+  Ray export and reaction-path viewer enumerate cell edges, supercell
+  translations and periodic bond images through one module, and the browser
+  draws the cell wireframe as one actor instead of one per edge. (#34, #36,
+  #38)
+- The command line's shared options come from one module: `--port`, `--host`,
+  `--no-browser` and `--log-file` are declared once for every server command,
+  `--size` is one `WxH` type with one error message, and `--json`, `--output`,
+  `--isovalue`, `--colormap` and `--fps` are declared once. `config.toml`'s
+  `[server]` defaults now apply to `compare`, `serve`, `from-vq` and `demo
+  --open` as the manual says, not only to `open`. Commands that transform one
+  archive (`capture`, `animate`, `export`, `slice`, `h-add`, `supercell`)
+  write beside the input by default, and `--help` says so; commands that
+  gather several inputs (`batch`, `merge`, `dashboard`, `import`) keep writing
+  in the working directory, `merge` now as `<first stem>_merged.qvf`. `demo
+  --open` gains `--host`. (#34, #39)
+- Untyped producer fields in bond-order tables, QTAIM critical points and the
+  terminal's SCF plots and tables go through one shared guard, so a NumPy
+  scalar or a numeric string reads as a number in every panel instead of only
+  some. (#34, #36)
+- File and section sizes are formatted by one shared helper everywhere: whole
+  bytes below 1 KB, then one decimal per binary step up to TB. The run-record
+  panel no longer stops at MB, and the browser memory panel shows the same
+  units as `vibe-view info`. (#34)
+- Every headless render shares one scene setup: the dark vibe-view background,
+  an isometric camera fitted to the actors, and one screenshot path. Dashboard
+  and Jupyter thumbnails therefore now match the framing and theme of `vibe-
+  view capture` and `batch` output instead of a white, unfitted view, and
+  `export obj`/`gltf` builds its mesh on the same scene. (#34)
+- The details panel's table views (charges, bond orders, QTAIM critical
+  points, job specification, run record, NMR, EPR, symmetry and citations)
+  share one stylesheet and document wrapper, so they read alike, and every
+  cell is escaped, so a producer string containing `<` no longer breaks a
+  table. (#34, #36)
+- Matplotlib figures (band structure, spectra, scan surfaces and the reaction-
+  path and trajectory energy plots) are rasterised by one shared helper at 120
+  dpi; the energy plots and scan surfaces were 100 dpi. The Agg backend is
+  chosen on first use instead of when a renderer is imported, so importing
+  vibe-view no longer reconfigures matplotlib for a notebook or GUI process.
+  (#34, #36)
+- Port probing, the wait-for-bind loop and the free-port search live in one
+  module used by the command line, the programmatic launcher and the file
+  browser. `vibe-view from-vq` and `launch_qvf` now start their ready watcher
+  after the viewer is built, as `open` already did, so a slow first import can
+  no longer time out the "ready" message and skip opening the browser. (#34,
+  #39)
+- The re-localization and live-optimization workers share one subprocess
+  lifecycle: one strict event parser for request/response exchanges, one
+  lenient filter for streamed steps, bounded output, and a child that is
+  always killed and waited for on timeout or cancellation. The file browser
+  now waits for the viewer processes it terminates at shutdown instead of
+  leaving them to the operating system. (#34, #39)
 
 ### Fixed
 
+- The browser viewer's auto-saved session for a viewer opened without a
+  file honours `$XDG_CACHE_HOME` like every other cache file; all cache
+  and configuration paths now come from one module. (#34)
+- Browser and CLI CIF exports use Cartesian Å coordinates for molecules,
+  including nonperiodic boxes, and fractional coordinates only with a cell. (#40)
+- Terminal trajectory, reaction-path and vibration frames use their own atom
+  identities and coordinates, including archives without a primary structure.
+  Reaction cells follow the selected frame instead of borrowing an unrelated
+  structure cell, and scene caches distinguish section and frame context. (#38)
+- Terminal spectrum envelopes use the same native-unit half-width and sampling
+  as the browser, preserving signed peaks without extra span-based broadening. (#38)
+- XYZ imports read exactly the first declared frame instead of combining
+  later frames or silently skipping malformed atoms. Invalid counts, truncated
+  frames and non-finite coordinates fail before writing an archive. (#40)
+- QVF grids reject dimensions that disagree with their binary fields, preventing
+  incorrectly positioned surfaces. Trajectory and reaction readers validate
+  atom/frame coordinates, finite energies and waypoint indices before rendering,
+  with errors attributed to the owning section. Empty grids and trajectories,
+  negative/skew grids and partial energy lists remain supported. (#35)
+- Terminal equation-of-state charts draw the producer’s fitted curve using the
+  shared browser evaluator, rather than connecting the computed points. (#38)
+- Mol2 and SDF imports reject malformed atom and bond records before writing,
+  preventing shifted or dangling connectivity. Mol2 bonds now resolve arbitrary
+  source atom IDs, comments and blank lines remain valid within sections, and
+  multi-molecule files consistently import only the first molecule. (#40)
+- Periodic volume surfaces retain exact lattice translations for skewed grids
+  and fractional voxel periods. Exact scalar tiling preserves original samples;
+  incompatible grids use centred surface copies without fabricated gap values
+  or overwritten overlaps. Only periodic axes repeat. (#36)
+- Orbital playback stops after the final orbital instead of re-evaluating it
+  forever. Scheduled frames render on the browser server's event loop and
+  send their state updates immediately. (#37)
+- Cube imports with multiple datasets select the first complete scalar field
+  from interleaved samples. Invalid dataset counts, incomplete orbital ID
+  records and truncated data now raise clear errors. (#40)
+- Python imports reject an unresolved periodic lattice instead of inventing
+  a 0.529 Å cubic cell. The static parser keeps partial atom and parameter
+  information without executing the input. (#40)
+- Cube imports accept the negative-count ångström extension, converting grid
+  coordinates and atoms consistently. Zero counts and ambiguous mixed signs
+  now raise clear errors. Scalar samples retain their order while binary
+  encoding avoids creating a Python argument for every voxel. (#40)
+- Malformed structure coordinates, periodicity and connectivity now raise
+  recorded QVF errors before rendering. Bond indices and present orders no
+  longer silently coerce into different atoms or default values. Legacy
+  dimensionality-only structures and omitted explicit orders remain supported.
+  (#35)
+- NCI surfaces preserve skewed grid geometry and requested periodic replicas
+  when a density field supplies their colours. Scalar colours follow the same
+  grid orientation and interpolation as the surface. Density on a different
+  grid leaves the surface uncoloured with a mismatch message. (#36)
+- Python API operations close owned readers when a second input cannot open or
+  a lazy import fails. API calls and the launcher consistently preserve readers
+  and binary streams supplied by the caller. (#39)
+- Archive merges preserve source-local reaction, difference-volume and basis
+  references when section IDs collide, retain metadata, and verify all member
+  hashes before atomically replacing the destination. Generated IDs and member
+  paths cannot shadow existing entries; merging onto an input is safe. Slices
+  also refuse dangling basis references, and both transforms write current QVF
+  version 1 when accepting legacy version-2 inputs. (#39)
+- Signed volume surfaces now render grids with reversed axes in the browser
+  and headless captures, preserving their physical coordinates and lobe colours.
+  Both paths use the shared contour builder. (#39)
+- Terminal DOS charts preserve the already Fermi-relative energy grid,
+  regardless of absent, zero or out-of-range absolute Fermi metadata.
+  Projected channels use the same labels and spin summation as browser
+  charts. (#38)
+- QVF member failures are recorded for every section kind and reported with
+  their actual category. Corrupt phonon DOS metadata and bond-order data now
+  raise reader errors instead of silently falling back to defaults. Malformed
+  manifest sections raise a QVF validation error; ZIP member corruption is
+  reported as a member error after the archive has opened. (#35)
+- Python-input imports and symbol-only structure rendering now recognize
+  elements through curium consistently, including Pt, Au and U. Shared
+  element data preserves existing viewer colors, color overrides and radius
+  defaults. (#34, #40)
+- Correct duplicate and incomplete release records, align citation/version
+  checks, and refresh the roadmap and released codename status. (#41)
+- Equal-energy CLI comparisons now report zero in every unit and in text.
+  File-browser listings and detail pages display a legitimate zero energy
+  instead of marking it missing. (#39)
+- Volume isovalue, colormap and opacity edits no longer change the defaults
+  of other sections or subsequently opened files. Partial producer hints also
+  retain the original kind defaults for settings they do not specify. (#36)
+
+## [v2.18.1] - 2026-09-22 - *Richardson's Robin*
+
+This patch consolidates the lint and strict type gates, documentation fixes,
+and the stable real-UHF producer/consumer gradient fixture.
+
+### Fixed
+
+- Every source module is now in the strict mypy gate. `app.py`, the browser
+  viewer, is annotated: its trame controllers keep their real signatures,
+  the pyvista `Plotter` methods whose stubs mypy misreads go through
+  `plotter_compat`, and `disallow_untyped_decorators` is relaxed for that one
+  module because trame ships no types. The `types` job covers the whole
+  tree; `tests/test_type_ramp.py` fails when a new source module is added
+  without joining the gate. (#33)
+- The mypy ramp grows from 80 to 90 modules: the QVF reader, the structure
+  renderer, the wavefunction renderer, the converters, the CLI, the
+  re-localization backend and the whole terminal viewer now pass full strict
+  and stay gated, leaving only `app.py` deferred. Two real defects came out
+  of it: the terminal viewer guarded its status updates with Textual's
+  `App.is_mounted`, a method that is always truthy, and now uses
+  `is_running`; and every bond-typed path declared bonds as 3-tuples while
+  the reader has always emitted `(i, j, order, image)`, which the new
+  `qvf.Bond` alias names. (#33)
+- The mypy ramp grows from 75 to 80 modules: batch rendering, headless
+  capture, video export and the launcher now pass full strict and stay gated,
+  through a small `plotter_compat` module that carries the one `type: ignore`
+  each for the pyvista 0.49 `Plotter` methods mypy misreads. The structure
+  renderer's cached bond list is typed with the bond order it always carried.
+  (#33)
+- The mypy ramp grows from 71 to 75 modules: the directory server, the
+  terminal cell encoder, the QTAIM renderer and the ray-trace engine now pass
+  full strict and stay gated. The QTAIM renderer reads its untyped
+  critical-point fields through guards, so a malformed field skips the point
+  instead of raising mid-render. (#33)
+- The mypy ramp grows from 65 to 71 modules: the Jupyter integration, lazy
+  loader, live optimization, and the bond-order, reaction-path and
+  equation-of-state renderers now pass full strict and stay gated. The
+  bond-order table reads its untyped pair fields through guards instead of
+  bare `float()` casts. (#33)
+- The mypy ramp grows from 61 to 65 modules: the Python API, the profiler,
+  the terminal rasterizer and the volume renderer now pass full strict and
+  stay gated. (#8)
+- The mypy ramp grows from 50 to 58 modules: the build tools, user
+  configuration, dashboard, PDF and SVG exports, input-file parser, COOP/COHP
+  renderer and TREXIO importer now pass full strict and stay gated. The
+  configuration reader drops its `tomli` fallback, which Python 3.11, the
+  support floor, made unreachable. (#8)
+- The `lint` CI job runs `ruff check .` over the whole checkout instead of
+  `tests/ src/ scripts/`. The narrower scope left `electron/desktop-launcher.py`,
+  the `docs/*.py` capture scripts and the privacy hook's tests unlinted, and
+  the nine findings they carried are cleared. The mypy ramp grows from 41 to
+  50 modules: the material presets, the energy window, the Fermi-surface,
+  NCI, phonon, SCF-history and spectra renderers, the Gamma-point Bloch sum
+  and the one-shot terminal renderer now pass full strict and stay gated.
+  (#8)
+- Keep documentation deployment manual for every web-triggered pipeline,
+  including pipelines on `release`, using product-local rules over the
+  configured deployment job. Ordinary release pushes still publish. (#22)
+- Build the documentation for merge requests changing package/toolchain
+  metadata or the API modules and schemas imported by the site, while
+  retaining the filter for unrelated viewer changes. (#30)
+
+### Changed
+
+- Rework the first-run guide and add a complete import, inspect and share
+  tutorial using bundled inputs. Clarify section IDs, missing data, capture
+  limits, terminal plotting and reproducible figure exports; refresh actual
+  viewer captures without changing codename artwork. (#20)
+
+### Added
+
+- **ruff and mypy are enforced.** Both were configured in `pyproject.toml`
+  before the split and run by nothing, so the tree had drifted to 325 ruff
+  findings. Some were inert style, but the classes the issue names hide real
+  defects — 70 unused imports, 13 assigned-but-never-used locals, 26 `zip()`
+  calls with no `strict=`, 41 files opened without a context manager, and
+  three annotations naming a type the module never imports. All of them are
+  gone, each decided rather than batch-annotated: the `zip()` calls are
+  `strict=True` where the lengths are fixed by construction and `strict=False`
+  with a stated reason where they are not. Two deliberate suppressions remain,
+  both with their reason on the line — `E741` where `l` is the
+  angular-momentum quantum number (also a `BasisShell` field name), `h, k, l`
+  the Miller indices or `I` the inertia tensor, and one `SIM117` in the
+  viewer's Vuetify layout. A `lint` CI job now runs `ruff check tests/ src/
+  scripts/` on every merge request, so a new finding fails the pipeline.
+
+  mypy gets the per-module ramp the issue asked for rather than a
+  whitewash. `strict = true` over the whole tree is about 4300 findings across
+  170 files, `app.py` alone holding 478, so `[tool.mypy].files` names the 41
+  modules that are clean today and the `types` job checks exactly those under
+  full strict. Everything else is still analysed for the types it provides but
+  its own findings are not reported, and the list only ever grows. Getting
+  there also fixed the two things that stopped mypy running at all: the
+  `python_version` floor of 3.11 made numpy's own stubs a syntax error that
+  aborted the run before any of our code was reached, and ~78 unstubbed
+  third-party and companion imports drowned everything else. Both CI jobs
+  share `.rules_product_gate` with `test` and `qvf-conformance`, so a ref gets
+  the whole gate or none of it, and `tests/test_ci_rules.py` checks the
+  widened matrix, that the jobs really invoke the tools, and that the ramp
+  names files that exist. (#8)
+
+## [v2.18.0] - 2026-09-17 - *Richardson's Robin*
+
+Periodic band-structure and DOS charts now open on the states around E_F.
+An all-electron archive puts its core shells hundreds or thousands of eV
+below the valence region -- silicon at STO-3G places its 1s at -2431 eV --
+and an axis autoscaled over all of them left the bands unreadable without a
+manual zoom. Pseudopotential archives, which have no core states, keep the
+axis they had. The Sphinx toolchain is now a declared `docs` extra instead
+of ten pins inlined in CI, so the site can be built from package metadata.
+Setup scripts run on stock macOS Bash 3.2, and a release push no longer
+repeats the gate its candidate already passed.
+
+### Added
+
+- **An energy window for the band-structure and DOS charts.** All-electron
+  periodic archives carry core states hundreds or thousands of eV below E_F —
+  silicon at STO-3G puts its 1s at -2431 eV — and an axis autoscaled over all
+  of them squeezed the valence and conduction bands into a few pixels around
+  the E_F line, so the chart could not be read without a manual drag-zoom. The
+  bands, DOS and combined panels now open on the states grouped around E_F,
+  with the core shells off the axis, and carry **E − E_F min** / **E − E_F
+  max** fields and a **Reset window** button. A spectrum with no core states is
+  not windowed at all, so pseudopotential archives keep the axis they had. A
+  producer can ship its own first view with an `energy_window` hint in
+  `viewer_defaults`, and `render_to_html` / `render_to_bytes` take
+  `energy_window=` and `auto_window=False` for scripted figures. (#26)
+
+- **A `docs` extra** declaring the Sphinx toolchain. `.gitlab-ci.yml`'s
+  `.docs_deps` pinned all of it inline, so the requirement appeared in no
+  package metadata and the only way to render the site locally was to read the
+  CI file and retype ten pins — `docs/Makefile` and `scripts/build_site.sh`
+  both assumed `sphinx-build` was already on `PATH` and said nothing about how
+  it got there. Four of those pins (`numpy`, `click`, `pydantic`, `jsonschema`)
+  were already `[project.dependencies]`, repeated only because the docs job did
+  not install the package, and would have kept an old floor after a core pin
+  moved. CI, `CONTRIBUTING.md`, `README.md`, `AGENTS.md`, the Makefile and the
+  site builder now all name `pip install -e '.[docs]'`, and
+  `tests/test_docs_toolchain.py` keeps the extra in step with `docs/conf.py`'s
+  extensions, with the core dependency list and with the CI job. (#19)
+
+- Biomolecule residue isolation, hiding and viewport selection, with chain,
+  secondary-structure, residue-type and B-factor colours in atom and bond views.
+- PDB HELIX/SHEET annotations are retained. Optional secondary-structure subtype
+  metadata distinguishes alpha, pi and 3₁₀ helices and beta bridges in ribbons.
+- Optional dashed hydrogen-bond contact display using explicit hydrogens and
+  documented geometric criteria in the input cell.
+
+### Fixed
+
+- The setup scripts no longer abort on stock macOS Bash 3.2, which rejects
+  an empty `"${array[@]}"` as an unbound variable under `set -u`. This made
+  `uninstall.sh` fail outright on macOS. (#29)
+
+- **A release push no longer repeats the gate the candidate already passed.**
+  `test` and `qvf-conformance` carried no `rules:` of their own, so they fell
+  through to the `workflow:` admission list and ran on every ref in it. After
+  v2.16.2 that was visible: the candidate pipeline proved the exact commit,
+  then fast-forwarding `release` onto that same SHA started the identical two
+  jobs again against an identical tree, and preparing `main` needed a `ci.skip`
+  push option to get out of the way of a third copy. Both jobs now name their
+  refs — merge requests, `release-candidate/*` and manual `web` runs — which
+  is the delivery model `docs/roadmap.md` already described: work lands on
+  `main`, a candidate pipeline proves it, and `release` only fast-forwards.
+  `docs-build` still runs on `main` and `release`, because the site artifact
+  and the deployment jobs need it. The matrix is a table at the top of
+  `.gitlab-ci.yml` and in `CONTRIBUTING.md`, and `tests/test_ci_rules.py`
+  evaluates the file against it, so a job that loses its rules fails the suite
+  instead of silently inheriting every ref again. (#22)
+
+- Restore **Re-localize with** using a separately installed vibe-qc worker.
+  A persistent backend Python setting, native capability probe and archive
+  checks enable compatible molecular methods. Exact archived occupied orbitals
+  are preserved; new RHF is an explicit option. Validated session overlays
+  include localization descriptors and IAO charges, with cancellation and
+  stale-result protection. Periodic, complex and incomplete inputs explain
+  why localization is unavailable.
+- Strands have crisp edges, correctly shaded end caps and complete terminal
+  residue assignments. Hidden ribbon spans are never connected across gaps.
+- QVF slicing preserves root, section and member metadata, prunes removed
+  viewer hints, refuses dangling section references, and validates before
+  replacing the output. (#24)
+- DOS energy grids retain their specified Fermi-relative values; combined
+  bands/DOS plots subtract only the bands' own Fermi reference, with separate
+  axes when that reference is absent. (#25)
+- Scene rebuilds and file reloads preserve the light-background choice. (#27)
+- Headless exports do not create an unawaited reset coroutine. (#21)
+
+### Changed
+
 - Installation, quickstart and desktop tutorials now begin with exact clone
-  commands: deploy-key SSH access to GitLab on port 26, or the GitHub mirror.
+  commands for the canonical repository or the public GitHub mirror.
   README and contributor setup use the same options. (#20)
 
 - Clone, install and desktop help now use the standalone repository root;
@@ -32,16 +399,15 @@ deliberately not transferred — see the [README](README.md#history).
 
 - Desktop builds now retain artifacts locally; operators publish feeds with separate private deployment tooling.
 
+- Public source is usable without private URL rewriting or omitted agent guides.
+  Site CI settings and release coordination stay outside the product repository.
+- Installer launcher records use external private state with verified migration
+  from the legacy checkout record; ordinary virtualenv locations are unchanged.
 
-### Maintenance: separate product source and private operations
-
-Site-specific provisioning scripts, deployment configuration and operator
-records move to private operations storage. Portable product installers remain
-in source; private helpers are installed independently. Contributor privacy
-checks support an external private terms file without publishing its contents.
-
-
-### Maintenance
+- Site-specific provisioning scripts, deployment configuration and operator
+  records move to private operations storage. Portable product installers remain
+  in source; private helpers are installed independently. Contributor privacy
+  checks support an external private terms file without publishing its contents.
 
 - Use the publication repository in package/citation metadata and the desktop
   issue link. Strengthen contributor privacy checks and redact their diagnostics.
@@ -347,24 +713,39 @@ a `release-candidate/*` pipeline and publishes the documentation site.
   `vibe-view desktop` puts the codename in the launcher handshake config, so
   even `electron/main.js` reports what Python says; its `FALLBACK_CODENAME`
   covers a double-click launch and is the only literal left, pinned to the
-  catalogue by test. The `## [2.15.2]` header carries the codename too. (#13)
+  catalogue by test. The `## [v2.15.2]` header carries the codename too. (#13)
 - A real `.gitignore`. 100 of 373 tracked files were build output — including
   a stale full copy of the package under `build/lib/vibeview/` — and
   `scripts/build.sh` deletes exactly those directories, so the repository's own
   build removed 92 tracked files. Untracked, not deleted; 373 -> 273. (#2)
 
-## [2.15.2] - 2026-09-08 - *Roothaan's Roadrunner*
+## [v2.15.2] - 2026-09-08 - *Roothaan's Roadrunner*
 
 First public commit (`9585e28`), split out of the private `vibe-qc` monorepo
 along with vibe-qc, vibe-queue, qvf and vibe-qc-agentic-loop. The QVF manifest
 schemas, previously symlinks into the producer's tree, became vendored data
 files so the built wheel is self-contained.
 
-[Unreleased]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
-[v2.17.1]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
+## [v2.0.0] - 2026-07-01 - *Pauling's Panther*
+
+Monorepo-era release, recorded before the split in vibe-qc's changelog and
+carried here so the viewer's own history holds it (#32). The version has no
+tag in this repository and its codename predates the per-product pools; both
+are history, not entries in the current catalogue.
+
+vibe-view 2.0 achieves feature parity with Avogadro 2.0 as an interactive
+molecular editor and viewer with seamless vibe-qc workflow integration. 512
+tests, 9 versioned feature releases, 24 CLI commands, 7 export formats.
+
+[Unreleased]: https://github.com/vibe-qc/vibe-view/commits/main/
+[v2.19.0]: https://github.com/vibe-qc/vibe-view/tree/v2.19.0
+[v2.18.1]: https://github.com/vibe-qc/vibe-view/tree/v2.18.1
+[v2.18.0]: https://github.com/vibe-qc/vibe-view/tree/v2.18.0
+[v2.17.1]: https://github.com/vibe-qc/vibe-view/blob/v2.18.1/CHANGELOG.md#v2171---2026-09-15---lorensens-loon
 [v2.17.0]: https://github.com/vibe-qc/vibe-view/tree/v2.17.0
 [v2.16.2]: https://github.com/vibe-qc/vibe-view/tree/v2.16.2
 [v2.16.1]: https://github.com/vibe-qc/vibe-view/tree/v2.16.1
-[v2.16.0]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
-[v2.15.3]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
-[2.15.2]: https://github.com/vibe-qc/vibe-view/blob/main/CHANGELOG.md
+[v2.16.0]: https://github.com/vibe-qc/vibe-view/blob/v2.18.1/CHANGELOG.md#v2160---2026-09-09---sayles-starling
+[v2.15.3]: https://github.com/vibe-qc/vibe-view/blob/v2.18.1/CHANGELOG.md#v2153---2026-09-09---roothaans-roadrunner
+[v2.15.2]: https://github.com/vibe-qc/vibe-view/blob/v2.18.1/CHANGELOG.md#2152---2026-09-08---roothaans-roadrunner
+[v2.0.0]: https://github.com/vibe-qc/vibe-view/blob/v2.18.1/CHANGELOG.md#v200---2026-07-01---paulings-panther

@@ -37,8 +37,10 @@ def _make_minimal_qvf() -> Path:
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "test"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("sections/structure.json", structure)
     return Path(tmp.name)

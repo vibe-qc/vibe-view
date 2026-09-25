@@ -279,14 +279,6 @@ class TestServeModule:
             assert response.reason == "could not create a new structure here"
             assert "X-Injected" not in str(response.headers)
 
-    def test_human_size(self) -> None:
-        from vibeview.serve import _human_size
-
-        assert _human_size(0) == "0.0 B"
-        assert _human_size(1023) == "1023.0 B"
-        assert _human_size(1024) == "1.0 KB"
-        assert _human_size(1048576) == "1.0 MB"
-
     def test_browse_dir_absolute_navigation_links(self) -> None:
         """Directory rows, parent, and Home links use /browse?dir=<abs>
         so the user can walk the whole filesystem, not just the launch

@@ -326,7 +326,7 @@ def test_periodic_supercell_scales_reader_render_cif_input_and_history(
 
         # The rebuilt scene must show the expanded a edge, not remove the
         # unit-cell wireframe or redraw the archive cell.
-        cell_bounds = plotter.actors["cell_0_1"].GetBounds()
+        cell_bounds = plotter.actors["cell_wireframe"].GetBounds()
         assert cell_bounds[1] == pytest.approx(expected_lattice[0, 0])
 
         built_atom_actor_count = sum(
@@ -354,7 +354,7 @@ def test_periodic_supercell_scales_reader_render_cif_input_and_history(
             for name in plotter.actors
         )
         assert restored_atom_actor_count == len(built.atoms)
-        assert plotter.actors["cell_0_1"].GetBounds()[1] == pytest.approx(
+        assert plotter.actors["cell_wireframe"].GetBounds()[1] == pytest.approx(
             expected_lattice[0, 0]
         )
         restored_actor_names = set(plotter.actors)
@@ -369,7 +369,7 @@ def test_periodic_supercell_scales_reader_render_cif_input_and_history(
             for name in plotter.actors
         )
         assert rebuilt_atom_actor_count == len(built.atoms)
-        assert plotter.actors["cell_0_1"].GetBounds()[1] == pytest.approx(
+        assert plotter.actors["cell_wireframe"].GetBounds()[1] == pytest.approx(
             expected_lattice[0, 0]
         )
 
@@ -387,7 +387,7 @@ def test_periodic_supercell_scales_reader_render_cif_input_and_history(
         undone = reader.read_structure()
         assert len(undone.atoms) == len(original.atoms)
         np.testing.assert_allclose(undone.lattice_vectors, original_lattice)
-        assert plotter.actors["cell_0_1"].GetBounds()[1] == pytest.approx(
+        assert plotter.actors["cell_wireframe"].GetBounds()[1] == pytest.approx(
             original_lattice[0, 0]
         )
 
@@ -395,7 +395,7 @@ def test_periodic_supercell_scales_reader_render_cif_input_and_history(
         redone = reader.read_structure()
         assert len(redone.atoms) == len(built.atoms)
         np.testing.assert_allclose(redone.lattice_vectors, expected_lattice)
-        assert plotter.actors["cell_0_1"].GetBounds()[1] == pytest.approx(
+        assert plotter.actors["cell_wireframe"].GetBounds()[1] == pytest.approx(
             expected_lattice[0, 0]
         )
     finally:

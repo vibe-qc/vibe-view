@@ -47,8 +47,8 @@ surfacing separately.
 | 2.15.0 | *Roothaan's Roadrunner* | The name v2.15.2 shipped with |
 | 2.16.0 | *Sayle's Starling* | vibe-view becomes a product you can adopt on its own |
 | 2.17.0 | *Lorensen's Loon* | TREXIO molecular orbitals in the isosurface workflow |
-| 2.18.0 | *Richardson's Robin* | Biomolecules, secondary structure, cartoons — **approved, not yet released** |
-| 2.19.0 | *Phong's Pheasant* | Materials and lighting — **approved, not yet released** |
+| 2.18.0 | *Richardson's Robin* | Biomolecules, secondary structure, cartoons — released 2026-09-17; v2.18.1 inherits the name |
+| 2.19.0 | *Phong's Pheasant* | Materials and lighting — released 2026-09-25 |
 | 2.20.0 | *Levoy's Lemur* | Transfer functions and direct volume rendering — **approved, not yet released** |
 | 3.0.0 | *Levinthal's Lynx* | Held for a major version about the interactive viewer itself — **approved, not yet released** |
 

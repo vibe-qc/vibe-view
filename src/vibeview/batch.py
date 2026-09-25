@@ -10,29 +10,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibeview.headless import (
+    add_structure,
+    frame,
+    headless_plotter,
+    render_structure_frame,
+    snapshot,
+)
+from vibeview.plotter_compat import cmap_argument
+
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
 
 
 def render_structure_png(reader: QVFReader, path: Path, size: tuple[int, int] = (900, 600)) -> bool:
     """Render reader's structure to a PNG at path (offscreen)."""
-    import pyvista as pv
-
-    from vibeview.renderers.structure import StructureRenderer
-
-    section = next((s for s in reader.sections if s.kind == "structure"), None)
-    if section is None:
-        return False
-    plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
-    try:
-        plotter.set_background("#1a1a2e")
-        StructureRenderer(section, reader).add_to_plotter(plotter)
-        plotter.view_isometric()
-        plotter.reset_camera()
-        plotter.screenshot(str(path))
-    finally:
-        plotter.close()
-    return True
+    return bool(render_structure_frame(reader, path, size=size))
 
 
 def render_volume_png(
@@ -44,8 +37,7 @@ def render_volume_png(
     size: tuple[int, int] = (900, 600),
 ) -> bool:
     """Render a volume section to PNG (density, orbital, etc.)."""
-    from vibeview.renderers.structure import StructureRenderer
-    from vibeview.renderers.volume import VolumeRenderer, build_isosurface_mesh
+    from vibeview.renderers.volume import VolumeRenderer
     from vibeview.viewer_defaults import VolumeHints
 
     section = reader.get_section(section_id) if reader.has_section(section_id) else None
@@ -54,37 +46,29 @@ def render_volume_png(
 
     renderer = VolumeRenderer(section, reader)
     try:
-        grid = renderer.load_grid()
-        data = renderer.load_data()
+        # Both calls are the availability probe; the payloads are re-read
+        # by build_isosurface_mesh below.
+        renderer.load_grid()
+        renderer.load_data()
     except Exception:
         return False
 
     hints = VolumeHints(isovalue=isovalue, colormap=colormap, opacity=0.6)
-    import numpy as np
-    import pyvista as pv
-
-    plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
-    try:
-        plotter.set_background("#1a1a2e")
+    with headless_plotter(size) as plotter:
         # Draw structure for context
-        struct_sec = next((s for s in reader.sections if s.kind == "structure"), None)
-        if struct_sec:
-            StructureRenderer(struct_sec, reader).add_to_plotter(plotter)
+        add_structure(plotter, reader)
         mesh = renderer.make_mesh(hints)
         if mesh is not None and mesh.n_points:
             plotter.add_mesh(
                 mesh,
                 scalars="values",
-                cmap=colormap,
+                cmap=cmap_argument(colormap),
                 opacity=0.6,
                 name="vol",
                 show_scalar_bar=False,
             )
-        plotter.view_isometric()
-        plotter.reset_camera()
-        plotter.screenshot(str(path))
-    finally:
-        plotter.close()
+        frame(plotter)
+        snapshot(plotter, path)
     return True
 
 
@@ -97,7 +81,6 @@ def render_all_png(
     """Render structure + optionally each volume section to PNG files.
 
     Returns list of paths written."""
-    import pyvista as pv
 
     written: list[str] = []
 

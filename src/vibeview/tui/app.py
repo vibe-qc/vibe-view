@@ -17,8 +17,9 @@ manifest entry rather than an error.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from rich.segment import Segment
@@ -26,7 +27,9 @@ from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.events import Click
 from textual.strip import Strip
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Header, Static
 
@@ -39,7 +42,7 @@ from vibeview.tui.scene import GEOMETRIC_KINDS
 from vibeview.tui.scene import VOLUME_KINDS as _VOLUME_KINDS
 
 if TYPE_CHECKING:
-    from vibeview.qvf import GridData
+    from vibeview.qvf import GridData, Section, WavefunctionGTOData
     from vibeview.renderers.wavefunction import WavefunctionRenderer
 
 REPRESENTATION_CYCLE = [
@@ -68,7 +71,9 @@ class GridView(Widget):
     not.
     """
 
-    def __init__(self, builder, **kwargs) -> None:
+    def __init__(
+        self, builder: Callable[[int, int], braille.CellGrid | None], **kwargs: Any
+    ) -> None:
         super().__init__(**kwargs)
         self.builder = builder
         self._strips: list[Strip] = []
@@ -122,7 +127,7 @@ class SectionList(Widget):
     than a list of what happens to be implemented.
     """
 
-    def __init__(self, entries, **kwargs) -> None:
+    def __init__(self, entries: list[tuple[str, str, str]], **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.entries = entries
         self.index = 0
@@ -153,7 +158,7 @@ class SectionList(Widget):
         return Strip([Segment(line.ljust(width), style)], width)
 
 
-class ActivatingDataTable(DataTable):
+class ActivatingDataTable(DataTable[Any]):
     """A row table whose first mouse click activates the chosen row.
 
     Textual's default table uses a first click to move the cursor and emits
@@ -162,7 +167,7 @@ class ActivatingDataTable(DataTable):
     their normal inexpensive highlight-only behavior until Enter is pressed.
     """
 
-    async def _on_click(self, event) -> None:
+    async def _on_click(self, event: Click) -> None:
         before = self.cursor_coordinate
         await super()._on_click(event)
         if self.cursor_coordinate != before:
@@ -173,7 +178,7 @@ class ActivatingDataTable(DataTable):
             self.post_message(DataTable.RowSelected(self, row_index, row_key))
 
 
-class VibeViewTUI(App):
+class VibeViewTUI(App[None]):
     """Terminal viewer for one QVF archive."""
 
     CSS = """
@@ -275,26 +280,26 @@ class VibeViewTUI(App):
         # Set whenever the framing is stale (new section, new supercell, view
         # reset); the next viewport rebuild re-fits and clears it.
         self._needs_fit = True
-        self._last_scene = None
+        self._last_scene: scenelib.Scene | None = None
 
-        self._scene_cache: dict[tuple, scenelib.Scene] = {}
-        self._mesh_cache: dict[tuple, list[scenelib.Mesh]] = {}
-        self._mesh_details: dict[tuple, str] = {}
+        self._scene_cache: dict[tuple[Any, ...], scenelib.Scene] = {}
+        self._mesh_cache: dict[tuple[Any, ...], list[scenelib.Mesh]] = {}
+        self._mesh_details: dict[tuple[Any, ...], str] = {}
         self._wavefunction_field_cache: dict[
-            tuple, tuple[GridData, np.ndarray, bool, str]
+            tuple[Any, ...], tuple[GridData, np.ndarray, bool, str]
         ] = {}
         self._wavefunction_renderers: dict[str, WavefunctionRenderer] = {}
-        self._wavefunction_rows: dict[str, list[dict]] = {}
+        self._wavefunction_rows: dict[str, list[dict[str, Any]]] = {}
         self._wavefunction_selections: dict[str, str] = {}
         self._wavefunction_density_notes: dict[str, str] = {}
         self._wavefunction_spin_notes: dict[str, str] = {}
         self._wavefunction_table_keys: list[str] = []
         self._frames_cache: dict[str, np.ndarray] = {}
-        self._timer = None
+        self._timer: Timer | None = None
 
     # ── setup ─────────────────────────────────────────────────────────────
 
-    def _status_of(self, section) -> str:
+    def _status_of(self, section: Section) -> str:
         if self.reader.section_error(section.id):
             return "error"
         return classify_section(section.kind)[0]
@@ -369,7 +374,7 @@ class VibeViewTUI(App):
             self._wavefunction_renderers[section_id] = renderer
         return renderer
 
-    def _rows_for_wavefunction(self, section_id: str) -> list[dict]:
+    def _rows_for_wavefunction(self, section_id: str) -> list[dict[str, Any]]:
         rows = self._wavefunction_rows.get(section_id)
         if rows is None:
             rows = self._wavefunction_renderer(section_id).mo_table()
@@ -401,7 +406,9 @@ class VibeViewTUI(App):
             return row["title"] if row is not None else value
         return key
 
-    def _wavefunction_density_is_physical(self, section_id: str, wavefunction) -> bool:
+    def _wavefunction_density_is_physical(
+        self, section_id: str, wavefunction: WavefunctionGTOData
+    ) -> bool:
         """Whether occupations describe electrons rather than NTO weights."""
         natural_semantics = (
             self._wavefunction_renderer(section_id).natural_value_semantics()
@@ -414,6 +421,7 @@ class VibeViewTUI(App):
                 "transition weights, not electron occupations"
             )
             return False
+        occupation_blocks: tuple[np.ndarray | None, ...]
         if wavefunction.spin == "unrestricted":
             occupation_blocks = (
                 wavefunction.alpha_occupations,
@@ -510,36 +518,57 @@ class VibeViewTUI(App):
             f"{kind} set · {len(rows)} orbitals · ↑/↓ then Enter to render"
         )
 
+    def _replication_tuple(self) -> tuple[int, int, int]:
+        r = self.replication
+        return (int(r[0]), int(r[1]), int(r[2]))
+
     # ── scene assembly ────────────────────────────────────────────────────
 
-    def _structure_scene(self, positions=None) -> scenelib.Scene:
+    def _structure_scene(self, positions: np.ndarray | None = None) -> scenelib.Scene:
         section_id, kind, _status = self.current
         structure_id = (
             self._wavefunction_structure_id(section_id)
             if kind == _WAVEFUNCTION_KIND
             else "structure"
         )
+        animated = positions is not None and kind in {"trajectory", "reaction.path", "vibrations"}
+        frames = self._frames_for(section_id, kind) if animated else None
+        frame_index = self.frame % len(frames) if frames is not None and len(frames) else 0
         key = (
+            (section_id, kind, frame_index, self.mode_index) if animated else None,
             structure_id,
             self.representation,
             self.color_mode,
             self.show_bonds,
             self.show_cell,
-            tuple(self.replication),
+            self._replication_tuple(),
             None if positions is None else positions.tobytes(),
         )
         cached = self._scene_cache.get(key)
         if cached is None:
-            cached = scenelib.structure_scene(
-                self.reader,
-                structure_id=structure_id,
-                representation=self.representation,
-                color_mode=self.color_mode,
-                show_bonds=self.show_bonds,
-                show_cell=self.show_cell,
-                replication=tuple(self.replication),
-                positions_override=positions,
-            )
+            if animated and positions is not None:
+                cached = scenelib.frame_scene(
+                    self.reader,
+                    section_id,
+                    positions,
+                    frame_index=frame_index,
+                    representation=self.representation,
+                    color_mode=self.color_mode,
+                    show_bonds=self.show_bonds,
+                    show_cell=self.show_cell,
+                    replication=self._replication_tuple(),
+                )
+            else:
+                cached = scenelib.structure_scene(
+                    self.reader,
+                    structure_id=structure_id,
+                    representation=self.representation,
+                    color_mode=self.color_mode,
+                    show_bonds=self.show_bonds,
+                    show_cell=self.show_cell,
+                    replication=self._replication_tuple(),
+                    positions_override=positions,
+                )
             # A frame-by-frame animation would otherwise grow this without
             # bound; the scene for a given frame is cheap to rebuild.
             if len(self._scene_cache) > 64:
@@ -575,7 +604,7 @@ class VibeViewTUI(App):
             section_id,
             surface,
             self.isovalue,
-            tuple(self.replication),
+            self._replication_tuple(),
         )
         cached_meshes = self._mesh_cache.get(mesh_key)
         if cached_meshes is not None:
@@ -596,7 +625,7 @@ class VibeViewTUI(App):
                     f"{detail}: no surface crosses |iso|={self.isovalue:.4g}; "
                     "press i to lower it (cached)"
                 )
-            if self.is_mounted:
+            if self.is_running:
                 self._update_status()
             return cached_meshes
 
@@ -650,7 +679,7 @@ class VibeViewTUI(App):
                 isovalue=self.isovalue,
                 signed=signed,
                 grid_units="angstrom",
-                replication=tuple(self.replication),
+                replication=self._replication_tuple(),
                 lattice_vectors=lattice,
                 pbc=pbc,
             )
@@ -668,11 +697,13 @@ class VibeViewTUI(App):
 
         if cacheable:
             self._remember_meshes(mesh_key, meshes, detail=detail)
-        if self.is_mounted:
+        if self.is_running:
             self._update_status()
         return meshes
 
-    def _wavefunction_sampling_notes(self, renderer, section_id: str) -> list[str]:
+    def _wavefunction_sampling_notes(
+        self, renderer: WavefunctionRenderer, section_id: str
+    ) -> list[str]:
         """Accuracy qualifications for the scalar field just sampled."""
         notes = []
         fraction = float(getattr(renderer, "last_dropped_l_fraction", 0.0))
@@ -695,7 +726,7 @@ class VibeViewTUI(App):
 
     def _remember_meshes(
         self,
-        key: tuple,
+        key: tuple[Any, ...],
         meshes: list[scenelib.Mesh],
         *,
         detail: str | None = None,
@@ -744,7 +775,7 @@ class VibeViewTUI(App):
 
         meshes = None
         if kind in _VOLUME_KINDS and self.show_iso:
-            key = ("volume", section_id, self.isovalue, tuple(self.replication))
+            key = ("volume", section_id, self.isovalue, self._replication_tuple())
             meshes = self._mesh_cache.get(key)
             if meshes is None:
                 try:
@@ -752,7 +783,7 @@ class VibeViewTUI(App):
                         self.reader,
                         section_id,
                         isovalue=self.isovalue,
-                        replication=tuple(self.replication),
+                        replication=self._replication_tuple(),
                     )
                 except Exception as exc:  # noqa: BLE001 — report, don't crash the UI
                     meshes = []
@@ -766,7 +797,7 @@ class VibeViewTUI(App):
 
     # ── grid building ─────────────────────────────────────────────────────
 
-    def _build_grid(self, cols: int, rows: int):
+    def _build_grid(self, cols: int, rows: int) -> braille.CellGrid | None:
         section_id, kind, _status = self.current
         if kind == "scan.surface":
             return plots.scan_surface_plot(self.reader, section_id, cols, rows)
@@ -785,7 +816,7 @@ class VibeViewTUI(App):
             return self._build_3d(cols, rows)
         return None
 
-    def _build_3d(self, cols: int, rows: int):
+    def _build_3d(self, cols: int, rows: int) -> braille.CellGrid:
         grid = braille.CellGrid(cols, rows)
         scene = self._current_scene()
         self._last_scene = scene
@@ -801,7 +832,14 @@ class VibeViewTUI(App):
             self._overlay_labels(grid, scene, canvas, cols, rows)
         return grid
 
-    def _overlay_labels(self, grid, scene, canvas, cols, rows) -> None:
+    def _overlay_labels(
+        self,
+        grid: braille.CellGrid,
+        scene: scenelib.Scene,
+        canvas: Canvas,
+        cols: int,
+        rows: int,
+    ) -> None:
         """Print atom indices above their projected centre.
 
         Placed in *character* cells, not pixels — a braille dot cannot carry
@@ -905,7 +943,7 @@ class VibeViewTUI(App):
             # is not showing.
             for note in getattr(self._last_scene, "color_notes", []) or []:
                 bits.append(note)
-            if tuple(self.replication) != (1, 1, 1):
+            if self._replication_tuple() != (1, 1, 1):
                 bits.append("×".join(str(r) for r in self.replication))
             if kind in _VOLUME_KINDS or kind == _WAVEFUNCTION_KIND:
                 bits.append(f"iso={self.isovalue:.4g}{'' if self.show_iso else ' (off)'}")
@@ -984,7 +1022,7 @@ class VibeViewTUI(App):
         self.viewport.invalidate()
         self._update_status()
 
-    def action_toggle(self, what: str) -> None:
+    async def action_toggle(self, what: str) -> None:
         if what == "bonds":
             self.show_bonds = not self.show_bonds
         elif what == "cell":
@@ -1149,7 +1187,7 @@ class VibeViewTUI(App):
 
     # ── mouse ─────────────────────────────────────────────────────────────
 
-    def on_click(self, event) -> None:
+    def on_click(self, event: Click) -> None:
         """Clicking the sidebar selects a section."""
         if not self.show_sidebar:
             return

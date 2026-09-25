@@ -12,11 +12,9 @@ import time
 import numpy as np
 import pytest
 
-from vibeview.qvf import (
-    _BOND_TOLERANCE,
-    _COVALENT_RADII,
-    _infer_bonds_by_radii,
-)
+from vibeview.bonds import BOND_TOLERANCE as _BOND_TOLERANCE
+from vibeview.bonds import structure_bonds as _infer_bonds_by_radii
+from vibeview.elements import COVALENT_RADII as _COVALENT_RADII
 
 
 class _Atom:

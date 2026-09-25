@@ -33,8 +33,10 @@ def _make_qvf(
     }
     if viewer_defaults is not None:
         manifest["viewer_defaults"] = viewer_defaults
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         for p, d in files.items():
             zf.writestr(p, d)
@@ -374,7 +376,11 @@ def _rxn_waypoints_qvf() -> tuple[Path, str]:
             "id": "traj",
             "kind": "trajectory",
             "members": {
-                "metadata": {"path": "traj/meta.json", "format": "json", "sha256": _sha256(traj_meta)},
+                "metadata": {
+                    "path": "traj/meta.json",
+                    "format": "json",
+                    "sha256": _sha256(traj_meta),
+                },
                 "coords": {
                     "path": "traj/coords.dat",
                     "format": "binary",
@@ -389,7 +395,11 @@ def _rxn_waypoints_qvf() -> tuple[Path, str]:
             "kind": "reaction.waypoints",
             "trajectory_ref": "traj",
             "members": {
-                "waypoints": {"path": "rxn/wp.json", "format": "json", "sha256": _sha256(wp_payload)},
+                "waypoints": {
+                    "path": "rxn/wp.json",
+                    "format": "json",
+                    "sha256": _sha256(wp_payload),
+                },
             },
         },
     ]
@@ -581,16 +591,38 @@ def _structure_charges_qvf() -> Path:
             "id": "structure",
             "kind": "structure",
             "members": {
-                "structure": {"path": "structure/structure.json", "format": "json", "sha256": _sha256(structure)}
+                "structure": {
+                    "path": "structure/structure.json",
+                    "format": "json",
+                    "sha256": _sha256(structure),
+                }
             },
         },
         {
             "id": "props0",
             "kind": "atom_properties",
             "members": {
-                "mulliken_charge": {"path": "ap/mul.bin", "format": "binary", "dtype": "float64", "shape": [3], "sha256": _sha256(mul.tobytes())},
-                "loewdin_charge": {"path": "ap/low.bin", "format": "binary", "dtype": "float64", "shape": [3], "sha256": _sha256(low.tobytes())},
-                "hirshfeld_charge": {"path": "ap/hir.bin", "format": "binary", "dtype": "float64", "shape": [3], "sha256": _sha256(hir.tobytes())},
+                "mulliken_charge": {
+                    "path": "ap/mul.bin",
+                    "format": "binary",
+                    "dtype": "float64",
+                    "shape": [3],
+                    "sha256": _sha256(mul.tobytes()),
+                },
+                "loewdin_charge": {
+                    "path": "ap/low.bin",
+                    "format": "binary",
+                    "dtype": "float64",
+                    "shape": [3],
+                    "sha256": _sha256(low.tobytes()),
+                },
+                "hirshfeld_charge": {
+                    "path": "ap/hir.bin",
+                    "format": "binary",
+                    "dtype": "float64",
+                    "shape": [3],
+                    "sha256": _sha256(hir.tobytes()),
+                },
             },
         },
     ]
@@ -1072,19 +1104,34 @@ class TestRunInfo:
 
     def _qvf_with_provenance(self, provenance: dict | None) -> Path:
         structure = json.dumps(
-            {"atoms": [{"symbol": "H", "position": [0, 0, 0], "atomic_number": 1}], "pbc": [False, False, False]}
+            {
+                "atoms": [{"symbol": "H", "position": [0, 0, 0], "atomic_number": 1}],
+                "pbc": [False, False, False],
+            }
         ).encode()
         manifest = {
             "qvf_version": 1,
             "source": {"program": "vibe-qc", "version": "0.0", "calculation": "rhf/sto-3g"},
             "sections": [
-                {"id": "structure", "kind": "structure", "members": {"structure": {"path": "s.json", "format": "json", "sha256": _sha256(structure)}}}
+                {
+                    "id": "structure",
+                    "kind": "structure",
+                    "members": {
+                        "structure": {
+                            "path": "s.json",
+                            "format": "json",
+                            "sha256": _sha256(structure),
+                        }
+                    },
+                }
             ],
         }
         if provenance is not None:
             manifest["provenance"] = provenance
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        with zipfile.ZipFile(tmp, "w") as zf:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+            zipfile.ZipFile(tmp, "w") as zf,
+        ):
             zf.writestr("manifest.json", json.dumps(manifest))
             zf.writestr("s.json", structure)
         return Path(tmp.name)

@@ -14,7 +14,8 @@ import pytest
 from click.testing import CliRunner
 
 from tests._qvf_corpus import qvf_corpus_dir, requires_qvf_corpus
-from vibeview.cli import _port_in_use, main
+from vibeview.cli import main
+from vibeview.netutil import port_open
 
 _CORPUS = qvf_corpus_dir()
 _SLAB_2D_QVF = (
@@ -189,17 +190,17 @@ class TestPortCollision:
     """`vibe-view open` on an occupied port must fail loudly, not race the
     announce thread into opening the browser against a stale server."""
 
-    def test_port_in_use_true_when_listening(self) -> None:
+    def test_port_open_true_when_listening(self) -> None:
         s, port = _listening_socket()
         try:
-            assert _port_in_use("127.0.0.1", port) is True
+            assert port_open("127.0.0.1", port) is True
         finally:
             s.close()
 
-    def test_port_in_use_false_when_free(self) -> None:
+    def test_port_open_false_when_free(self) -> None:
         s, port = _listening_socket()
         s.close()  # release it — now nothing is listening
-        assert _port_in_use("127.0.0.1", port) is False
+        assert port_open("127.0.0.1", port) is False
 
     def test_open_aborts_on_busy_port(self) -> None:
         s, port = _listening_socket()

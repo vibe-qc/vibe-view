@@ -406,7 +406,8 @@ def test_periodic_crystal_draws_every_bond_at_the_true_distance(tmp_path):
 
     import numpy as np
 
-    from vibeview.qvf import QVFReader, _infer_bonds_by_radii
+    from vibeview.bonds import structure_bonds
+    from vibeview.qvf import QVFReader
 
     a = 5.64
     na = [(0, 0, 0), (0, 0.5, 0.5), (0.5, 0, 0.5), (0.5, 0.5, 0)]
@@ -449,7 +450,7 @@ def test_periodic_crystal_draws_every_bond_at_the_true_distance(tmp_path):
         z.writestr("s.json", struct)
 
     structure = QVFReader(path).read_structure()
-    bonds = _infer_bonds_by_radii(structure)
+    bonds = structure_bonds(structure)
 
     degree = {i: 0 for i in range(8)}
     for i, j, _order, _image in bonds:

@@ -6,7 +6,11 @@ replication for periodic systems.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
+
+from vibeview.bonds import infer_bonds, neighbour_counts
 
 # ── Fragment library ────────────────────────────────────────────────────
 # Common fragments as (symbol, relative_position) tuples in Angstrom.
@@ -80,45 +84,6 @@ FRAGMENTS: dict[str, list[tuple[str, list[float]]]] = {
 
 # ── Element data ────────────────────────────────────────────────────────
 
-_SYMBOLS = [
-    "",
-    "H",
-    "He",
-    "Li",
-    "Be",
-    "B",
-    "C",
-    "N",
-    "O",
-    "F",
-    "Ne",
-    "Na",
-    "Mg",
-    "Al",
-    "Si",
-    "P",
-    "S",
-    "Cl",
-    "Ar",
-    "K",
-    "Ca",
-    "Sc",
-    "Ti",
-    "V",
-    "Cr",
-    "Mn",
-    "Fe",
-    "Co",
-    "Ni",
-    "Cu",
-    "Zn",
-    "Ga",
-    "Ge",
-    "As",
-    "Se",
-    "Br",
-    "Kr",
-]
 
 # Standard valences (number of bonds typically formed)
 VALENCES: dict[int, int] = {
@@ -196,9 +161,9 @@ COVALENT_RADII: dict[int, float] = {
 
 
 def add_hydrogens(
-    atoms: list[dict],
+    atoms: list[dict[str, Any]],
     charge: int = 0,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Add hydrogen atoms to saturate all open valences.
 
     Parameters
@@ -217,18 +182,14 @@ def add_hydrogens(
     nums = [a["atomic_number"] for a in atoms]
     new_atoms = list(atoms)
 
-    # Count current bonds per atom (rough estimate from distances)
+    # Current bonds per atom, by the same rule the viewer draws with.
     n = len(atoms)
-    bonds_per_atom = [0] * n
-    for i in range(n):
-        for j in range(i + 1, n):
-            ri = COVALENT_RADII.get(nums[i], 0.7)
-            rj = COVALENT_RADII.get(nums[j], 0.7)
-            cutoff = (ri + rj) * 1.2
-            dist = float(np.linalg.norm(positions[i] - positions[j]))
-            if dist < cutoff:
-                bonds_per_atom[i] += 1
-                bonds_per_atom[j] += 1
+    bonds = infer_bonds(positions, nums) if n else []
+    bonds_per_atom = neighbour_counts(n, bonds)
+    bonded: dict[int, list[int]] = {i: [] for i in range(n)}
+    for i, j, _order, _image in bonds:
+        bonded[i].append(j)
+        bonded[j].append(i)
 
     # Add hydrogens for each unsaturated atom
     for i in range(n):
@@ -254,16 +215,12 @@ def add_hydrogens(
             np.array([-0.33, -0.47, -0.82]),
         ]
         used: list[np.ndarray] = []
-        for j in range(n):
-            if i == j:
-                continue
+        # Only bonded neighbours block a direction; a far atom that merely
+        # lies that way does not. A coincident atom has no direction.
+        for j in bonded[i]:
             vec = positions[j] - positions[i]
             dist = float(np.linalg.norm(vec))
-            # Only bonded neighbours block a direction; a far atom that
-            # merely lies that way does not.
-            r_i = COVALENT_RADII.get(nums[i], 0.7)
-            r_j = COVALENT_RADII.get(nums[j], 0.7)
-            if 1e-6 < dist < (r_i + r_j) * 1.2:
+            if dist > 1e-6:
                 used.append(vec / dist)
 
         placed = 0
@@ -289,10 +246,10 @@ def add_hydrogens(
 
 
 def build_supercell(
-    atoms: list[dict],
+    atoms: list[dict[str, Any]],
     lattice_vectors: list[list[float]],
     replication: tuple[int, int, int],
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Replicate atoms for a supercell.
 
     Parameters

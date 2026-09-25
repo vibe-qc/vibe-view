@@ -21,7 +21,7 @@ command rather than failing obscurely.
 | Command | Needs | What it does |
 |---|---|---|
 | `doctor` | core | Diagnose the installation and every optional mode. `--json` for scripts. |
-| `demo` | core | Write and validate a bundled water-structure archive. `-o FILE` names it, `--force` replaces it, `--open` launches the browser afterwards (with `--port` and `--no-browser`). Needs no input and no vibe-qc. |
+| `demo` | core | Write and validate a bundled water-structure archive. `-o FILE` names it, `--force` replaces it, `--open` launches the browser afterwards (with `--port`, `--host` and `--no-browser`). Needs no input and no vibe-qc. |
 | `examples` | core | Show worked workflows. `--copy DIR` copies the bundled example files; `--force` replaces existing copies. |
 | `formats` | core | List the built-in, optional and plugin importers this installation has, with their extensions and availability. `--json` for scripts. |
 | `quickstart` | vibe-qc | Run a real calculation and open it. **The only command on this page that requires vibe-qc in the same environment.** |
@@ -48,16 +48,22 @@ or `import DIR` to convert its contents.
 | `info FILE` | core | Metadata and section sizes. `--short` is one line per archive, for a loop; `--json` for scripts. |
 | `table FILE` | core | Tabular sections as `table`, `csv` or `json`. With no `--kind`, lists what the file offers; the kinds are `vibrations`, `atom_properties` and `wavefunction.gto`. |
 | `validate FILE...` | core | Schema and SHA-256 check of every member. Run it before publishing or forwarding an archive. |
-| `diff A B` | core | Energy delta, section overlap, geometry RMSD. `--json`. |
+| `diff A B` | core | Energy delta (including zero), section overlap, geometry RMSD. `--json`. |
 | `batch-compare FILE...` | core | The same across a set, against `-r` as the reference. `--json`. |
 | `stats [DIR]` | core | Aggregate statistics over every archive in a directory. |
 | `recent` | core | Recently opened files. `-n` limits the list. |
 | `vq-features [FEATURE]` | core | Which visualizations a producer has to write what for. No queue needed; it is a static table. |
 
+Energy comparisons and file-browser pages distinguish a physical zero from
+missing metadata. Equal energies produce zero deltas in all JSON units and
+an explicit equal-energy result in text; missing energies remain `null` in
+JSON and use a placeholder in file-browser pages.
+
 ## Figures, without a display
 
 These are the core install: no `[viewer]` extra, no browser. They do want
-an offscreen GL context; [Figures without a display](headless.md) covers
+an offscreen GL context for PNGs and animation. Data and vector exports do
+not need one. [Figures without a display](headless.md) covers
 setting one up, and `show` is the fallback when there is none.
 
 | Command | What it does |
@@ -68,15 +74,25 @@ setting one up, and `show` is the fallback when there is none.
 | `export FILE` | The structure as `xyz`, `cif`, `cml`, `json` or a `py` input script; meshes as `obj` or `gltf`; scenes for `pov` (POV-Ray) or `blend` (Blender); pages and figures as `html`, `svg` or `pdf`. `-f FORMAT`, `-o PATH`. |
 | `capture-selftest` | Prove the offscreen pipeline renders a non-blank image, and report the backend. `-o FILE` keeps the test PNG. Run it first on a new host. |
 
+Without `-o`, a command that transforms one archive (`capture`, `animate`,
+`export`, `slice`, `h-add`, `supercell`) writes its result beside that
+archive, named `<stem>_<what>.<ext>`; `--help` shows the exact name. Commands
+that gather several inputs (`batch`, `merge`, `dashboard`, `import` with more
+than one source) write in the working directory.
+
 ## Building and reshaping archives
 
 | Command | What it does |
 |---|---|
 | `import INPUT...` | Convert loose files into persistent archives. One input writes a sibling `.qvf`; several, or a directory searched recursively, write one archive per source into `./vibe-view-imports` or `-o DIR`. `--from FORMAT` forces an importer; `--force` replaces outputs. See [Input formats](formats.md). |
-| `slice FILE` | Keep (`-k`) or drop (`-d`) sections by id or kind into a new archive. The way to make a large archive small enough to send. |
-| `merge FILE...` | Combine sections from several archives. Structure and provenance come from the first; duplicate ids are renamed. |
+| `slice FILE` | Keep (`-k`) or drop (`-d`) sections by id or kind into a new archive. Preserves metadata and validates the output before replacing it; removed viewer hints are pruned and dangling section references are refused. |
+| `merge FILE...` | Combine sections from several archives. Root metadata and viewer defaults come from the first. All sections are retained; duplicate ids and their QVF-defined references are remapped together. Member hashes and the output manifest are checked before atomic replacement, including when writing over an input. |
 | `supercell FILE` | Replicate a periodic structure `--nx --ny --nz` times. |
-| `h-add FILE` | Saturate open valences with hydrogens; writes `<stem>_h.qvf` unless `-o`. |
+| `h-add FILE` | Saturate open valences with hydrogens; writes `<stem>_h.qvf` beside the input unless `-o`. |
+
+`slice` and `merge` accept legacy version-2 archives but write QVF version 1,
+following the current format specification. Both check the output before replacing
+an existing file, including section references stored inside wavefunction bases.
 
 ## Queue
 
@@ -101,7 +117,7 @@ honoured) and carries two tables:
 
 ```toml
 [server]
-port = 8080               # vibe-view open / serve / compare
+port = 8080               # open, compare, serve, from-vq and demo --open
 host = "127.0.0.1"        # localhost only
 open_browser = true
 
@@ -113,9 +129,10 @@ representation = "ball_and_stick"   # ball_and_stick, space_filling, sticks_only
 Everything else the viewer remembers lives under the cache directory,
 `~/.cache/vibe-view/` (`$XDG_CACHE_HOME`): the browser settings and
 per-element colour overrides in `settings.json`, the recent-files list in
-`recent.json`, the server log in `vibe-view.log`, and the interpreter the
-desktop app last launched from in `interpreter.json`. `uninstall.sh` leaves
-all of it in place.
+`recent.json`, the server log in `vibe-view.log`, the interpreter the
+desktop app last launched from in `interpreter.json`, and the auto-saved
+session of a viewer opened without a file in `auto-session.json`.
+`uninstall.sh` leaves all of it in place.
 
 ## Exit codes
 

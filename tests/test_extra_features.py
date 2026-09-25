@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
-import pytest
-
 
 class TestFileWatcher:
     def test_import(self):
@@ -71,7 +66,7 @@ class TestCMLExport:
 
         reader = QVFReader(sample_qvf)
         out = tmp_path / "test.cml"
-        cml = export_cml(reader, str(out))
+        export_cml(reader, str(out))
         assert out.exists()
         content = out.read_text()
         assert "<cml" in content
@@ -86,7 +81,7 @@ class TestCMLExport:
 
         reader = QVFReader(sample_qvf)
         out = tmp_path / "test.cml"
-        cml = export_cml(reader, str(out))
+        export_cml(reader, str(out))
         # Should parse as valid XML
         tree = ET.parse(out)
         assert tree.getroot().tag.endswith("cml")

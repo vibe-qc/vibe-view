@@ -9,6 +9,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from vibeview.bonds import in_cell, structure_bonds
+
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
 
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -96,7 +102,8 @@ const cpk = {{
   36: 0x5cb8d1, 53: 0x940094, 79: 0xffd123,
 }};
 
-// Covalent radii for bond detection (Angstrom) — extended set
+// Covalent radii for atom display sizes (Angstrom); connectivity comes
+// precomputed in data.bonds from the same rule the viewer draws with.
 const radii = {{
   1: 0.31, 2: 0.28, 3: 1.28, 4: 0.96, 5: 0.84, 6: 0.76, 7: 0.71, 8: 0.66,
   9: 0.57, 10: 0.58, 11: 1.66, 12: 1.41, 13: 1.21, 14: 1.11, 15: 1.07,
@@ -106,8 +113,6 @@ const radii = {{
   46: 1.39, 47: 1.45, 48: 1.44, 53: 1.39, 78: 1.36, 79: 1.36, 80: 1.32,
   82: 1.46,
 }};
-
-const bondCutoff = 1.2; // tolerance factor
 
 // Atom spheres
 const sphereGeo = new THREE.SphereGeometry(1, 24, 24);
@@ -128,30 +133,26 @@ data.atoms.forEach((a, i) => {{
   atomPositions.push({{ x: pos[0], y: pos[1], z: pos[2], zNum: z, symbol: a.symbol, idx: i }});
 }});
 
-// Bonds
+// Bonds: [i, j] pairs computed by vibe-view (explicit bonds from the
+// archive when present, otherwise the viewer's covalent-radius inference).
 const bondMat = new THREE.MeshPhongMaterial({{ color: 0x666666, specular: 0x111111 }});
 const cylGeo = new THREE.CylinderGeometry(0.08, 0.08, 1, 8);
-for (let i = 0; i < atomPositions.length; i++) {{
-  for (let j = i + 1; j < atomPositions.length; j++) {{
-    const a = atomPositions[i], b = atomPositions[j];
-    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-    const ra = radii[a.zNum] || 0.7, rb = radii[b.zNum] || 0.7;
-    const cut = (ra + rb) * bondCutoff;
-    if (dist < cut && dist > 1e-6) {{
-      const mid = new THREE.Vector3((a.x+b.x)/2, (a.y+b.y)/2, (a.z+b.z)/2);
-      const dir = new THREE.Vector3(dx, dy, dz).normalize();
-      const cyl = new THREE.Mesh(cylGeo, bondMat);
-      cyl.position.copy(mid);
-      cyl.scale.set(1, dist, 1);
-      // Align cylinder with bond direction
-      const quat = new THREE.Quaternion();
-      quat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      cyl.setRotationFromQuaternion(quat);
-      scene.add(cyl);
-    }}
-  }}
-}}
+data.bonds.forEach(([i, j]) => {{
+  const a = atomPositions[i], b = atomPositions[j];
+  const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+  const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  if (dist < 1e-6) return;
+  const mid = new THREE.Vector3((a.x+b.x)/2, (a.y+b.y)/2, (a.z+b.z)/2);
+  const dir = new THREE.Vector3(dx, dy, dz).normalize();
+  const cyl = new THREE.Mesh(cylGeo, bondMat);
+  cyl.position.copy(mid);
+  cyl.scale.set(1, dist, 1);
+  // Align cylinder with bond direction
+  const quat = new THREE.Quaternion();
+  quat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  cyl.setRotationFromQuaternion(quat);
+  scene.add(cyl);
+}});
 
 function animate() {{
   requestAnimationFrame(animate);
@@ -170,7 +171,7 @@ window.addEventListener('resize', () => {{
 </html>"""
 
 
-def export_html(reader, path: Path, *, title: str | None = None) -> Path:
+def export_html(reader: QVFReader, path: Path, *, title: str | None = None) -> Path:
     """Export a QVF to a standalone HTML file with embedded Three.js viewer.
 
     Parameters
@@ -203,6 +204,10 @@ def export_html(reader, path: Path, *, title: str | None = None) -> Path:
             }
         )
 
+    # The viewer's connectivity, precomputed here so the page does not run an
+    # O(N^2) loop in the browser. The page joins atoms by index, so bonds
+    # through a periodic cell face are left out.
+    bonds_out = [[i, j] for i, j, _order, _image in in_cell(structure_bonds(sdata))]
     src = reader.manifest.source
     page_title = title or f"{src.calculation}"
     html = _HTML_TEMPLATE.format(
@@ -211,7 +216,7 @@ def export_html(reader, path: Path, *, title: str | None = None) -> Path:
         version=src.version,
         calculation=src.calculation,
         n_atoms=len(atoms_out),
-        data_json=json.dumps({"atoms": atoms_out}),
+        data_json=json.dumps({"atoms": atoms_out, "bonds": bonds_out}),
     )
     path.write_text(html)
     return path

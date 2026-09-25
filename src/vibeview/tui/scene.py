@@ -13,14 +13,34 @@ what carbon looks like, including any per-element override the user set.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from vibeview.renderers.cell import (
+    bond_far_endpoints,
+    cell_edges,
+    reaction_lattice_rows_angstrom,
+    supercell_offsets,
+)
 from vibeview.renderers.structure import cpk_color, cpk_radius
 from vibeview.tui.raster import Camera, Canvas
 
-_BOHR_TO_ANGSTROM = 0.529177210903
+if TYPE_CHECKING:
+    import pyvista as pv
+
+    from vibeview.bonds import Bond
+    from vibeview.qvf import (
+        Atom,
+        GridData,
+        QVFReader,
+        ReactionPathData,
+        StructureData,
+        TrajectoryData,
+    )
+
 
 # Mirrors raster._NEAR: the fit must never place geometry behind the near
 # plane, or the frame it solves for would clip what it was framing.
@@ -239,7 +259,12 @@ def fit_camera(
 # ── structure ─────────────────────────────────────────────────────────────
 
 
-def _atom_colors(atoms, color_mode: str, structure=None, notes=None) -> np.ndarray:
+def _atom_colors(
+    atoms: Sequence[Atom],
+    color_mode: str,
+    structure: StructureData | None = None,
+    notes: list[str] | None = None,
+) -> np.ndarray:
     """Per-atom RGB for the requested colouring scheme.
 
     ``notes`` collects human-readable reasons when the requested scheme
@@ -282,11 +307,11 @@ def _atom_colors(atoms, color_mode: str, structure=None, notes=None) -> np.ndarr
             span = hi - lo
             t = np.clip((np.nan_to_num(vals, nan=lo) - lo) / span, 0.0, 1.0)
             # blue (low) → white → red (high)
-            out = np.empty((len(atoms), 3))
-            out[:, 0] = 60 + 195 * t
-            out[:, 1] = 90 + 110 * (1.0 - np.abs(2 * t - 1))
-            out[:, 2] = 255 - 195 * t
-            return out
+            ramp = np.empty((len(atoms), 3))
+            ramp[:, 0] = 60 + 195 * t
+            ramp[:, 1] = 90 + 110 * (1.0 - np.abs(2 * t - 1))
+            ramp[:, 2] = 255 - 195 * t
+            return ramp
 
     if color_mode == "secondary" and structure is not None:
         colors = np.array([hex_to_rgb(cpk_color(a.atomic_number)) for a in atoms], dtype=np.float64)
@@ -311,7 +336,11 @@ def _atom_colors(atoms, color_mode: str, structure=None, notes=None) -> np.ndarr
                     for _seq, indices in all_chains.get(chain, [])
                     if any(i in ca_indices for i in indices)
                 ]
-                for indices, label in zip(residues, labels):
+                # strict=False: the two are meant to line up one-to-one, but
+                # a residue carrying two alpha carbons (an altloc) puts one
+                # entry in ``residues`` against two labels. Colour what lines
+                # up rather than dropping the chain out of the TUI.
+                for indices, label in zip(residues, labels, strict=False):
                     rgb = _SS_COLORS.get(label, _SS_COLORS["C"])
                     for idx in indices:
                         if 0 <= idx < len(colors):
@@ -323,7 +352,7 @@ def _atom_colors(atoms, color_mode: str, structure=None, notes=None) -> np.ndarr
     return np.array([hex_to_rgb(cpk_color(a.atomic_number)) for a in atoms], dtype=np.float64)
 
 
-def _backbone_scene(structure, color_mode: str) -> Scene | None:
+def _backbone_scene(structure: StructureData, color_mode: str) -> Scene | None:
     """The alpha-carbon trace, chain by chain, or None if there is none.
 
     An all-atom render of a solvated protein is not a picture of a protein:
@@ -391,49 +420,8 @@ def _backbone_scene(structure, color_mode: str) -> Scene | None:
     return scene
 
 
-def _cell_edges(lattice: np.ndarray, pbc) -> tuple[np.ndarray, np.ndarray]:
-    """Wireframe edges of the cell spanned by the *periodic* axes only.
-
-    LATTICE CONVENTION: the ``structure`` section stores vectors as **rows**
-    (``lattice[0]`` = a). ``reaction.path`` stores them as **columns** and in
-    bohr — transpose and convert before calling this, or non-orthogonal cells
-    come out silently sheared. Mirrors
-    ``renderers.structure._draw_unit_cell``; axes outside ``pbc`` are
-    synthesized bookkeeping for the AO integrals and are never drawn.
-    """
-    vecs = [np.asarray(lattice[i], dtype=float) for i, flag in enumerate(pbc) if flag]
-    n = len(vecs)
-    if n == 0:
-        return np.zeros((0, 3)), np.zeros((0, 3))
-
-    corners = [
-        sum((vecs[k] for k in range(n) if mask & (1 << k)), np.zeros(3)) for mask in range(1 << n)
-    ]
-    starts, ends = [], []
-    for mask in range(1 << n):
-        for k in range(n):
-            if mask & (1 << k):
-                continue
-            starts.append(corners[mask])
-            ends.append(corners[mask | (1 << k)])
-    return np.array(starts), np.array(ends)
-
-
-def _replication_offsets(lattice, pbc, replication) -> np.ndarray:
-    """Translation vectors for a supercell view, periodic axes only."""
-    if lattice is None:
-        return np.zeros((1, 3))
-    counts = [max(1, int(r)) if flag else 1 for r, flag in zip(replication, pbc)]
-    offsets = []
-    for i in range(counts[0]):
-        for j in range(counts[1]):
-            for k in range(counts[2]):
-                offsets.append(i * lattice[0] + j * lattice[1] + k * lattice[2])
-    return np.array(offsets, dtype=np.float64)
-
-
 def structure_scene(
-    reader,
+    reader: QVFReader,
     *,
     structure_id: str = "structure",
     representation: str = "ball_and_stick",
@@ -447,15 +435,108 @@ def structure_scene(
 
     ``structure_id`` selects the structure whose atoms and cell are shown;
     this matters for a ``wavefunction.gto`` section whose basis names a
-    non-primary ``structure_ref``. ``positions_override`` lets trajectory
-    and vibration modes reuse the whole element/bond/cell pipeline for a
-    frame's coordinates without re-reading the archive per frame.
+    non-primary ``structure_ref``. ``positions_override`` retains the
+    structure's identities and topology at supplied coordinates. Animated
+    sections use :func:`frame_scene` to select their own atom identities.
     """
     structure = (
         reader.read_structure()
         if structure_id == "structure"
         else reader.read_structure(structure_id)
     )
+    return _scene_from_structure(
+        structure,
+        infer_bonds=reader.infer_bonds,
+        representation=representation,
+        color_mode=color_mode,
+        show_bonds=show_bonds,
+        show_cell=show_cell,
+        replication=replication,
+        positions_override=positions_override,
+    )
+
+
+def frame_scene(
+    reader: QVFReader,
+    section_id: str,
+    positions: np.ndarray,
+    *,
+    frame_index: int = 0,
+    representation: str = "ball_and_stick",
+    color_mode: str = "element",
+    show_bonds: bool = True,
+    show_cell: bool = True,
+    replication: tuple[int, int, int] = (1, 1, 1),
+) -> Scene:
+    """Draw a frame's own atoms with the section's applicable cell context.
+
+    Reaction paths own their fixed/per-frame cell; a missing lattice means
+    molecular. Trajectories and vibrations retain the terminal's legacy
+    primary-cell inheritance when available. Their atom identities and
+    inferred display bonds never come from that optional primary structure.
+    """
+    from vibeview.bonds import structure_bonds
+    from vibeview.qvf import SectionNotFoundError, StructureData
+
+    kind = reader.get_section(section_id).kind
+    lattice = None
+    pbc = (False, False, False)
+    dim = 3
+    if kind == "reaction.path":
+        path = reader.read_reaction_path(section_id)
+        atoms = path.atoms
+        lattice, pbc = _reaction_path_lattice(path, frame_index)
+        dim = sum(pbc) if lattice is not None else 3
+    elif kind == "trajectory":
+        atoms = reader.read_trajectory(section_id).atoms
+    elif kind == "vibrations":
+        atoms = reader.read_vibrations(section_id).atoms
+    else:
+        raise ValueError(f"Section {section_id!r} has no animated atom geometry")
+
+    if kind != "reaction.path":
+        try:
+            primary = reader.read_structure()
+        except SectionNotFoundError:
+            pass  # Self-contained atoms can render without primary context.
+        else:
+            lattice, pbc, dim = primary.lattice_vectors, primary.pbc, primary.dim
+    coords = np.asarray(positions, dtype=np.float64)
+    if coords.shape != (len(atoms), 3):
+        raise ValueError("Frame coordinates do not match the section's atom identities")
+    # Keep cached reader payloads and edit overlays untouched. These kinds
+    # supply no explicit bond list: infer display bonds on this frame only,
+    # without borrowing archive-wide bond_orders by coincidental atom indices.
+    snapshot = StructureData(
+        atoms=[replace(atom, position=coords[i].copy()) for i, atom in enumerate(atoms)],
+        pbc=pbc,
+        lattice_vectors=None if lattice is None else lattice.copy(),
+        bonds=None,
+        dim=dim,
+    )
+    return _scene_from_structure(
+        snapshot,
+        infer_bonds=structure_bonds,
+        representation=representation,
+        color_mode=color_mode,
+        show_bonds=show_bonds,
+        show_cell=show_cell,
+        replication=replication,
+    )
+
+
+def _scene_from_structure(
+    structure: StructureData,
+    *,
+    infer_bonds: Callable[[StructureData], list[Bond]],
+    representation: str,
+    color_mode: str,
+    show_bonds: bool,
+    show_cell: bool,
+    replication: tuple[int, int, int],
+    positions_override: np.ndarray | None = None,
+) -> Scene:
+    """Shared atom/bond/cell assembly; the caller owns the topology context."""
     atoms = structure.atoms
     scene = Scene()
     if not atoms:
@@ -493,9 +574,7 @@ def structure_scene(
     lattice = structure.lattice_vectors
     periodic = lattice is not None and any(structure.pbc)
     offsets = (
-        _replication_offsets(lattice, structure.pbc, replication)
-        if periodic
-        else np.zeros((1, 3))
+        supercell_offsets(lattice, structure.pbc, replication) if periodic else np.zeros((1, 3))
     )
     n_images = len(offsets)
 
@@ -508,35 +587,25 @@ def structure_scene(
         f"{atoms[i].symbol}{i + 1}" for _ in range(n_images) for i in range(len(atoms))
     ]
 
-    bonds = structure.bonds
+    bonds: Sequence[tuple[Any, ...]] | None = structure.bonds
     if bonds is None:
-        bonds = reader.infer_bonds(structure) if wants_bonds and show_bonds else []
+        bonds = infer_bonds(structure) if wants_bonds and show_bonds else []
     if show_bonds and wants_bonds and bonds:
         pairs = np.array([(b[0], b[1]) for b in bonds], dtype=np.int64)
         keep = (pairs[:, 0] < len(atoms)) & (pairs[:, 1] < len(atoms))
         pairs = pairs[keep]
         if len(pairs):
-            starts = base_positions[pairs[:, 0]]
-            ends = base_positions[pairs[:, 1]]
             # A periodic bond list stores the in-cell index pair, so a bond
             # that crosses a cell face has a *direct* separation of a whole
             # lattice vector (graphene: 1.42 Å bonds listed at 2.84 / 3.76 /
             # 5.68 Å). Drawing those endpoints as-is stretches sticks across
-            # the box; a length cutoff would instead delete real bonds. Both
-            # are fixed by drawing to the nearest periodic image, which is
-            # what the interactive renderer does — reuse its helper rather
-            # than re-deriving it, since the naive round-the-fraction version
-            # picks the wrong image in a hexagonal cell.
-            if periodic:
-                from vibeview.renderers.structure import _minimum_image
-
-                inv_lattice = np.linalg.inv(lattice)
-                ends = np.array(
-                    [
-                        _minimum_image(s, e, lattice, inv_lattice, structure.pbc)
-                        for s, e in zip(starts, ends)
-                    ]
-                )
+            # the box; a length cutoff would instead delete real bonds. The
+            # shared helper draws each bond to its stated image, or to the
+            # nearest one, exactly as the browser renderer does.
+            kept_bonds = [b for b, flag in zip(bonds, keep, strict=True) if flag]
+            starts, ends = bond_far_endpoints(
+                base_positions, kept_bonds, lattice if periodic else None, structure.pbc
+            )
             scene.bond_starts = (starts[None] + offsets[:, None, :]).reshape(-1, 3)
             scene.bond_ends = (ends[None] + offsets[:, None, :]).reshape(-1, 3)
             scene.bond_colors_a = np.tile(colors[pairs[:, 0]], (n_images, 1))
@@ -546,8 +615,8 @@ def structure_scene(
     # left a note on the scene and assignment would discard it.
     scene.color_notes.extend(color_notes)
 
-    if show_cell and periodic:
-        starts, ends = _cell_edges(lattice, structure.pbc)
+    if show_cell and periodic and lattice is not None:
+        starts, ends = cell_edges(lattice, structure.pbc)
         if len(starts):
             scene.line_starts = (starts[None] + offsets[:, None, :]).reshape(-1, 3)
             scene.line_ends = (ends[None] + offsets[:, None, :]).reshape(-1, 3)
@@ -558,7 +627,9 @@ def structure_scene(
 # ── volumes ───────────────────────────────────────────────────────────────
 
 
-def _polydata_to_mesh(poly, color, opacity, label) -> Mesh | None:
+def _polydata_to_mesh(
+    poly: pv.PolyData | None, color: tuple[int, int, int], opacity: float, label: str
+) -> Mesh | None:
     """Convert PyVista PolyData to a plain (verts, faces, normals) Mesh.
 
     VTK's contour and normals filters are pure computation — no render
@@ -593,7 +664,7 @@ def _polydata_to_mesh(poly, color, opacity, label) -> Mesh | None:
 
 
 def sampled_field_meshes(
-    grid,
+    grid: GridData,
     data: np.ndarray,
     *,
     isovalue: float = 0.05,
@@ -601,7 +672,7 @@ def sampled_field_meshes(
     grid_units: str = "angstrom",
     replication: tuple[int, int, int] = (1, 1, 1),
     lattice_vectors: np.ndarray | None = None,
-    pbc=None,
+    pbc: Sequence[bool] | None = None,
     opacity: float = 1.0,
 ) -> list[Mesh]:
     """Contour an in-memory scalar field into terminal-renderable meshes.
@@ -649,7 +720,7 @@ def sampled_field_meshes(
 
 
 def volume_meshes(
-    reader,
+    reader: QVFReader,
     section_id: str,
     *,
     isovalue: float = 0.05,
@@ -705,9 +776,12 @@ def volume_meshes(
 # ── frame sequences ───────────────────────────────────────────────────────
 
 
-def trajectory_frames(reader, section_id: str) -> tuple[np.ndarray, list[float] | None]:
+def trajectory_frames(
+    reader: QVFReader, section_id: str
+) -> tuple[np.ndarray, list[float] | None]:
     """``(coords [n_frames, n_atoms, 3] Å, per-frame energies or None)``."""
     kind = reader.get_section(section_id).kind
+    data: TrajectoryData | ReactionPathData
     if kind == "reaction.path":
         data = reader.read_reaction_path(section_id)
     else:
@@ -716,7 +790,7 @@ def trajectory_frames(reader, section_id: str) -> tuple[np.ndarray, list[float] 
 
 
 def vibration_frames(
-    reader,
+    reader: QVFReader,
     section_id: str,
     mode_index: int,
     *,
@@ -744,23 +818,32 @@ def vibration_frames(
     return coords, float(data.frequencies[idx])
 
 
-def reaction_path_cell(data) -> tuple[np.ndarray, np.ndarray] | None:
-    """Cell edges for a periodic reaction path, or None when molecular.
+def _reaction_path_lattice(
+    data: ReactionPathData, frame_index: int
+) -> tuple[np.ndarray | None, tuple[bool, bool, bool]]:
+    """Selected reaction cell in Å rows, plus its physical periodic axes."""
+    if data.lattice is None:
+        return None, (False, False, False)
+    lattice = np.asarray(data.lattice, dtype=np.float64)
+    if lattice.ndim == 3:
+        lattice = lattice[frame_index]
+    dim = data.dim_per_frame[frame_index] if data.dim_per_frame is not None else data.dim
+    dim = 3 if dim is None else dim
+    rows = reaction_lattice_rows_angstrom(lattice)
+    assert rows is not None
+    return rows, (dim > 0, dim > 1, dim > 2)
 
-    ``reaction.path`` stores lattice vectors as **columns in bohr** — the
-    opposite convention from the ``structure`` section (rows, Å). Transposed
-    and converted here so :func:`_cell_edges` sees its documented input.
+
+def reaction_path_cell(
+    data: ReactionPathData, frame_index: int = 0
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Selected reaction-frame cell edges, or None when molecular.
+
+    Reaction lattice columns are stored in bohr; the shared conversion
+    supplies Å rows and the selected frame's dimensionality.
     """
-    lattice = getattr(data, "lattice", None)
-    if lattice is None:
-        return None
-    lat = np.asarray(lattice, dtype=np.float64)
-    if lat.ndim == 3:
-        lat = lat[0]
-    rows = lat.T * _BOHR_TO_ANGSTROM
-    dim = getattr(data, "dim", None) or 3
-    pbc = tuple(i < dim for i in range(3))
-    return _cell_edges(rows, pbc)
+    lattice, pbc = _reaction_path_lattice(data, frame_index)
+    return None if lattice is None else cell_edges(lattice, pbc)
 
 
 # ── drawing ───────────────────────────────────────────────────────────────

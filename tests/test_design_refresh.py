@@ -758,6 +758,7 @@ def _serve_dialogs_open(
             target_kind = {
                 "trajectory": "trajectory",
                 "molecular-orbital": "wavefunction.gto",
+                "molecular-orbital-progress": "wavefunction.gto",
             }.get(playback_scenario)
             if target_kind is None:
                 raise ValueError(f"unknown playback scenario: {playback_scenario!r}")
@@ -767,6 +768,10 @@ def _serve_dialogs_open(
             if playback_scenario == "molecular-orbital":
                 server.state.wf_anim_speed = 60.0
             server.controller.activate_section(section.id)
+            if playback_scenario == "molecular-orbital-progress":
+                server.state.wf_anim_speed = 0.8
+                server.state.wf_selected_mo = server.state.wf_mo_rows[0]["value"]
+                server.controller.render_mo(server.state.wf_selected_mo)
         if open_initially:
             for model in dialog_models:
                 setattr(server.state, model, True)
@@ -829,6 +834,8 @@ def test_served_dialog_and_presentation_dom_contracts(
 
     browser_probe = r"""
 const { spawn } = require("node:child_process");
+const { createHash } = require("node:crypto");
+const { writeFileSync } = require("node:fs");
 const chrome = process.argv[1];
 const url = process.argv[2];
 const profile = process.argv[3];
@@ -850,6 +857,7 @@ const child = spawn(chrome, [
   "--no-first-run",
   "--no-default-browser-check",
   "--remote-debugging-port=0",
+  ...(playbackScenario === "molecular-orbital-progress" ? ["--window-size=1400,1000"] : []),
   `--user-data-dir=${profile}`,
   "about:blank",
 ], { stdio: ["ignore", "ignore", "pipe"] });
@@ -1652,7 +1660,8 @@ async function inspectPage(browserWebSocket) {
   }
   if (playbackScenario) {
     const isTrajectory = playbackScenario === "trajectory";
-    if (!isTrajectory && playbackScenario !== "molecular-orbital") {
+    const isProgress = playbackScenario === "molecular-orbital-progress";
+    if (!isTrajectory && !isProgress && playbackScenario !== "molecular-orbital") {
       throw new Error(`unknown playback scenario: ${playbackScenario}`);
     }
     const previousLabel = isTrajectory
@@ -1709,6 +1718,11 @@ async function inspectPage(browserWebSocket) {
         wavefunctionRows: trameState
           ? (trameState.get('wf_mo_rows') || []).length
           : 0,
+        selectedMO: trameState ? trameState.get('wf_selected_mo') : null,
+        lastMO: trameState ? trameState.get('mo_last_index') : null,
+        surfaceKind: trameState ? trameState.get('wf_surface_kind') : null,
+        moVisible: trameState ? Boolean(trameState.get('mo_visible')) : false,
+        statusMessage: trameState ? trameState.get('status_message') : '',
         animating: trameState
           ? Boolean(trameState.get(
               ${JSON.stringify(isTrajectory ? "trajectory_playing" : "wf_animating")}
@@ -1809,6 +1823,32 @@ async function inspectPage(browserWebSocket) {
         ),
       `${playbackScenario} controls never reached the served DOM`,
     );
+    async function canvasSnapshot(name) {
+      // Capture only the VTK canvas: picker/status changes cannot satisfy this
+      // geometry assertion, and CDP reads do not send a Trame state update.
+      const evaluation = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const canvas = Array.from(document.querySelectorAll('canvas'))
+            .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+          if (!canvas) return null;
+          const r = canvas.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height, scale: 1 };
+        })()`,
+        returnByValue: true,
+      });
+      const clip = evaluation.result.value;
+      if (!clip || clip.width < 100 || clip.height < 100) {
+        throw new Error(`missing molecular canvas: ${JSON.stringify(clip)}`);
+      }
+      const screenshot = await command("Page.captureScreenshot", {
+        format: "png", clip,
+      });
+      writeFileSync(`${profile}/${name}.png`, Buffer.from(screenshot.data, "base64"));
+      return createHash("sha256").update(screenshot.data).digest("hex");
+    }
+    // DOM controls can be ready before vtk.js consumes the initial scene.
+    if (isProgress) await delay(1000);
+    const initialCanvas = isProgress ? await canvasSnapshot("initial-orbital") : null;
     await clickPlaybackButton(startLabel);
     const playing = await waitForPlayback(
       (state) => state.animating && state.buttons.length === 3 &&
@@ -1816,6 +1856,27 @@ async function inspectPage(browserWebSocket) {
         !state.buttons.some((button) => button.ariaLabel === startLabel),
       `${playbackScenario} control did not expose its Pause name`,
     );
+    if (isProgress) {
+      const observed = [playing];
+      const finished = await waitForPlayback(
+        (state) => {
+          observed.push(state);
+          return !state.animating && state.statusMessage === "MO animation finished";
+        },
+        "MO playback did not advance and terminate without further input",
+      );
+      // Let the last vtk.js render settle, using no mouse/key/state mutation.
+      await delay(250);
+      const finalCanvas = await canvasSnapshot("final-orbital");
+      await delay(1000);
+      const settled = await playbackState();
+      socket.close();
+      finish(0, { playback: {
+        scenario: playbackScenario, initial, playing, observed, finished, settled,
+        initialCanvas, finalCanvas,
+      } });
+      return;
+    }
     await clickPlaybackButton(pauseLabel);
     const paused = await waitForPlayback(
       (state) => !state.animating && state.buttons.length === 3 &&
@@ -2889,6 +2950,13 @@ child.on("exit", (code) => {
         open_initially=False,
         playback_scenario="molecular-orbital",
     )
+    orbital_progress = collect_probe(
+        "molecular-orbital progression",
+        (),
+        "chrome-profile-orbital-progress",
+        open_initially=False,
+        playback_scenario="molecular-orbital-progress",
+    )
     presentation = collect_probe(
         "presentation mode",
         (),
@@ -3201,6 +3269,42 @@ child.on("exit", (code) => {
     assert orbitals["initial"]["trajectoryFrames"] == 0
     assert orbitals["initial"]["wavefunctionSection"] == "wf"
     assert orbitals["initial"]["wavefunctionRows"] > 0
+
+    assert orbital_progress["initial"]["selectedMO"] == "restricted:0"
+    assert orbital_progress["initial"]["moVisible"] is True
+    assert orbital_progress["initial"]["surfaceKind"] == "mo"
+    progressed = {
+        state["selectedMO"] for state in orbital_progress["observed"]
+        if state["moVisible"] and state["surfaceKind"] == "mo"
+    }
+    # MO 1 is rendered by Start; MO 2 and 3 require scheduled callbacks.
+    assert {"restricted:2", "restricted:3"} <= progressed
+    for phase in ("finished", "settled"):
+        snapshot = orbital_progress[phase]
+        assert snapshot["selectedMO"] == "restricted:3"
+        assert snapshot["lastMO"] == 3
+        assert snapshot["moVisible"] is True
+        assert snapshot["surfaceKind"] == "mo"
+        assert snapshot["animating"] is False
+        assert snapshot["statusMessage"] == "MO animation finished"
+        assert_playback_snapshot(snapshot, (
+            "Previous molecular orbital", "Start molecular orbital animation",
+            "Next molecular orbital",
+        ))
+    assert orbital_progress["initialCanvas"] != orbital_progress["finalCanvas"]
+    import numpy as np
+    from PIL import Image
+
+    for name in ("initial-orbital", "final-orbital"):
+        with Image.open(tmp_path / "chrome-profile-orbital-progress" / f"{name}.png") as image:
+            # Reject a blank/loading canvas even when its PNG differs from the
+            # final frame. Real phase-coloured orbital surfaces are chromatic.
+            pixels = np.asarray(image.convert("RGB"), dtype=int)
+            coloured = np.count_nonzero(np.ptp(pixels, axis=2) > 40)
+            assert coloured > image.width * image.height * 0.01, (
+                f"{name} has no rendered orbital"
+            )
+
 
     entered = presentation["entered"]
     assert entered["overlayVisible"] is True
@@ -3808,6 +3912,7 @@ def test_section_restore_actually_activates():
     and presentation restore now share the same saved-view preparation step and
     all activate the section it resolves.
     """
+    import ast
     import inspect
 
     import vibeview.app as app
@@ -3824,10 +3929,20 @@ def test_section_restore_actually_activates():
     # Every restore path prepares the saved view and activates the section it
     # resolves. Pin the shared helper rather than the old direct dict indexing:
     # issue #322 deliberately centralized validation and render-hint ordering.
-    for saved_view in ("bm", "session", "slide"):
+    functions = {
+        node.name: ast.get_source_segment(src, node)
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.FunctionDef)
+    }
+    for handler, saved_view in (
+        ("apply_user_bookmark", "bm"),
+        ("load_session", "session"),
+        ("_apply_slide", "slide"),
+    ):
+        restore_source = functions[handler]
         anchor = f"_prepare_saved_view_restore({saved_view})"
-        assert anchor in src, f"missing saved-view restore wiring: {anchor}"
-    assert src.count("activate_section(section_id)") == 3
+        assert anchor in restore_source, f"missing saved-view restore wiring: {anchor}"
+        assert "activate_section(section_id)" in restore_source, handler
 
 def test_switching_sections_drops_the_other_isosurface():
     """Entering Wavefunction clears the electron density, and vice versa.

@@ -121,30 +121,19 @@ def qvf_to_image(
         choices = ", ".join(_SUPPORTED_STRUCTURE_STYLES)
         raise ValueError(f"Unsupported style {style!r}; expected one of: {choices}")
 
-    import pyvista as pv
-
+    from vibeview.headless import render_structure_frame
     from vibeview.qvf import QVFReader
-    from vibeview.renderers.structure import StructureRenderer
 
     with QVFReader(qvf_path) as reader:
-        sec = next((s for s in reader.sections if s.kind == "structure"), None)
-        if sec is None:
+        img = render_structure_frame(reader, size=(width, height), representation=style)
+        if img is False:
             raise ValueError("No structure section in QVF")
 
-        plotter = pv.Plotter(off_screen=True, window_size=[width, height])
-        try:
-            renderer = StructureRenderer(sec, reader)
-            renderer.add_to_plotter(plotter, representation=style)
-            plotter.view_isometric()
-            plotter.render()
-            img = plotter.screenshot(return_img=True)
-        finally:
-            plotter.close()
-
     buf = io.BytesIO()
+    import numpy as np
     from PIL import Image as _Image
 
-    _Image.fromarray(img).save(buf, format="PNG")
+    _Image.fromarray(np.asarray(img)).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -477,7 +466,7 @@ def register_ipython_magic(ipython: Any | None = None) -> bool:
 # ── Backward-compatible exports ────────────────────────────────────────
 
 
-def _sniff_qvf(qvf_path):
+def _sniff_qvf(qvf_path: str | Path) -> dict[str, Any]:
     """Return a dict of {program, version, calculation, sections} for a QVF file.
 
     Compat wrapper used by test suite and legacy callers.
@@ -487,7 +476,7 @@ def _sniff_qvf(qvf_path):
     return info(str(qvf_path))
 
 
-def _render_structure(qvf_path):
+def _render_structure(qvf_path: str | Path) -> bytes:
     """Return PNG bytes for the structure in a QVF file.
 
     Compat wrapper used by test suite and legacy callers.

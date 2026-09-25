@@ -30,6 +30,7 @@ reached the viewport anyway.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -156,7 +157,7 @@ def get_preset(name: str) -> MaterialPreset:
     return MATERIAL_PRESETS.get(name, MATERIAL_PRESETS["cpk_glossy"])
 
 
-def list_presets() -> list[dict]:
+def list_presets() -> list[dict[str, str]]:
     """Return all available presets as a list of {value, title} dicts."""
     return [{"value": k, "title": v.name} for k, v in MATERIAL_PRESETS.items()]
 
@@ -165,7 +166,7 @@ def list_presets() -> list[dict]:
 
 
 def apply_material_to_actor(
-    actor,
+    actor: Any,
     preset: MaterialPreset,
     base_color: tuple[float, float, float] | None = None,
     is_bond: bool = False,
@@ -218,7 +219,7 @@ def apply_material_to_actor(
 
 
 def ambient_occlusion_pass(
-    plotter,
+    plotter: Any,
     radius: float = 2.0,
     samples: int = 32,
 ) -> bool:

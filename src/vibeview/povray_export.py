@@ -23,6 +23,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vibeview.bonds import bond_endpoints, structure_bonds
+from vibeview.renderers.cell import cell_edges
+
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
 
@@ -101,68 +104,6 @@ _VDW_RADII: dict[int, float] = {
 def _vdw_radius(z: int) -> float:
     """vdW radius for atomic number ``z``; 1.75x covalent as fallback."""
     return _VDW_RADII.get(z, _COVALENT_RADII.get(z, 0.8) * 1.75)
-
-
-_ELEMENT_SYMBOLS = [
-    "",
-    "H",
-    "He",
-    "Li",
-    "Be",
-    "B",
-    "C",
-    "N",
-    "O",
-    "F",
-    "Ne",
-    "Na",
-    "Mg",
-    "Al",
-    "Si",
-    "P",
-    "S",
-    "Cl",
-    "Ar",
-    "K",
-    "Ca",
-    "Sc",
-    "Ti",
-    "V",
-    "Cr",
-    "Mn",
-    "Fe",
-    "Co",
-    "Ni",
-    "Cu",
-    "Zn",
-    "Ga",
-    "Ge",
-    "As",
-    "Se",
-    "Br",
-    "Kr",
-    "Rb",
-    "Sr",
-    "Y",
-    "Zr",
-    "Nb",
-    "Mo",
-    "Tc",
-    "Ru",
-    "Rh",
-    "Pd",
-    "Ag",
-    "Cd",
-    "In",
-    "Sn",
-    "Sb",
-    "Te",
-    "I",
-    "Xe",
-]
-
-_Z_TO_SYMBOL = {i: s for i, s in enumerate(_ELEMENT_SYMBOLS) if s}
-_SYMBOL_TO_Z = {s: i for i, s in enumerate(_ELEMENT_SYMBOLS) if s}
 
 
 # ── POV-Ray scene template ─────────────────────────────────────────────
@@ -271,60 +212,12 @@ def _bond_cylinder(
 }}"""
 
 
-def _detect_bonds(
-    positions: np.ndarray,
-    z_list: list[int],
-    tolerance: float = 1.2,
-) -> list[tuple[int, int]]:
-    """Detect bonds between atoms based on covalent radii."""
-    radii = [_COVALENT_RADII.get(z, 0.8) for z in z_list]
-    n = len(z_list)
-    bonds = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = float(np.linalg.norm(positions[i] - positions[j]))
-            threshold = (radii[i] + radii[j]) * tolerance
-            if d < threshold and d > 0.4:
-                bonds.append((i, j))
-    return bonds
-
-
-def _unit_cell_edges(
-    centroid: np.ndarray,
-    lattice_vectors: np.ndarray,
-    pbc: tuple[bool, bool, bool] = (True, True, True),
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Return the cell edges spanned by the *periodic* lattice vectors only.
-
-    12 edges for a bulk crystal, 4 for a 2D slab, 1 for a 1D polymer. Lattice
-    columns beyond ``dim`` are synthesized bookkeeping for the AO integrals and
-    are never real cell edges — drawing them boxes a slab in a phantom vacuum.
-    """
-    vecs = [np.asarray(lattice_vectors[i]) for i, p in enumerate(pbc) if p]
-    n = len(vecs)
-    if n == 0:
-        return []
-
-    # Corners are every subset-sum of the periodic vectors; an edge joins two
-    # corners differing by exactly one vector.
-    corners = [
-        centroid + sum((vecs[k] for k in range(n) if mask & (1 << k)), np.zeros(3))
-        for mask in range(1 << n)
-    ]
-    edge_pairs = [
-        (mask, mask | (1 << k))
-        for mask in range(1 << n)
-        for k in range(n)
-        if not (mask & (1 << k))
-    ]
-    return [(corners[i], corners[j]) for i, j in edge_pairs]
-
 
 # ── Public API ──────────────────────────────────────────────────────────
 
 
 def export_povray(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     style: str = "ball_and_stick",
@@ -368,7 +261,6 @@ def export_povray(
         return result
 
     # Extract atom data from StructureData
-    symbols = [a.symbol for a in sdata.atoms]
     z_list = [a.atomic_number for a in sdata.atoms]
     positions = np.array([a.position for a in sdata.atoms], dtype=float)
 
@@ -391,27 +283,24 @@ def export_povray(
 
     # Write atoms
     parts.append("\n// ── Atoms ──")
-    for pos, z, r in zip(positions, z_list, radii):
+    for pos, z, r in zip(positions, z_list, radii, strict=True):
         parts.append(_atom_sphere(pos, z, radius=r))
 
-    # Detect and write bonds
+    # Bonds: the viewer's connectivity. A bond through a periodic cell face
+    # is drawn to the image it reaches, since the scene has coordinates.
     if style != "space_filling":
         parts.append("\n// ── Bonds ──")
-        if sdata.bonds is not None:
-            # Use explicit bonds from the QVF
-            bonds = [(b[0], b[1]) for b in sdata.bonds]
-        else:
-            bonds = _detect_bonds(positions, z_list)
-        for i, j in bonds:
-            parts.append(_bond_cylinder(positions[i], positions[j], radius=0.1))
+        for bond in structure_bonds(sdata):
+            start, end = bond_endpoints(positions, bond, sdata.lattice_vectors)
+            parts.append(_bond_cylinder(start, end, radius=0.1))
 
     # ── Unit cell (periodic) ──
     if any(sdata.pbc) and sdata.lattice_vectors is not None:
         parts.append("\n// ── Unit cell ──")
         lattice = np.asarray(sdata.lattice_vectors)
         if lattice.shape == (3, 3):
-            edges = _unit_cell_edges(np.zeros(3), lattice, sdata.pbc)
-            for start, end in edges:
+            starts, ends = cell_edges(lattice, sdata.pbc)
+            for start, end in zip(starts, ends, strict=True):
                 parts.append(_bond_cylinder(start, end, radius=0.03, color="<0.8, 0.8, 0.8>"))
 
     result = "\n".join(parts)

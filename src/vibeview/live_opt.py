@@ -63,9 +63,16 @@ Design (roadmap §4, locked decision 2):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+from vibeview import worker_client
+from vibeview.units import ANGSTROM_TO_BOHR as _BOHR_PER_ANGSTROM
+from vibeview.units import HARTREE_TO_EV as _HARTREE_EV
+from vibeview.worker_client import parse_event_or_none, stream_events
 
 # Viewer-side defaults (also the worker's fallbacks).
 DEFAULT_ENGINE = "msindo"
@@ -75,10 +82,11 @@ DEFAULT_MAX_STEPS = 60
 DEBOUNCE_S = 0.8  # edit-pause before an optimization starts
 MAX_LIVE_OPT_ATOMS = 80  # keep the per-step evaluation interactive
 _EMIT_MIN_INTERVAL_S = 0.15  # worker-side step-event rate limit
-# Hartree/eV and bohr/angstrom (CODATA); used for the MACE (ASE-units)
-# engine so the shared loop always works in Ha + angstrom.
-_HARTREE_EV = 27.211386245988
-_BOHR_PER_ANGSTROM = 1.8897259886
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    EnergyGradient = Callable[[np.ndarray], tuple[float, np.ndarray]]
 
 
 def build_request(
@@ -106,17 +114,13 @@ def build_request(
 
 
 def parse_event(line: str | bytes) -> dict[str, Any] | None:
-    """Decode one worker stdout line; None for blanks / non-JSON noise."""
-    if isinstance(line, bytes):
-        line = line.decode("utf-8", errors="replace")
-    line = line.strip()
-    if not line:
-        return None
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    return event if isinstance(event, dict) else None
+    """Decode one worker stdout line; None for blanks / non-JSON noise.
+
+    The streaming worker may print a library warning between events, so
+    a line that is not an event is skipped, not fatal. This is the
+    lenient form of :func:`vibeview.worker_client.parse_event`.
+    """
+    return parse_event_or_none(line)
 
 
 class LiveOptService:
@@ -152,7 +156,7 @@ class LiveOptService:
         self._timeout_s = timeout_s
         # Injectable for tests (a canned-JSON fake worker script).
         self._worker_cmd = worker_cmd or _default_worker_cmd()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
         self._proc: asyncio.subprocess.Process | None = None
 
     @property
@@ -202,10 +206,8 @@ class LiveOptService:
     def _kill_proc(self) -> None:
         proc, self._proc = self._proc, None
         if proc is not None and proc.returncode is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
 
     async def _debounced_run(
         self,
@@ -230,47 +232,29 @@ class LiveOptService:
         on_error: Callable[[str], None],
         on_note: Callable[[str], None] | None,
     ) -> None:
+        payload = json.dumps(request).encode() + b"\n"
+        finished = False
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *self._worker_cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
+            async with stream_events(self._worker_cmd, payload) as stream:
+                self._proc = stream.process
+                async with asyncio.timeout(self._timeout_s):
+                    async for event in stream.events():
+                        if "error" in event:
+                            on_error(str(event["error"]))
+                            finished = True
+                            break
+                        if "note" in event:
+                            if on_note is not None:
+                                on_note(str(event["note"]))
+                            continue
+                        if event.get("done"):
+                            on_done(bool(event.get("converged")), int(event.get("steps", 0)))
+                            finished = True
+                            break
+                        on_step(event)
         except OSError as exc:
             on_error(f"could not start worker: {exc}")
             return
-        self._proc = proc
-
-        assert proc.stdin is not None and proc.stdout is not None
-        proc.stdin.write(json.dumps(request).encode() + b"\n")
-        proc.stdin.write_eof()
-
-        finished = False
-        try:
-            async with asyncio.timeout(self._timeout_s):
-                while True:
-                    line = await proc.stdout.readline()
-                    if not line:
-                        break
-                    event = parse_event(line)
-                    if event is None:
-                        continue
-                    if "error" in event:
-                        on_error(str(event["error"]))
-                        finished = True
-                        break
-                    if "note" in event:
-                        if on_note is not None:
-                            on_note(str(event["note"]))
-                        continue
-                    if event.get("done"):
-                        on_done(
-                            bool(event.get("converged")), int(event.get("steps", 0))
-                        )
-                        finished = True
-                        break
-                    on_step(event)
         except TimeoutError:
             on_error(f"optimization timed out after {self._timeout_s:.0f}s")
             finished = True
@@ -290,25 +274,11 @@ async def probe_worker(timeout_s: float = 60.0) -> dict[str, Any]:
     Never raises: any failure comes back as ``{"available": False,
     "reason": ...}``. The generous timeout covers a cold vibe-qc import.
     """
-    proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *_default_worker_cmd(),
-            "--probe",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        async with asyncio.timeout(timeout_s):
-            out, _ = await proc.communicate()
+        reply = await worker_client.probe(_default_worker_cmd(), timeout_s=timeout_s)
     except Exception as exc:
-        if proc is not None and proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
         return {"available": False, "reason": f"probe failed: {exc}"}
-    for line in out.splitlines():
+    for line in reply.stdout.splitlines():
         event = parse_event(line)
         if event is not None and "available" in event:
             return event
@@ -343,11 +313,12 @@ def probe() -> dict[str, Any]:
     return {"available": True, "reason": "", "engines": engines}
 
 
-def _msindo_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
+def _msindo_engine(
+    numbers: list[int], charge: int, emit: Callable[[dict[str, Any]], None]
+) -> EnergyGradient:
     """Return ``fun(coords_A) -> (E_hartree, grad_ha_bohr[n,3])`` on the
     MSINDO surface (analytic gradient)."""
     import numpy as np
-
     from vibeqc.semiempirical.methods.msindo import eff_core_charge, run_msindo
     from vibeqc.semiempirical.methods.msindo_gradient_analytic import (
         msindo_gradient_analytic,
@@ -358,7 +329,7 @@ def _msindo_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]
     n_electrons = sum(eff_core_charge(z) for z in numbers) - charge
     multiplicity = 1 if n_electrons % 2 == 0 else 2
 
-    def fun(coords_a):
+    def fun(coords_a: np.ndarray) -> tuple[float, np.ndarray]:
         result = run_msindo(numbers, coords_a, charge=charge, multiplicity=multiplicity)
         grad = msindo_gradient_analytic(
             numbers, coords_a, charge=charge, multiplicity=multiplicity
@@ -368,7 +339,9 @@ def _msindo_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]
     return fun
 
 
-def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
+def _mace_engine(
+    numbers: list[int], charge: int, emit: Callable[[dict[str, Any]], None]
+) -> EnergyGradient:
     """Return ``fun(coords_A) -> (E_hartree, grad_ha_bohr[n,3])`` on the
     default MIT-licensed MACE model (vibeqc.mlip; vibe-qc's MLIP
     exception). The energy is the model's reference-shifted DFT-surface
@@ -376,7 +349,6 @@ def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
     academic models are deliberately not reachable from live-opt.
     """
     import numpy as np
-
     from vibeqc.mlip import MLIPOptions
     from vibeqc.mlip._mace_models import resolve_model
     from vibeqc.mlip.mace import mace_calculator
@@ -402,7 +374,7 @@ def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
     atoms = Atoms(numbers=numbers, positions=[[0.0, 0.0, 0.0]] * len(numbers))
     atoms.calc = calc
 
-    def fun(coords_a):
+    def fun(coords_a: np.ndarray) -> tuple[float, np.ndarray]:
         atoms.positions = np.asarray(coords_a, dtype=float)
         e_ha = float(atoms.get_potential_energy()) / _HARTREE_EV
         forces = np.asarray(atoms.get_forces(), dtype=float)  # eV/A
@@ -416,7 +388,7 @@ def _mace_engine(numbers: list[int], charge: int, emit: Callable[[dict], None]):
 _ENGINE_BUILDERS = {"msindo": _msindo_engine, "mace": _mace_engine}
 
 
-def _run_optimization(request: dict[str, Any], emit: Callable[[dict], None]) -> None:
+def _run_optimization(request: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> None:
     """Optimize the requested geometry, emitting one event per iteration.
 
     Mirrors ``vibeqc.semiempirical.methods.msindo.msindo_optimize``
@@ -430,7 +402,7 @@ def _run_optimization(request: dict[str, Any], emit: Callable[[dict], None]) -> 
     import numpy as np
     from scipy.optimize import minimize
 
-    from vibeview.converters import _SYMBOL_TO_Z
+    from vibeview.elements import SYMBOL_TO_Z
 
     warnings.filterwarnings("ignore")  # stdout is a JSON protocol — keep it clean
 
@@ -446,9 +418,9 @@ def _run_optimization(request: dict[str, Any], emit: Callable[[dict], None]) -> 
     if builder is None:
         raise ValueError(f"unknown live-opt engine {engine!r}; expected one of {ENGINES}")
 
-    numbers = [_SYMBOL_TO_Z.get(s, 0) for s in symbols]
+    numbers = [SYMBOL_TO_Z.get(s, 0) for s in symbols]
     if 0 in numbers:
-        unknown = sorted({s for s, z in zip(symbols, numbers) if z == 0})
+        unknown = sorted({s for s, z in zip(symbols, numbers, strict=True) if z == 0})
         raise ValueError(f"unknown element symbol(s): {', '.join(unknown)}")
 
     free = [i for i in range(len(numbers)) if i not in frozen]

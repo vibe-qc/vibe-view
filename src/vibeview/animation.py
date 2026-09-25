@@ -11,10 +11,23 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from vibeview.headless import (
+    add_signed_isosurfaces,
+    add_structure,
+    frame,
+    headless_plotter,
+    render_structure_frame,
+    snapshot,
+)
+from vibeview.units import ANGSTROM_TO_BOHR
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from vibeview.qvf import QVFReader
 
 
@@ -106,9 +119,9 @@ def _frames_to_pngs(frame_dir: Path, output_dir: Path) -> bool:
 def _render_structure_frame(
     reader: QVFReader,
     path: Path,
-    size=(900, 600),
-    representation="ball_and_stick",
-    positions=None,
+    size: tuple[int, int] = (900, 600),
+    representation: str = "ball_and_stick",
+    positions: np.ndarray | Sequence[np.ndarray | Sequence[float]] | None = None,
 ) -> bool:
     """Render one structure frame to a PNG. Returns True on success.
 
@@ -118,32 +131,11 @@ def _render_structure_frame(
     previously loaded StructureData has no effect here (that was the
     static-video bug: every frame rendered the stored geometry).
     """
-    import pyvista as pv
-
-    from vibeview.renderers.structure import StructureRenderer
-
-    section = next((s for s in reader.sections if s.kind == "structure"), None)
-    if section is None:
-        return False
-    plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
-    try:
-        plotter.set_background("#1a1a2e")
-        renderer = StructureRenderer(section, reader)
-        if positions is not None:
-            import numpy as np
-
-            data = renderer.load()
-            for atom, pos in zip(data.atoms, positions):
-                atom.position = np.asarray(pos, dtype=float)
-            # Bonds must follow the displaced geometry.
-            renderer._bonds = reader.infer_bonds(data)
-        renderer.add_to_plotter(plotter, representation=representation)
-        plotter.view_isometric()
-        plotter.reset_camera()
-        plotter.screenshot(str(path))
-    finally:
-        plotter.close()
-    return True
+    return bool(
+        render_structure_frame(
+            reader, path, size=size, representation=representation, positions=positions
+        )
+    )
 
 
 def render_trajectory_video(
@@ -151,7 +143,7 @@ def render_trajectory_video(
     output: str | Path,
     *,
     fps: float = 5,
-    size=(900, 600),
+    size: tuple[int, int] = (900, 600),
     format: str = "mp4",
 ) -> Path | None:
     """Render a geometry-optimisation trajectory as an MP4/GIF video.
@@ -171,7 +163,6 @@ def render_trajectory_video(
 
     with tempfile.TemporaryDirectory() as td:
         frame_dir = Path(td)
-        import numpy as np
 
         for i in range(n_frames):
             path = frame_dir / f"frame_{i:04d}.png"
@@ -196,7 +187,7 @@ def render_reaction_video(
     output: str | Path,
     *,
     fps: float = 5,
-    size=(900, 600),
+    size: tuple[int, int] = (900, 600),
     format: str = "mp4",
 ) -> Path | None:
     """Render a ``reaction.path`` (NEB band) as an MP4/GIF video.
@@ -249,7 +240,7 @@ def render_vibration_video(
     mode: int = 0,
     n_frames: int = 60,
     fps: float = 15,
-    size=(900, 600),
+    size: tuple[int, int] = (900, 600),
     format: str = "mp4",
 ) -> Path | None:
     """Render a vibrational mode as an MP4/GIF video.
@@ -271,7 +262,6 @@ def render_vibration_video(
         return None
 
     output = Path(output)
-    freq = data.frequencies[mode]
     disp = data.displacements[mode]  # [n_atoms, 3]
     orig_positions = [np.array(a.position, dtype=float) for a in data.atoms]
 
@@ -307,7 +297,7 @@ def render_orbital_animation(
     *,
     fps: float = 3,
     isovalue: float = 0.04,
-    size=(900, 600),
+    size: tuple[int, int] = (900, 600),
     format: str = "mp4",
 ) -> Path | None:
     """Render an animated sequence of all molecular orbitals as MP4/GIF.
@@ -334,18 +324,9 @@ def render_orbital_animation(
 
     with tempfile.TemporaryDirectory() as td:
         frame_dir = Path(td)
-        import pyvista as pv
-
-        from vibeview.renderers.structure import StructureRenderer
-
-        struct_sec = next((s for s in reader.sections if s.kind == "structure"), None)
-
         for mo_idx in range(n_mo):
-            plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
-            try:
-                plotter.set_background("#1a1a2e")
-                if struct_sec:
-                    StructureRenderer(struct_sec, reader).add_to_plotter(plotter)
+            with headless_plotter(size) as plotter:
+                add_structure(plotter, reader)
                 grid, values = wf_renderer.evaluate_mo(mo_idx, n_per_dim=60)
                 if values is not None:
                     # GridData lives in vibeview.qvf (volume.py only imports
@@ -355,38 +336,23 @@ def render_orbital_animation(
                     # feed it bohr to avoid the double Å conversion.
                     from vibeview.qvf import GridData
 
-                    ang_to_bohr = 1.0 / 0.529177210903
                     gd = GridData(
-                        origin=np.asarray(grid.origin) * ang_to_bohr,
-                        voxel_vectors=np.asarray(grid.voxel_vectors) * ang_to_bohr,
+                        origin=np.asarray(grid.origin) * ANGSTROM_TO_BOHR,
+                        voxel_vectors=np.asarray(grid.voxel_vectors) * ANGSTROM_TO_BOHR,
                         shape=grid.shape,
                     )
                     # Two contours: clipping one +isovalue contour at 0
                     # can never yield the negative lobe (all its scalars
                     # are +isovalue) — the old code drew only one phase.
-                    pos = build_isosurface_mesh(values, gd, isovalue)
-                    neg = build_isosurface_mesh(values, gd, -isovalue)
-                    if pos is not None and pos.n_points:
-                        plotter.add_mesh(
-                            pos,
-                            color="#3366cc",
-                            opacity=0.6,
-                            name="mo_pos",
-                            show_scalar_bar=False,
-                        )
-                    if neg is not None and neg.n_points:
-                        plotter.add_mesh(
-                            neg,
-                            color="#cc3333",
-                            opacity=0.6,
-                            name="mo_neg",
-                            show_scalar_bar=False,
-                        )
-                plotter.view_isometric()
-                plotter.reset_camera()
-                plotter.screenshot(str(frame_dir / f"frame_{mo_idx:04d}.png"))
-            finally:
-                plotter.close()
+                    add_signed_isosurfaces(
+                        plotter,
+                        build_isosurface_mesh(values, gd, isovalue),
+                        build_isosurface_mesh(values, gd, -isovalue),
+                        opacity=0.6,
+                        name="mo",
+                    )
+                frame(plotter)
+                snapshot(plotter, frame_dir / f"frame_{mo_idx:04d}.png")
 
         if format == "mp4" and _ffmpeg_available():
             _frames_to_mp4(frame_dir, output, fps=fps)
@@ -403,15 +369,15 @@ def render_orbital_animation(
 
 
 def render_turntable(
-    plotter,
-    output_path,
+    plotter: Any,
+    output_path: str | Path,
     *,
-    num_frames=120,
-    duration=4.0,
-    fps=None,
-    resolution=(1920, 1080),
-    format="mp4",
-):
+    num_frames: int = 120,
+    duration: float = 4.0,
+    fps: float | None = None,
+    resolution: tuple[int, int] = (1920, 1080),
+    format: str = "mp4",
+) -> Path:
     """Render a 360-degree rotating view of the molecule.
 
     Yields a video file suitable for embedding in presentations.
@@ -422,10 +388,6 @@ def render_turntable(
     fps : The effective frame rate for the output video. When provided,
         overrides ``num_frames`` (set to ``int(fps * duration)``).
     """
-    from pathlib import Path
-
-    import numpy as np
-
     if fps is not None:
         num_frames = max(1, int(fps * duration))
 

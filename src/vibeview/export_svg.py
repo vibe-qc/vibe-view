@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vibeview.bonds import in_cell, structure_bonds
+
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
 
@@ -57,7 +59,7 @@ def _project_2d(positions: np.ndarray) -> np.ndarray:
 
 
 def export_svg(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     width: int = 800,
@@ -94,7 +96,10 @@ def export_svg(
     except Exception:
         svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
         svg += f'<rect width="100%" height="100%" fill="{background}"/>'
-        svg += '<text x="50%" y="50%" text-anchor="middle" font-family="sans-serif">No structure data</text>'
+        svg += (
+            '<text x="50%" y="50%" text-anchor="middle" '
+            'font-family="sans-serif">No structure data</text>'
+        )
         svg += "</svg>"
         Path(output_path).write_text(svg)
         return svg
@@ -153,7 +158,7 @@ def export_svg(
         (height - 2 * padding) / span[1],
     )
 
-    def _to_svg(p):
+    def _to_svg(p: np.ndarray) -> tuple[float, float]:
         x = padding + (p[0] - min_vals[0]) * scale_factor
         y = height - padding - (p[1] - min_vals[1]) * scale_factor
         return x, y
@@ -187,24 +192,20 @@ def export_svg(
     else:
         radii = {s: scale_factor * 0.08 for s in set(symbols)}
 
-    # Draw bonds first (behind atoms)
+    # Draw bonds first (behind atoms): the viewer's connectivity, without the
+    # bonds that cross a periodic cell face, which a flat figure cannot place.
     if style != "space_filling":
-        cov_radii = [cov_radii_tbl.get(s, 0.8) for s in symbols]
-        for i in range(len(symbols)):
-            for j in range(i + 1, len(symbols)):
-                d = np.linalg.norm(positions[i] - positions[j])
-                threshold = (cov_radii[i] + cov_radii[j]) * 1.2
-                if 0.4 < d < threshold:
-                    x1, y1 = _to_svg(coords2d[i])
-                    x2, y2 = _to_svg(coords2d[j])
-                    bond_width = max(1, scale_factor * 0.05)
-                    lines.append(
-                        f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-                        f'stroke="#888888" stroke-width="{bond_width:.1f}" stroke-linecap="round"/>'
-                    )
+        bond_width = max(1, scale_factor * 0.05)
+        for i, j, _order, _image in in_cell(structure_bonds(sdata)):
+            x1, y1 = _to_svg(coords2d[i])
+            x2, y2 = _to_svg(coords2d[j])
+            lines.append(
+                f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+                f'stroke="#888888" stroke-width="{bond_width:.1f}" stroke-linecap="round"/>'
+            )
 
     # Draw atoms
-    for i, (symbol, pos) in enumerate(zip(symbols, coords2d)):
+    for symbol, pos in zip(symbols, coords2d, strict=True):
         x, y = _to_svg(pos)
         r = radii.get(symbol, scale_factor * 0.2)
         color = _CPK.get(symbol, "#888888")

@@ -16,7 +16,6 @@ import types
 import zipfile
 
 import numpy as np
-import pytest
 
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "True")
 

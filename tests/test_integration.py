@@ -135,8 +135,10 @@ def _build_water_qvf() -> Path:
         "sections/homo.dat": homo_data.tobytes(),
     }
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         for path, data in files.items():
             zf.writestr(path, data)
@@ -249,7 +251,7 @@ class TestFullPipeline:
         path = _build_water_qvf()
         try:
             reader = QVFReader(path)
-            state = ViewerState.from_manifest(reader.viewer_defaults)
+            ViewerState.from_manifest(reader.viewer_defaults)
             # Simulate auto-open logic: check nonexistent IDs gracefully
             for section_id in ["nonexistent", "also_fake"]:
                 assert not reader.has_section(section_id)

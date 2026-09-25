@@ -90,6 +90,14 @@ def _render(structure: dict, replication=(1, 1, 1)):
     return plotter
 
 
+def _cell_edge_count(plotter) -> int:
+    """Edges of the one cell wireframe actor, or 0 when no cell is drawn."""
+    actor = plotter.actors.get("cell_wireframe")
+    if actor is None:
+        return 0
+    return int(actor.GetMapper().GetInput().GetNumberOfLines())
+
+
 def _cell_actor_names(plotter) -> list[str]:
     return sorted(str(k) for k in plotter.actors if str(k).startswith("cell_"))
 
@@ -111,7 +119,7 @@ def _scene_points(plotter) -> np.ndarray:
 def test_slab_draws_only_in_plane_parallelogram():
     """dim=2 -> 4 edges (a, b parallelogram). Never the 12-edge box."""
     plotter = _render(_slab())
-    assert len(_cell_actor_names(plotter)) == 4
+    assert _cell_edge_count(plotter) == 4
 
 
 def test_bulk_crystal_still_draws_full_parallelepiped():
@@ -123,7 +131,7 @@ def test_bulk_crystal_still_draws_full_parallelepiped():
         "lattice_vectors": [[5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0]],
     }
     plotter = _render(bulk)
-    assert len(_cell_actor_names(plotter)) == 12
+    assert _cell_edge_count(plotter) == 12
 
 
 def test_polymer_draws_single_chain_axis_edge():
@@ -135,7 +143,7 @@ def test_polymer_draws_single_chain_axis_edge():
         "lattice_vectors": [[2.5, 0, 0], [0, 30.0, 0], [0, 0, 30.0]],
     }
     plotter = _render(polymer)
-    assert len(_cell_actor_names(plotter)) == 1
+    assert _cell_edge_count(plotter) == 1
 
 
 def test_slab_cell_never_extends_along_the_normal():
@@ -315,15 +323,14 @@ def test_non_contiguous_pbc_draws_the_right_axes():
     """
     import numpy as np
 
-    from vibeview.povray_export import _unit_cell_edges
+    from vibeview.renderers.cell import cell_edges
 
-    origin = np.zeros(3)
     lattice = np.diag([1.0, 2.0, 3.0])
 
-    edges = _unit_cell_edges(origin, lattice, (True, False, True))
-    assert len(edges) == 4  # a parallelogram, one per periodic-axis pair
+    starts, ends = cell_edges(lattice, (True, False, True))
+    assert len(starts) == 4  # a parallelogram, one per periodic-axis pair
 
-    spans = {tuple(np.abs(np.asarray(b) - np.asarray(a)).round(6)) for a, b in edges}
+    spans = {tuple(np.abs(b - a).round(6)) for a, b in zip(starts, ends, strict=True)}
     assert (2.0, 0.0, 0.0) not in spans, "drew the non-periodic b axis"
     assert (1.0, 0.0, 0.0) in spans and (0.0, 0.0, 3.0) in spans
 
@@ -340,17 +347,16 @@ def test_structure_data_exposes_dim():
 def test_minimum_image_does_not_wrap_along_the_slab_normal():
     """An atom 12 Å above the plane stays there; it must not be pulled to the
     other side of a synthesized 30 Å column."""
-    from vibeview.renderers.structure import _minimum_image
+    from vibeview.renderers.cell import minimum_image
 
     lattice = np.array([GRAPHENE_A1, GRAPHENE_A2, [0.0, 0.0, 30.0]])
-    inv = np.linalg.inv(lattice)
-    p1 = np.array([0.0, 0.0, 0.0])
-    p2 = np.array([0.0, 0.0, 20.0])  # frac_z = 0.667 -> would round-wrap to -10
+    p1 = np.array([[0.0, 0.0, 0.0]])
+    p2 = np.array([[0.0, 0.0, 20.0]])  # frac_z = 0.667 -> would round-wrap to -10
 
-    slab_img = _minimum_image(p1, p2, lattice, inv, (True, True, False))
+    slab_img = minimum_image(p1, p2, lattice, (True, True, False))[0]
     assert slab_img[2] == pytest.approx(20.0)
 
-    bulk_img = _minimum_image(p1, p2, lattice, inv, (True, True, True))
+    bulk_img = minimum_image(p1, p2, lattice, (True, True, True))[0]
     assert bulk_img[2] == pytest.approx(-10.0)
 
 
@@ -365,12 +371,12 @@ def test_volume_tiling_does_not_repeat_into_the_vacuum():
 
     shape = (4, 4, 4)
     data = np.arange(np.prod(shape), dtype=float).reshape(shape)
+    lattice = np.array([GRAPHENE_A1, GRAPHENE_A2, [0.0, 0.0, 30.0]])
     grid = GridData(
         origin=np.zeros(3),
-        voxel_vectors=np.eye(3) * 0.5,
+        voxel_vectors=lattice / 0.529177210903 / 4,
         shape=shape,
     )
-    lattice = np.array([GRAPHENE_A1, GRAPHENE_A2, [0.0, 0.0, 30.0]])
 
     slab_rep = tuple(1 if p else 0 for p in (True, True, False))
     tiled, _ = replicate_volume_for_periodic(data, grid, lattice, replication=slab_rep)
@@ -388,17 +394,16 @@ def test_volume_tiling_does_not_repeat_into_the_vacuum():
 
 def test_povray_export_draws_only_the_in_plane_cell():
     """POV-Ray export is a toolbar button; it drew the full 12-edge box."""
-    from vibeview.povray_export import _unit_cell_edges
+    from vibeview.renderers.cell import cell_edges
 
     lattice = np.array([GRAPHENE_A1, GRAPHENE_A2, [0.0, 0.0, 30.0]])
-    origin = np.zeros(3)
 
-    assert len(_unit_cell_edges(origin, lattice, (True, True, True))) == 12
-    assert len(_unit_cell_edges(origin, lattice, (True, False, False))) == 1
+    assert len(cell_edges(lattice, (True, True, True))[0]) == 12
+    assert len(cell_edges(lattice, (True, False, False))[0]) == 1
 
-    slab_edges = _unit_cell_edges(origin, lattice, (True, True, False))
-    assert len(slab_edges) == 4
-    for start, end in slab_edges:
+    starts, ends = cell_edges(lattice, (True, True, False))
+    assert len(starts) == 4
+    for start, end in zip(starts, ends, strict=True):
         assert abs(start[2]) < 1e-9 and abs(end[2]) < 1e-9
 
 

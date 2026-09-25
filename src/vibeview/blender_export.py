@@ -19,11 +19,12 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+
+from vibeview.bonds import in_cell, structure_bonds
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
@@ -63,43 +64,6 @@ _COVALENT_RADII: dict[int, float] = {
     35: 1.20,
     53: 1.39,
 }
-
-_ELEMENT_SYMBOLS = [
-    "",
-    "H",
-    "He",
-    "Li",
-    "Be",
-    "B",
-    "C",
-    "N",
-    "O",
-    "F",
-    "Ne",
-    "Na",
-    "Mg",
-    "Al",
-    "Si",
-    "P",
-    "S",
-    "Cl",
-    "Ar",
-    "K",
-    "Ca",
-    "Sc",
-    "Ti",
-    "V",
-    "Cr",
-    "Mn",
-    "Fe",
-    "Co",
-    "Ni",
-    "Cu",
-    "Zn",
-]
-
-_Z_TO_SYMBOL = {i: s for i, s in enumerate(_ELEMENT_SYMBOLS) if s}
-_SYMBOL_TO_Z = {s: i for i, s in enumerate(_ELEMENT_SYMBOLS) if s}
 
 
 # ── Blender scene templates ─────────────────────────────────────────────
@@ -383,7 +347,7 @@ print("Ready! Render with: bpy.ops.render.render(write_still=True)")
 
 
 def export_blender_script(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     style: str = "ball_and_stick",
@@ -426,12 +390,11 @@ def export_blender_script(
         centroid = np.mean(positions, axis=0)
         positions = (np.array(positions) - centroid).tolist()
 
-    # Detect bonds (or use explicit ones)
+    # Bonds: the viewer's connectivity. The generated script joins atoms by
+    # index, so a bond through a periodic cell face has no image to reach
+    # and is left out.
     if style != "space_filling":
-        if sdata.bonds is not None:
-            bonds = [[b[0], b[1]] for b in sdata.bonds]
-        else:
-            bonds = _detect_bonds(positions, z_list)
+        bonds = [[i, j] for i, j, _order, _image in in_cell(structure_bonds(sdata))]
     else:
         bonds = []
 
@@ -467,25 +430,6 @@ def export_blender_script(
     script = "\n".join(parts)
     Path(output_path).write_text(script)
     return script
-
-
-def _detect_bonds(
-    positions: list[list[float]],
-    z_list: list[int],
-    tolerance: float = 1.2,
-) -> list[list[int]]:
-    """Detect bonds between atoms based on covalent radii."""
-    pos = np.asarray(positions, dtype=float)
-    radii = [_COVALENT_RADII.get(z, 0.8) for z in z_list]
-    n = len(z_list)
-    bonds = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = float(np.linalg.norm(pos[i] - pos[j]))
-            threshold = (radii[i] + radii[j]) * tolerance
-            if 0.4 < d < threshold:
-                bonds.append([i, j])
-    return bonds
 
 
 # ── Convenience wrapper ─────────────────────────────────────────────────

@@ -13,13 +13,23 @@ import hashlib
 import io
 import json
 import zipfile
+from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Union
+from typing import IO, Any, cast
 
 import jsonschema
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from jsonschema.protocols import Validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from vibeview.bonds import Bond, structure_bonds
+from vibeview.elements import SYMBOL_TO_Z
+
+# A bond as every reader path emits it: ``(i, j, order, image)``, where
+# ``image`` is the integer lattice translation applied to ``j``. In-cell bonds
+# carry ``(0, 0, 0)``; see ``vibeview.bonds`` for why the image is identity.
 
 # ── Pydantic models for manifest.json ─────────────────────────────────────
 
@@ -100,6 +110,12 @@ class SHA256MismatchError(QVFError):
     """sha256 of a member does not match the manifest. Hard error for that section."""
 
 
+@dataclass(frozen=True)
+class _SectionError:
+    message: str
+    kind: str
+
+
 class SectionNotFoundError(QVFError):
     """Requested section id not found in manifest."""
 
@@ -111,364 +127,6 @@ class CriticalSectionUnsupportedError(QVFError):
     misleading view."""
 
 
-# ── Covalent radii table (angstroms) for bond inference ─────────────────
-# From Cordero et al., Dalton Trans. (2008). Used when no bonds section
-# is present in the QVF file.
-
-_COVALENT_RADII: dict[int, float] = {
-    1: 0.31,
-    2: 0.28,
-    3: 1.28,
-    4: 0.96,
-    5: 0.84,
-    6: 0.76,
-    7: 0.71,
-    8: 0.66,
-    9: 0.57,
-    10: 0.58,
-    11: 1.66,
-    12: 1.41,
-    13: 1.21,
-    14: 1.11,
-    15: 1.07,
-    16: 1.05,
-    17: 1.02,
-    18: 1.06,
-    19: 2.03,
-    20: 1.76,
-    21: 1.70,
-    22: 1.60,
-    23: 1.53,
-    24: 1.39,
-    25: 1.39,
-    26: 1.32,
-    27: 1.26,
-    28: 1.24,
-    29: 1.32,
-    30: 1.22,
-    31: 1.22,
-    32: 1.20,
-    33: 1.19,
-    34: 1.20,
-    35: 1.20,
-    36: 1.16,
-    37: 2.20,
-    38: 1.95,
-    39: 1.90,
-    40: 1.75,
-    41: 1.64,
-    42: 1.54,
-    43: 1.47,
-    44: 1.46,
-    45: 1.42,
-    46: 1.39,
-    47: 1.45,
-    48: 1.44,
-    49: 1.42,
-    50: 1.39,
-    51: 1.39,
-    52: 1.38,
-    53: 1.39,
-    54: 1.40,
-    55: 2.44,
-    56: 2.15,
-    57: 2.07,
-    58: 2.04,
-    59: 2.03,
-    60: 2.01,
-    61: 1.99,
-    62: 1.98,
-    63: 1.98,
-    64: 1.96,
-    65: 1.94,
-    66: 1.92,
-    67: 1.92,
-    68: 1.89,
-    69: 1.90,
-    70: 1.87,
-    71: 1.87,
-    72: 1.75,
-    73: 1.70,
-    74: 1.62,
-    75: 1.51,
-    76: 1.44,
-    77: 1.41,
-    78: 1.36,
-    79: 1.36,
-    80: 1.32,
-    81: 1.45,
-    82: 1.46,
-    83: 1.48,
-    84: 1.40,
-    85: 1.50,
-    86: 1.50,
-    87: 2.60,
-    88: 2.21,
-    89: 2.15,
-    90: 2.06,
-    91: 2.00,
-    92: 1.96,
-    93: 1.90,
-    94: 1.87,
-    95: 1.80,
-    96: 1.69,
-}
-
-_BOND_TOLERANCE = 0.45  # angstroms — sum of covalent radii is stretched by this
-
-
-# Elements that form ordinary covalent bonds. Everything else is treated as
-# a metal below. The metalloids (B, Si, Ge, As, Sb, Te) sit here deliberately:
-# they form real directional bonds and belong with the non-metals for this
-# purpose, whatever their formal classification.
-_NON_METALS = frozenset(
-    {1, 2, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18, 32, 33, 34, 35, 36, 51, 52, 53, 54, 85, 86}
-)
-
-
-def _metal_metal_pairs_are_bonds(structure) -> bool:
-    """Should two metal atoms be joined by a stick in this structure?
-
-    Only in a structure that is entirely metal. The radii here are
-    neutral-atom radii, and a cation is far smaller than its neutral atom --
-    Mg is 1.41 A against 0.72 for Mg(2+) -- so in an ionic solid the
-    metal-metal separation falls inside a cutoff built from neutral radii and
-    a bonded metal sublattice appears that does not exist. Measured before
-    this rule: MgO gave 24 spurious Mg-Mg bonds and read 18-coordinate
-    instead of 6, and CsCl gave 3 spurious Cs-Cs and read 14 instead of 8.
-
-    In an actual metal those contacts are the bonding, so fcc copper keeps
-    all twelve neighbours. This is a display heuristic, not chemistry: a
-    producer that supplies explicit bonds overrides it entirely, since those
-    are used instead of inference.
-    """
-    seen_metal = False
-    for atom in structure.atoms:
-        if atom.atomic_number in _NON_METALS:
-            return False
-        seen_metal = True
-    return seen_metal
-
-
-def _periodic_shifts(lattice, pbc):
-    """Lattice translations whose image shell can reach into the cell.
-
-    Only axes flagged periodic are translated, and only by one cell: a
-    covalent cutoff is far shorter than any cell vibe-view can render, so a
-    second shell could never contribute a bond. A cell thinner than the
-    cutoff would need more, and is reported by the caller's guard rather
-    than silently half-handled.
-    """
-    ranges = []
-    for axis in range(3):
-        periodic = axis < len(pbc) and pbc[axis]
-        ranges.append((-1, 0, 1) if periodic else (0,))
-    shifts = []
-    for ia in ranges[0]:
-        for ib in ranges[1]:
-            for ic in ranges[2]:
-                if ia == 0 and ib == 0 and ic == 0:
-                    continue
-                shifts.append(
-                    ((ia, ib, ic), ia * lattice[0] + ib * lattice[1] + ic * lattice[2])
-                )
-    return shifts
-
-
-def _dedupe_bonds(bonds, ghost_of, ghost_shift=None):
-    """Map image indices back to real atoms and drop true repeats.
-
-    Emits ``(i, j, order, image)`` where ``image`` is the integer lattice
-    translation applied to *j*: the bond runs from atom ``i`` to atom ``j``
-    displaced by ``image @ lattice``. In-cell bonds carry ``(0, 0, 0)``.
-
-    The image is part of a bond's identity, not decoration. Two atoms in a
-    dense crystal are bonded through several different images at once -- the
-    neighbour to the left and the neighbour to the right can be the same atom
-    reached the other way round -- and keying only on ``(i, j)`` collapsed
-    them, halving the coordination: rocksalt NaCl showed 3 neighbours per ion
-    instead of 6, fcc copper 3 instead of 12.
-
-    A bond and its reverse are the same bond, so ``(i, j, +image)`` and
-    ``(j, i, -image)`` are folded onto one canonical orientation. An atom
-    paired with its own image at ``(0,0,0)`` would be a bond to itself and is
-    dropped; through a nonzero image it is a real bond in a cell narrower than
-    the bond, so it is kept.
-    """
-    seen: set[tuple[int, int, tuple[int, int, int]]] = set()
-    out: list[tuple[int, int, float, tuple[int, int, int]]] = []
-    for i, j, order in bonds:
-        if ghost_of is None:
-            a, b, image = int(i), int(j), (0, 0, 0)
-        else:
-            a, b = int(ghost_of[i]), int(ghost_of[j])
-            shift_i = ghost_shift[i] if ghost_shift is not None else (0, 0, 0)
-            shift_j = ghost_shift[j] if ghost_shift is not None else (0, 0, 0)
-            image = tuple(int(x) for x in (np.asarray(shift_j) - np.asarray(shift_i)))
-        if a == b and not any(image):
-            continue
-        # Canonical orientation: lower index first, and for a self-pair the
-        # lexicographically larger image, so +n and -n are one bond.
-        if a > b or (a == b and image < tuple(-x for x in image)):
-            a, b = b, a
-            image = tuple(-x for x in image)
-        key = (a, b, image)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append((a, b, order, image))
-    out.sort(key=lambda bond: (bond[0], bond[1], bond[3]))
-    return out
-
-
-def _infer_bonds_by_radii(structure) -> list[tuple[int, int, float]]:
-    """Covalent-radius bond inference over a uniform cell list.
-
-    The pair test is unchanged: i-j bond when
-    ``|r_i - r_j| < R_cov(i) + R_cov(j) + _BOND_TOLERANCE``. What
-    changes is that candidates come from neighbouring bins rather than
-    from every atom.
-
-    The all-pairs form this replaces was an O(N^2) Python loop, which is
-    fine for a molecule and quadratically not fine for a biomolecule:
-    13,772 atoms is 94.8 million iterations, measured at 158.7 s, and
-    the Trame server binds its port only once the first render has
-    finished. Binning at the largest possible cutoff keeps the result
-    identical while making the work proportional to the number of atoms.
-    """
-    n = len(structure.atoms)
-    if n < 2:
-        return []
-    positions = np.asarray(
-        [a.position for a in structure.atoms], dtype=float
-    ).reshape(n, 3)
-    radii = np.array(
-        [_COVALENT_RADII.get(a.atomic_number, 1.5) for a in structure.atoms],
-        dtype=float,
-    )
-    numbers = np.array([a.atomic_number for a in structure.atoms], dtype=np.int64)
-    is_metal = np.array(
-        [int(z) not in _NON_METALS for z in numbers], dtype=bool
-    )
-    drop_metal_pairs = not _metal_metal_pairs_are_bonds(structure)
-
-    # A periodic structure bonds through its own cell walls. Searching raw
-    # Cartesian space misses every one of them: two chlorines 1.0 A apart
-    # across a 10 A boundary sit 9.0 A apart in these coordinates and were
-    # reported as unbonded, while the same pair mid-cell bonded normally.
-    # The renderer already draws such bonds through the minimum image; it
-    # was never handed any to draw.
-    #
-    # Rather than teach the neighbour search about wrapping, surround the
-    # cell with the thin shell of periodic images that could reach into it
-    # and search the union. The shell is a few angstroms against a cell
-    # edge of tens, so this costs a small multiple of the atom count.
-    ghost_of: np.ndarray | None = None
-    ghost_shift: np.ndarray | None = None
-    lattice = getattr(structure, "lattice_vectors", None)
-    pbc = tuple(bool(v) for v in (getattr(structure, "pbc", None) or ()))
-    if lattice is not None and any(pbc):
-        reach = float(2.0 * radii.max() + _BOND_TOLERANCE)
-        lattice = np.asarray(lattice, dtype=float)
-        shifts = _periodic_shifts(lattice, pbc)
-        if shifts:
-            lo = positions.min(axis=0) - reach
-            hi = positions.max(axis=0) + reach
-            ghost_pos = [positions]
-            ghost_rad = [radii]
-            ghost_src = [np.arange(n)]
-            ghost_img = [np.zeros((n, 3), dtype=np.int64)]
-            for cellshift, shift in shifts:
-                moved = positions + shift
-                # Keep only images that can actually reach a real atom.
-                # Appending all 26 translations wholesale searches 27x the
-                # atoms: measured 8.05 s on a 20,000-atom periodic cell,
-                # against 0.23 s for 13,772 atoms without images. The shell
-                # that matters is a cutoff thick, so almost every image is
-                # discarded here.
-                keep = np.all((moved >= lo) & (moved <= hi), axis=1)
-                if not keep.any():
-                    continue
-                ghost_pos.append(moved[keep])
-                ghost_rad.append(radii[keep])
-                ghost_src.append(np.arange(n)[keep])
-                ghost_img.append(
-                    np.repeat(
-                        np.asarray(cellshift, dtype=np.int64)[None, :],
-                        int(keep.sum()),
-                        axis=0,
-                    )
-                )
-            positions = np.vstack(ghost_pos)
-            radii = np.concatenate(ghost_rad)
-            ghost_of = np.concatenate(ghost_src)
-            ghost_shift = np.vstack(ghost_img)
-            n = len(positions)
-
-    # One bin edge = the largest cutoff any pair can have, so every bond
-    # partner is in this bin or one of the 26 around it.
-    cell = float(2.0 * radii.max() + _BOND_TOLERANCE)
-    if not np.isfinite(cell) or cell <= 0.0:
-        return []
-
-    origin = positions.min(axis=0)
-    idx = np.floor((positions - origin) / cell).astype(np.int64)
-
-    # Small structures: the binning overhead dominates, and the vectorized
-    # all-pairs form is both simpler and faster.
-    if n <= 512:
-        d2 = np.sum(
-            (positions[:, None, :] - positions[None, :, :]) ** 2, axis=-1
-        )
-        cutoff = radii[:, None] + radii[None, :] + _BOND_TOLERANCE
-        hit = np.triu(d2 < cutoff**2, k=1)
-        if drop_metal_pairs:
-            src = is_metal[ghost_of] if ghost_of is not None else is_metal
-            hit &= ~(src[:, None] & src[None, :])
-        i_arr, j_arr = np.nonzero(hit)
-        return _dedupe_bonds(
-            [(int(i), int(j), 1.0) for i, j in zip(i_arr, j_arr, strict=True)],
-            ghost_of,
-            ghost_shift,
-        )
-
-    buckets: dict[tuple[int, int, int], list[int]] = {}
-    for a, key in enumerate(map(tuple, idx)):
-        buckets.setdefault(key, []).append(a)
-
-    offsets = [
-        (dx, dy, dz)
-        for dx in (-1, 0, 1)
-        for dy in (-1, 0, 1)
-        for dz in (-1, 0, 1)
-    ]
-    bonds: list[tuple[int, int, float]] = []
-    for (bx, by, bz), members in buckets.items():
-        neighbours: list[int] = []
-        for dx, dy, dz in offsets:
-            neighbours.extend(buckets.get((bx + dx, by + dy, bz + dz), ()))
-        if not neighbours:
-            continue
-        cand = np.asarray(neighbours, dtype=np.int64)
-        for i in members:
-            # i < j only, so each pair is emitted exactly once even though
-            # the bin pair is visited from both sides.
-            higher = cand[cand > i]
-            if higher.size == 0:
-                continue
-            d2 = np.sum((positions[higher] - positions[i]) ** 2, axis=1)
-            cutoff = radii[i] + radii[higher] + _BOND_TOLERANCE
-            for j in higher[d2 < cutoff**2]:
-                if drop_metal_pairs:
-                    a = int(ghost_of[i]) if ghost_of is not None else i
-                    b = int(ghost_of[j]) if ghost_of is not None else int(j)
-                    if is_metal[a] and is_metal[b]:
-                        continue
-                bonds.append((i, int(j), 1.0))
-
-    return _dedupe_bonds(bonds, ghost_of, ghost_shift)
-
-
 # Minimum run lengths. One residue cannot be a helix: 3.6 residues is a
 # single turn, and a "strand" of two is just two adjacent atoms. Shorter
 # runs than these are noise from the per-residue test and become coil.
@@ -476,7 +134,7 @@ _MIN_HELIX_RUN = 4
 _MIN_STRAND_RUN = 3
 
 
-def _virtual_angle(p0, p1, p2) -> float:
+def _virtual_angle(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray) -> float:
     """CA(i-1)-CA(i)-CA(i+1) angle, degrees."""
     a, b = p0 - p1, p2 - p1
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
@@ -485,7 +143,7 @@ def _virtual_angle(p0, p1, p2) -> float:
     return float(np.degrees(np.arccos(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))))
 
 
-def _virtual_dihedral(p0, p1, p2, p3) -> float:
+def _virtual_dihedral(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
     """CA(i)-CA(i+1)-CA(i+2)-CA(i+3) dihedral, degrees, signed.
 
     The sign convention here is fixed by measurement, not by assertion:
@@ -533,7 +191,7 @@ def _assign_secondary_structure(trace: np.ndarray) -> list[str]:
         return []
     labels = ["C"] * n
 
-    def dist(i, k):
+    def dist(i: int, k: int) -> float:
         if i + k >= n:
             return float("nan")
         return float(np.linalg.norm(trace[i + k] - trace[i]))
@@ -595,7 +253,7 @@ def _assign_secondary_structure(trace: np.ndarray) -> list[str]:
     core = list(labels)
     spread = list(labels)
     for i, label in enumerate(core):
-        reach = {"H": 4, "E": 3}.get(label)
+        reach = {"H": 4, "E": 4}.get(label)
         if reach is None:
             continue
         for k in range(i + 1, min(i + reach, n)):
@@ -666,7 +324,7 @@ def _opt_float(value: Any) -> float | None:
 _SS_TYPE_TO_LABEL = {"helix": "H", "sheet": "E", "coil": "C"}
 
 
-def _resolve_pbc(raw: dict) -> tuple[tuple[bool, bool, bool], int]:
+def _resolve_pbc(raw: dict[str, Any]) -> tuple[tuple[bool, bool, bool], int]:
     """Resolve per-axis periodicity from a ``structure`` payload.
 
     ``pbc`` is normative when present: it is per-axis, so it is strictly more
@@ -891,7 +549,7 @@ class StructureData:
             return np.zeros((0, 3), dtype=np.float64)
         return np.asarray(picked, dtype=np.float64)
 
-    def _supplied_labels(self, chain: str) -> list[str] | None:
+    def _supplied_labels(self, chain: str, *, detailed: bool = False) -> list[str] | None:
         """Per-CA labels for ``chain`` from the supplied ranges, or None.
 
         None when nothing was supplied for this chain, so the caller falls
@@ -912,6 +570,14 @@ class StructureData:
             if start is None or end is None:
                 continue
             label = _SS_TYPE_TO_LABEL.get(str(entry.get("type", "")), "C")
+            if detailed:
+                # Optional viewer extension within the schema's open range
+                # object. Keep the normative helix/sheet/coil type unchanged.
+                subtype = str(entry.get("subtype", ""))
+                if label == "H":
+                    label = {"alpha": "H", "pi": "I", "3_10": "G"}.get(subtype, "H")
+                elif label == "E" and subtype == "bridge":
+                    label = "B"
             ranges.append((min(start, end), max(start, end), label))
         if not ranges:
             return None
@@ -925,13 +591,19 @@ class StructureData:
             out.append(label)
         return out
 
-    def secondary_structure(self, chain_id: str | None = None) -> list[str]:
+    def secondary_structure(
+        self, chain_id: str | None = None, *, detailed: bool = False
+    ) -> list[str]:
         """Per-alpha-carbon secondary structure, aligned with
         :meth:`backbone_trace`.
 
         One character per CA: ``"H"`` helix, ``"E"`` extended strand,
         ``"C"`` coil. The list is always the same length as the trace for
         the same ``chain_id``, so a renderer can zip the two.
+
+        With ``detailed=True``, supplied subtype annotations additionally
+        return ``G`` (3-10 helix), ``I`` (pi helix) and ``B`` (beta bridge).
+        Geometric assignment always returns the coarse H/E/C labels.
 
         A producer-supplied ``secondary_structure`` range list wins, per
         chain, over the geometric assignment described below (spec § 5.1
@@ -972,7 +644,7 @@ class StructureData:
         for chain in chains:
             if chain_id is not None and chain != chain_id:
                 continue
-            supplied = self._supplied_labels(chain)
+            supplied = self._supplied_labels(chain, detailed=detailed)
             if supplied is not None:
                 out.extend(supplied)
                 continue
@@ -1102,7 +774,7 @@ class RunRecordData:
     input_size: int
     log_text: str | None
     log_size: int
-    files: dict
+    files: dict[str, Any]
     attachment_roles: list[str]
 
 
@@ -1119,10 +791,10 @@ class JobSpecData:
     functional: str | None
     charge: int | None
     multiplicity: int | None
-    kpoints: list | None
-    tasks: list
-    options: dict
-    raw: dict
+    kpoints: list[Any] | None
+    tasks: list[Any]
+    options: dict[str, Any]
+    raw: dict[str, Any]
 
 
 @dataclass
@@ -1136,7 +808,7 @@ class NMRData:
     decide what to surface.
     """
 
-    raw: dict
+    raw: dict[str, Any]
 
 
 @dataclass
@@ -1149,7 +821,7 @@ class EPRData:
     decide what to surface.
     """
 
-    raw: dict
+    raw: dict[str, Any]
 
 
 @dataclass
@@ -1162,7 +834,7 @@ class SymmetryData:
     schema. The renderer surfaces every key it finds.
     """
 
-    raw: dict
+    raw: dict[str, Any]
 
 
 @dataclass
@@ -1210,7 +882,7 @@ class BasisShell:
     """One contracted shell of the GTO basis (§ 1.5)."""
 
     center: int  # 0-based atom index
-    l: int  # angular momentum
+    l: int  # noqa: E741 — `l` is the QVF field name for angular momentum
     exponents: np.ndarray  # [n_prim] bohr^-2
     coefficients: np.ndarray  # [n_prim] contraction coefficients (normalized primitives)
     pure: bool = True  # spherical (True) or Cartesian (False)
@@ -1268,6 +940,8 @@ class WavefunctionGTOData:
     occupation_semantics: str | None = None
     # Explicit Bloch wavevector metadata; None retains legacy cluster semantics.
     k_point: np.ndarray | None = None
+    # Session-only provenance/descriptors returned by the external worker.
+    relocalization: dict[str, Any] | None = None
 
 
 @dataclass
@@ -1353,37 +1027,153 @@ class ScanSurfaceData:
     geometries: np.ndarray | None = None  # (nA*nB, n_atoms, 3) Å
 
 
-def _parse_bond_pairs(raw: Any) -> list[tuple[int, int, float]]:
-    """Parse a QVF bonds payload into ``(i, j, order, image)`` tuples.
-
-    The writer emits a per-pair ``order`` (single=1.0, double=2.0,
-    aromatic=1.5, …); it was previously discarded, so double/aromatic bonds
-    rendered identically to single (audit finding A6-02). ``order`` defaults
-    to 1.0 when a (hand-built / legacy) payload omits it.
-    """
+def _json_object(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        raise QVFError("bonds payload is not a JSON object")
+        raise QVFError("payload is not a JSON object")
+    return cast(dict[str, Any], raw)
+
+
+def _json_integer(value: Any, field: str) -> int:
+    # Match JSON Schema integer semantics, including 1.0 but excluding bool.
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or (isinstance(value, float) and (not np.isfinite(value) or not value.is_integer()))
+    ):
+        raise QVFError(f"{field} must be an integer")
+    return int(value)
+
+
+def _json_finite_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise QVFError(f"{field} must be a finite number")
+    try:
+        number = float(value)
+    except OverflowError:
+        raise QVFError(f"{field} must be a finite number") from None
+    if not np.isfinite(number):
+        raise QVFError(f"{field} must be a finite number")
+    return number
+
+
+def _grid_from_json(raw: Any, data_shape: Sequence[int]) -> GridData:
+    payload = _json_object(raw)
+
+    def vector(value: Any, field: str) -> list[float]:
+        if not isinstance(value, list) or len(value) != 3:
+            raise QVFError(f"{field} must contain exactly three numbers")
+        return [_json_finite_number(v, f"{field}[{i}]") for i, v in enumerate(value)]
+
+    origin = vector(payload.get("origin"), "origin")
+    vectors = payload.get("voxel_vectors")
+    if not isinstance(vectors, list) or len(vectors) != 3:
+        raise QVFError("voxel_vectors must be a 3x3 matrix")
+    voxel_vectors = [vector(v, f"voxel_vectors[{i}]") for i, v in enumerate(vectors)]
+    shape_raw = payload.get("shape")
+    if not isinstance(shape_raw, list) or len(shape_raw) != 3:
+        raise QVFError("shape must contain exactly three dimensions")
+    shape = tuple(_json_integer(v, f"shape[{i}]") for i, v in enumerate(shape_raw))
+    if any(n < 0 for n in shape):
+        raise QVFError("shape dimensions must be nonnegative")
+    if shape != tuple(data_shape):
+        raise QVFError(f"grid shape {shape} does not match binary shape {tuple(data_shape)}")
+    return GridData(
+        origin=np.asarray(origin, dtype=np.float64),
+        voxel_vectors=np.asarray(voxel_vectors, dtype=np.float64),
+        shape=cast(tuple[int, int, int], shape),
+    )
+
+
+def _frame_atoms_from_json(meta: dict[str, Any]) -> list[Atom]:
+    raw = meta.get("atoms")
+    if not isinstance(raw, list):
+        raise QVFError("atoms must be a list")
+    atoms = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise QVFError(f"atoms[{i}] must be a JSON object")
+        symbol = entry.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            raise QVFError(f"atoms[{i}].symbol must be a nonempty string")
+        number = _json_integer(entry.get("atomic_number"), f"atoms[{i}].atomic_number")
+        if number < 0:
+            raise QVFError(f"atoms[{i}].atomic_number must be nonnegative")
+        # Frame metadata carries identities, not positions. Keep legacy display
+        # labels (including unknown elements) as read_structure does.
+        atoms.append(Atom(symbol=symbol, position=np.zeros(3), atomic_number=number))
+    return atoms
+
+
+def _frame_energies(meta: dict[str, Any]) -> list[float] | None:
+    values = meta.get("energies")
+    if values is None:
+        return None
+    if not isinstance(values, list):
+        raise QVFError("energies must be a list or null")
+    # Empty/short prefixes remain supported: not every archived frame has an
+    # energy, and get_energy explicitly returns None beyond the available list.
+    return [_json_finite_number(v, f"energies[{i}]") for i, v in enumerate(values)]
+
+
+def _waypoints_from_json(payload: dict[str, Any], n_frames: int) -> list[ReactionWaypoint]:
+    raw = payload.get("waypoints", [])
+    if not isinstance(raw, list):
+        raise QVFError("waypoints must be a list")
+    result = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise QVFError(f"waypoints[{i}] must be a JSON object")
+        index = _json_integer(entry.get("frame_index"), f"waypoints[{i}].frame_index")
+        if not 0 <= index < n_frames:
+            raise QVFError(
+                f"waypoints[{i}].frame_index {index} is out of range for {n_frames} frames"
+            )
+        label, kind = entry.get("label"), entry.get("kind")
+        if not isinstance(label, str) or not isinstance(kind, str):
+            raise QVFError(f"waypoints[{i}].label and kind must be strings")
+        energy = (
+            _json_finite_number(entry["energy_eh"], f"waypoints[{i}].energy_eh")
+            if "energy_eh" in entry else None
+        )
+        result.append(ReactionWaypoint(index, label, kind, energy))
+    return result
+
+
+def _has_immutable_bytes(array: np.ndarray) -> bool:
+    """Read-only flags alone do not prove a view's backing storage immutable."""
+    base: object = array
+    while isinstance(base, np.ndarray):
+        if base.flags.writeable:
+            return False
+        base = base.base
+    return isinstance(base, bytes)
+
+
+def _parse_ij_pairs(raw: Any, n_atoms: int | None = None) -> list[dict[str, Any]]:
+    """Validate pair indices and present orders without losing analysis metadata."""
+    if not isinstance(raw, dict):
+        raise QVFError("payload is not a JSON object")
     pairs = raw.get("pairs", [])
     if not isinstance(pairs, list):
-        raise QVFError("bonds payload field 'pairs' is not a list")
-
-    bonds: list[tuple[int, int, float]] = []
-    for idx, pair in enumerate(pairs):
+        raise QVFError("field 'pairs' is not a list")
+    result: list[dict[str, Any]] = []
+    for index, pair in enumerate(pairs):
         if not isinstance(pair, dict):
-            raise QVFError(f"bonds pair {idx} is not a JSON object")
-        try:
-            i = int(pair["i"])
-            j = int(pair["j"])
-        except (KeyError, TypeError, ValueError) as e:
-            raise QVFError(f"bonds pair {idx} is missing integer i/j fields") from e
-        try:
-            order = float(pair.get("order", 1.0))
-        except (TypeError, ValueError):
-            order = 1.0
-        # Explicit bonds from a file carry no image offset; they are
-        # in-cell pairs and the renderer re-images them when drawing.
-        bonds.append((i, j, order, (0, 0, 0)))
-    return bonds
+            raise QVFError(f"pair {index} is not a JSON object")
+        normalized = dict(pair)
+        for key in ("i", "j"):
+            number = _json_integer(pair.get(key), f"pair {index} field {key!r}")
+            if number < 0 or (n_atoms is not None and number >= n_atoms):
+                bound = f" for {n_atoms} atoms" if n_atoms is not None else ""
+                raise QVFError(f"pair {index} field {key!r} index {number} is out of range{bound}")
+            normalized[key] = number
+        if "order" in pair:
+            normalized["order"] = _json_finite_number(
+                pair["order"], f"pair {index} field 'order'",
+            )
+        result.append(normalized)
+    return result
+
 
 
 # ── Manifest loader ───────────────────────────────────────────────────────
@@ -1401,6 +1191,23 @@ with open(_SCHEMA_PATH_V2) as f:
 _SCHEMAS_BY_VERSION: dict[int, dict[str, Any]] = {
     1: _MANIFEST_SCHEMA,
     2: _MANIFEST_SCHEMA_V2,
+}
+
+def _structure_payload_validator(schema: dict[str, Any]) -> Validator:
+    # Legacy viewer symbols are display labels: imports preserve Z999, and
+    # notebook exports safely escape arbitrary text. Retain those contracts
+    # while requiring a nonempty string. Never mutate the pinned schema or
+    # the definitions used to validate manifests.
+    definitions = deepcopy(schema["$defs"])
+    definitions["StructureAtom"]["properties"]["symbol"].pop("maxLength")
+    return jsonschema.Draft202012Validator({
+        "$ref": "#/$defs/StructurePayload", "$defs": definitions,
+    })
+
+
+_STRUCTURE_VALIDATORS = {
+    version: _structure_payload_validator(schema)
+    for version, schema in _SCHEMAS_BY_VERSION.items()
 }
 
 
@@ -1446,7 +1253,7 @@ def _consumer_usable_kinds() -> frozenset[str]:
 # ── QVFReader ─────────────────────────────────────────────────────────────
 
 
-QVFSource = Union[str, Path, bytes, bytearray, memoryview, IO[bytes]]
+QVFSource = str | Path | bytes | bytearray | memoryview | IO[bytes]
 """Anything `QVFReader` can open: a filesystem path, raw zip bytes, or a
 seekable binary file-like object (BytesIO, an opened file, etc.).
 
@@ -1578,25 +1385,24 @@ class QVFReader:
             for sec in raw_sections:
                 kind = sec.get("kind") if isinstance(sec, dict) else None
                 is_vendor = isinstance(kind, str) and kind.startswith("x_")
-                if isinstance(kind, str) and (kind in known_kinds or is_vendor):
-                    kept.append(sec)
-                else:
+                if isinstance(kind, str) and kind not in known_kinds and not is_vendor:
                     unknown.append(sec)
                     if isinstance(sec, dict) and isinstance(sec.get("id"), str):
                         self._unknown_kind_ids.add(sec["id"])
+                else:
+                    kept.append(sec)
             to_validate = manifest_dict if not unknown else {**manifest_dict, "sections": kept}
         else:
             to_validate = manifest_dict
 
         try:
             jsonschema.validate(instance=to_validate, schema=chosen_schema)
-        except jsonschema.ValidationError as e:
+            # The model still checks the common shape of unknown sections;
+            # retain their existing tolerance for future identifier conventions.
+            self._manifest = Manifest.model_validate(manifest_dict)
+        except (jsonschema.ValidationError, ValidationError) as e:
             self.close()
             raise ManifestValidationError(str(e)) from None
-
-        # ── Step 3: parse into pydantic models (Section has extra="allow",
-        # so unknown-kind sections parse fine and are classified as skipped).
-        self._manifest = Manifest.model_validate(manifest_dict)
 
         # Build section lookup
         self._section_by_id: dict[str, Section] = {}
@@ -1606,8 +1412,11 @@ class QVFReader:
                 raise ManifestValidationError(f"duplicate section id in manifest: {s.id!r}")
             self._section_by_id[s.id] = s
 
-        # Per-section error state (populated on sha256 mismatch)
-        self._section_errors: dict[str, str] = {}
+        # First member failure per section; archive bytes are immutable.
+        self._section_errors: dict[str, _SectionError] = {}
+        # Cache validation success, not mutable decoded geometry. Each read
+        # still verifies the member bytes and creates fresh atoms/arrays.
+        self._validated_structures: set[tuple[str, str, int]] = set()
 
         # Decoded-binary cache, keyed (section_id, member_name). The archive
         # is opened read-only and members are immutable for the reader's
@@ -1619,6 +1428,7 @@ class QVFReader:
         # call (audit findings A7-01 / A7-03). frombuffer arrays are already
         # read-only, so sharing them is safe.
         self._binary_cache: dict[tuple[str, str], np.ndarray] = {}
+        self._validated_frame_arrays: dict[tuple[str, str], np.ndarray] = {}
 
         # Viewer-side edit overlay: the current *edited* geometry, or None
         # when the archive is unmodified. The archive itself is immutable;
@@ -1641,6 +1451,7 @@ class QVFReader:
         # (:mod:`vibeview.relocalize`), which asks vibe-qc for a
         # localization criterion the file does not contain.
         self._wavefunction_overlays: dict[str, WavefunctionGTOData] = {}
+        self.geometry_revision = 0
 
     @property
     def manifest(self) -> Manifest:
@@ -1722,7 +1533,7 @@ class QVFReader:
         v = self.provenance.get("checkpoint")
         return v if isinstance(v, dict) else {}
 
-    def run_record_sections(self) -> list["Section"]:
+    def run_record_sections(self) -> list[Section]:
         """All ``run.record`` sections in run-history order.
 
         Ordered by their ``sequence`` field (spec § 5.8; a record without
@@ -1732,7 +1543,7 @@ class QVFReader:
         """
         records = [s for s in self.sections if s.kind == "run.record"]
 
-        def _seq(item: tuple[int, "Section"]) -> tuple[int, int]:
+        def _seq(item: tuple[int, Section]) -> tuple[int, int]:
             index, section = item
             extras = getattr(section, "model_extra", None) or {}
             seq = extras.get("sequence")
@@ -1810,8 +1621,21 @@ class QVFReader:
             raise SectionNotFoundError(f"section not found: {section_id!r}") from None
 
     def section_error(self, section_id: str) -> str | None:
-        """Return error string if this section had a sha256 mismatch, or None."""
-        return self._section_errors.get(section_id)
+        """Return the first recorded member error for this section, or None."""
+        error = self._section_errors.get(section_id)
+        return error.message if error is not None else None
+
+    def section_error_kind(self, section_id: str) -> str | None:
+        """Return the recorded error category for a section, or None."""
+        error = self._section_errors.get(section_id)
+        return error.kind if error is not None else None
+
+    def _record_section_error(
+        self, section_id: str, error: QVFError, kind: str = "invalid payload"
+    ) -> None:
+        if isinstance(error, SHA256MismatchError):
+            kind = "sha256 mismatch"
+        self._section_errors.setdefault(section_id, _SectionError(str(error), kind))
 
     # ── sha256 verification (Rule 4) ──────────────────────────────────
 
@@ -1827,7 +1651,7 @@ class QVFReader:
                 f"member file {member.path!r} declared in manifest but missing from zip"
             ) from None
         except zipfile.BadZipFile as e:
-            raise QVFOpenError(f"cannot read zip member {member.path!r}: {e}") from None
+            raise QVFError(f"cannot read zip member {member.path!r}: {e}") from None
         actual = hashlib.sha256(data).hexdigest()
         if actual != member.sha256:
             raise SHA256MismatchError(
@@ -1835,23 +1659,44 @@ class QVFReader:
             )
         return data
 
+    def _read_member(self, section_id: str, member_name: str) -> bytes:
+        """Read verified member bytes and record failures for every section kind."""
+        section = self.get_section(section_id)
+        try:
+            member = section.members.get(member_name)
+            if member is None:
+                raise QVFError(f"member {member_name!r} not found in section {section_id!r}")
+            return self._verify_and_read(member)
+        except QVFError as error:
+            self._record_section_error(section_id, error, "member read error")
+            raise
+
+    def _read_text_member(
+        self, section_id: str, member_name: str, *, errors: str = "strict"
+    ) -> str:
+        raw = self._read_member(section_id, member_name)
+        try:
+            return raw.decode("utf-8", errors=errors)
+        except UnicodeDecodeError as error:
+            member = self.get_section(section_id).members[member_name]
+            failure = QVFError(
+                f"member {member.path!r} in section {section_id!r} is not UTF-8: {error}"
+            )
+            self._record_section_error(section_id, failure)
+            raise failure from None
+
     def _read_json_member(self, section_id: str, member_name: str) -> Any:
         """Read + verify a JSON member. Returns parsed JSON."""
-        section = self.get_section(section_id)
-        member = section.members.get(member_name)
-        if member is None:
-            raise QVFError(f"member {member_name!r} not found in section {section_id!r}")
-        raw = self._verify_and_read(member)
+        raw = self._read_text_member(section_id, member_name)
         try:
-            return json.loads(raw.decode("utf-8"))
-        except UnicodeDecodeError as e:
-            raise QVFError(
-                f"member {member.path!r} in section {section_id!r} is not UTF-8: {e}"
-            ) from None
-        except json.JSONDecodeError as e:
-            raise QVFError(
-                f"member {member.path!r} in section {section_id!r} is not valid JSON: {e}"
-            ) from None
+            return json.loads(raw)
+        except json.JSONDecodeError as error:
+            member = self.get_section(section_id).members[member_name]
+            failure = QVFError(
+                f"member {member.path!r} in section {section_id!r} is not valid JSON: {error}"
+            )
+            self._record_section_error(section_id, failure)
+            raise failure from None
 
     def _read_binary_member(self, section_id: str, member_name: str) -> np.ndarray:
         """Read + verify a binary member. Returns numpy array (cached)."""
@@ -1859,27 +1704,32 @@ class QVFReader:
         cached = self._binary_cache.get(cache_key)
         if cached is not None:
             return cached
-        section = self.get_section(section_id)
-        member = section.members.get(member_name)
-        if member is None:
-            raise QVFError(f"member {member_name!r} not found in section {section_id!r}")
-        raw = self._verify_and_read(member)
+        raw = self._read_member(section_id, member_name)
+        member = self.get_section(section_id).members[member_name]
         dtype = member.dtype or "float32"
         try:
             arr = np.frombuffer(raw, dtype=np.dtype(dtype))
             if member.shape is not None:
                 arr = arr.reshape(member.shape)
         except ValueError as e:
-            raise QVFError(
+            error = QVFError(
                 f"member {member.path!r} in section {section_id!r} cannot be "
                 f"read as dtype={dtype!r}, shape={member.shape!r}: {e}"
-            ) from None
+            )
+            self._record_section_error(section_id, error)
+            raise error from None
         self._binary_cache[cache_key] = arr
         return arr
 
     # ── Eager data extraction ─────────────────────────────────────────
 
-    def set_edit_overlay(self, positions, symbols, *, lattice_vectors=None) -> None:
+    def set_edit_overlay(
+        self,
+        positions: np.ndarray | Sequence[Sequence[float]],
+        symbols: Sequence[str],
+        *,
+        lattice_vectors: np.ndarray | Sequence[Sequence[float]] | None = None,
+    ) -> None:
         """Record viewer-side edited geometry (see ``_edit_overlay``).
 
         ``positions`` is an (n, 3) sequence in angstroms, ``symbols`` the
@@ -1893,7 +1743,6 @@ class QVFReader:
         cell. The lattice is reset together with the atoms by
         :meth:`clear_edit_overlay`.
         """
-        from vibeview.converters import _SYMBOL_TO_Z  # local: converters imports us
 
         lattice = None
         if lattice_vectors is not None:
@@ -1905,11 +1754,15 @@ class QVFReader:
             Atom(
                 symbol=str(sym),
                 position=np.asarray(pos, dtype=np.float64),
-                atomic_number=_SYMBOL_TO_Z.get(str(sym), 0),
+                atomic_number=SYMBOL_TO_Z.get(str(sym), 0),
             )
             for sym, pos in zip(symbols, positions, strict=True)
         ]
         self._edit_overlay = atoms
+        self.geometry_revision += 1
+        self.clear_wavefunction_overlays(
+            [sid for sid in self.wavefunction_overlay_ids if sid.startswith("wf_relocalized_")]
+        )
         if lattice is not None:
             self._edit_lattice_overlay = lattice.copy()
 
@@ -1917,6 +1770,10 @@ class QVFReader:
         """Drop viewer-side edits; read_structure() returns the file again."""
         self._edit_overlay = None
         self._edit_lattice_overlay = None
+        self.geometry_revision += 1
+        self.clear_wavefunction_overlays(
+            [sid for sid in self.wavefunction_overlay_ids if sid.startswith("wf_relocalized_")]
+        )
 
     @property
     def has_edit_overlay(self) -> bool:
@@ -1942,18 +1799,79 @@ class QVFReader:
             self._section_by_id[section_id] = section
             self._manifest.sections.append(section)
 
-    def clear_wavefunction_overlays(self) -> None:
-        """Drop every viewer-computed wavefunction and its synthetic section."""
-        for section_id in list(self._wavefunction_overlays):
+    def clear_wavefunction_overlays(self, section_ids: list[str] | None = None) -> None:
+        """Drop selected (or all) viewer-computed wavefunctions and their sections."""
+        for section_id in list(self._wavefunction_overlays) if section_ids is None else section_ids:
+            if section_id not in self._wavefunction_overlays:
+                continue
             section = self._section_by_id.pop(section_id, None)
             if section is not None and section in self._manifest.sections:
                 self._manifest.sections.remove(section)
-        self._wavefunction_overlays.clear()
+            self._wavefunction_overlays.pop(section_id)
 
     @property
     def wavefunction_overlay_ids(self) -> list[str]:
         """Section ids currently backed by a viewer-computed wavefunction."""
         return list(self._wavefunction_overlays)
+
+    def _read_structure_payload(self, section_id: str) -> dict[str, Any]:
+        """Validate file geometry before constructing atoms or resolving indices."""
+        raw = self._read_json_member(section_id, "structure")
+        member = self.get_section(section_id).members["structure"]
+        validation_key = (section_id, member.sha256, self.manifest.qvf_version)
+        if isinstance(raw, dict) and "pbc" not in raw:
+            dim = raw.get("dimensionality")
+            # QVF v0.1.0 §5.1 permits this pre-conformance accommodation.
+            # Explicit pbc remains authoritative; archive bytes are unchanged.
+            if not isinstance(dim, bool) and isinstance(dim, int | float) and dim in (0, 1, 2, 3):
+                raw = {**raw, "pbc": [axis < dim for axis in range(3)]}
+        if validation_key in self._validated_structures:
+            return cast(dict[str, Any], raw)
+        try:
+            _STRUCTURE_VALIDATORS[self.manifest.qvf_version].validate(raw)
+            assert isinstance(raw, dict)  # guaranteed by StructurePayload
+            positions = np.asarray([atom["position"] for atom in raw["atoms"]], dtype=float)
+            if not np.all(np.isfinite(positions)):
+                raise QVFError("atom positions must be finite")
+            lattice = raw.get("lattice_vectors")
+            if lattice is not None:
+                cell = np.asarray(lattice, dtype=float)
+                if not np.all(np.isfinite(cell)):
+                    raise QVFError("lattice_vectors must be finite")
+                if any(raw.get("pbc", [])):
+                    try:
+                        np.linalg.inv(cell)
+                    except np.linalg.LinAlgError:
+                        raise QVFError("periodic lattice_vectors must be invertible") from None
+        except (jsonschema.ValidationError, QVFError, OverflowError) as exc:
+            detail = (
+                f"{exc.json_path}: {exc.message}"
+                if isinstance(exc, jsonschema.ValidationError) else str(exc)
+            )
+            error = QVFError(f"structure member in section {section_id!r}: {detail}")
+            self._record_section_error(section_id, error)
+            raise error from None
+        self._validated_structures.add(validation_key)
+        return raw
+
+    def _file_atom_count(self) -> int | None:
+        """Original primary geometry, never the edited or caller-supplied atoms."""
+        section = self._section_by_id.get("structure")
+        if section is None or section.kind != "structure":
+            return None  # standalone analysis has no declared atom-count context
+        return len(self._read_structure_payload("structure")["atoms"])
+
+    def _read_pair_payload(
+        self, section_id: str, member_name: str, n_atoms: int | None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        raw = self._read_json_member(section_id, member_name)
+        try:
+            pairs = _parse_ij_pairs(raw, n_atoms)
+        except QVFError as exc:
+            error = QVFError(f"{member_name} member in section {section_id!r}: {exc}")
+            self._record_section_error(section_id, error)
+            raise error from None
+        return raw, pairs
 
     def read_structure(self, section_id: str = "structure") -> StructureData:
         """Read + verify a structure section. Always eager.
@@ -1969,11 +1887,7 @@ class QVFReader:
         PBC/dimensionality still come from the file; the lattice comes from
         the overlay when an edit replaced it.
         """
-        try:
-            raw = self._read_json_member(section_id, "structure")
-        except QVFError as e:
-            self._section_errors[section_id] = str(e)
-            raise
+        raw = self._read_structure_payload(section_id)
 
         atoms = [
             Atom(
@@ -2020,10 +1934,9 @@ class QVFReader:
 
         if "bonds" in structure_section.members:
             try:
-                bonds_raw = self._read_json_member(section_id, "bonds")
-                bonds = _parse_bond_pairs(bonds_raw)
+                bonds = self.read_bonds(section_id, n_atoms=len(atoms))
             except QVFError as exc:
-                self._section_errors[section_id] = str(exc)
+                self._record_section_error(section_id, exc)
                 raise
         elif section_id == "structure":
             bond_section = next(
@@ -2032,9 +1945,9 @@ class QVFReader:
             )
             if bond_section is not None:
                 try:
-                    bonds = self.read_bonds(bond_section.id)
+                    bonds = self.read_bonds(bond_section.id, n_atoms=len(atoms))
                 except QVFError as e:
-                    self._section_errors[bond_section.id] = str(e)
+                    self._record_section_error(bond_section.id, e)
                     raise QVFError(
                         f"explicit bonds section {bond_section.id!r} could not be read: {e}"
                     ) from None
@@ -2073,12 +1986,22 @@ class QVFReader:
             ),
         )
 
-    def read_bonds(self, section_id: str) -> list[tuple[int, int, float]]:
-        """Read a canonical ``bonds`` section as ``(i, j, order, image)``."""
-        raw = self._read_json_member(section_id, "bonds")
-        return _parse_bond_pairs(raw)
+    def read_bonds(self, section_id: str, *, n_atoms: int | None = None) -> list[Bond]:
+        """Read explicit pairs, checking their original structure when available.
 
-    def infer_bonds(self, structure: StructureData) -> list[tuple[int, int, float]]:
+        Omitted orders retain 1.0. Explicit payload images are not specified
+        by QVF v0.1.0 §5.1; retain the existing zero-image convention.
+        """
+        if n_atoms is None:
+            section = self.get_section(section_id)
+            n_atoms = (
+                len(self._read_structure_payload(section_id)["atoms"])
+                if section.kind == "structure" else self._file_atom_count()
+            )
+        _, pairs = self._read_pair_payload(section_id, "bonds", n_atoms)
+        return [(p["i"], p["j"], p.get("order", 1.0), (0, 0, 0)) for p in pairs]
+
+    def infer_bonds(self, structure: StructureData) -> list[Bond]:
         """Infer bonds from covalent radii when no explicit bonds section.
 
         Inferred bonds carry order 1.0 (covalent-radius inference cannot
@@ -2089,10 +2012,7 @@ class QVFReader:
         Mayer/Wiberg bond orders are more accurate than the simple
         single/double/triple from the bonds section.
         """
-        if structure.bonds is not None:
-            bonds = list(structure.bonds)
-        else:
-            bonds = _infer_bonds_by_radii(structure)
+        bonds = structure_bonds(structure)
 
         # Enrich with bond_orders data if available.
         try:
@@ -2104,44 +2024,55 @@ class QVFReader:
             None,
         )
         if bo_section is not None:
-            try:
-                bo_data = self.read_bond_orders(bo_section.id)
-                # Build a lookup map: (i, j) → order
-                order_map: dict[tuple[int, int], float] = {}
-                for p in bo_data.pairs:
-                    i = int(p.get("i", -1))
-                    j = int(p.get("j", -1))
-                    if i >= 0 and j >= 0:
-                        key = (min(i, j), max(i, j))
-                        order_map[key] = float(p.get("order", 1.0))
-                # Override bond orders where we have bond_orders data.
-                bonds = [
-                    (i, j, order_map.get((min(i, j), max(i, j)), order), image)
-                    for i, j, order, image in bonds
-                ]
-            except SHA256MismatchError:
-                # Verify-before-use contract: a corrupt bond_orders member is
-                # a hard error, not something to silently render without.
-                raise
-            except QVFError:
-                pass
+            bo_data = self.read_bond_orders(bo_section.id)
+            # Build a lookup map: (i, j) → order
+            order_map: dict[tuple[int, int], float] = {}
+            for p in bo_data.pairs:
+                i, j = cast(int, p["i"]), cast(int, p["j"])
+                order_map[(min(i, j), max(i, j))] = cast(float, p.get("order", 1.0))
+            # Override bond orders where we have bond_orders data.
+            bonds = [
+                (i, j, order_map.get((min(i, j), max(i, j)), order), image)
+                for i, j, order, image in bonds
+            ]
 
         return bonds
 
     # ── Lazy binary extraction for volumes ────────────────────────────
 
+    def _payload_failure(self, section_id: str, member_name: str, error: QVFError) -> QVFError:
+        failure = QVFError(f"{member_name} member in section {section_id!r}: {error}")
+        self._record_section_error(section_id, failure)
+        return failure
+
+    def _read_grid_payload(
+        self, section_id: str, member_name: str, data_name: str, *, frame_axis: bool = False,
+    ) -> GridData:
+        raw = self._read_json_member(section_id, member_name)
+        member = self.get_section(section_id).members.get(data_name)
+        try:
+            if member is None or member.shape is None:
+                raise QVFError(f"missing binary shape for {data_name!r}")
+            shape = member.shape[1:] if frame_axis else member.shape
+            return _grid_from_json(raw, shape)
+        except QVFError as error:
+            if member is not None:
+                error = QVFError(f"{error}; paired binary member {member.path!r}")
+            raise self._payload_failure(section_id, member_name, error) from None
+
     def read_volume_grid(self, section_id: str) -> GridData:
-        """Read the grid descriptor for a volume section (always eager — tiny)."""
-        raw = self._read_json_member(section_id, "grid")
-        return GridData(
-            origin=np.array(raw["origin"], dtype=np.float64),
-            voxel_vectors=np.array(raw["voxel_vectors"], dtype=np.float64),
-            shape=tuple(raw["shape"]),
-        )
+        """Read a finite grid descriptor consistent with its lazy binary member."""
+        return self._read_grid_payload(section_id, "grid", "data")
 
     def read_volume_data(self, section_id: str) -> np.ndarray:
-        """Read + verify the volumetric .dat blob (lazy — call on UI activation)."""
-        return self._read_binary_member(section_id, "data")
+        """Read + verify volume data, including its pairing with the grid."""
+        grid = self.read_volume_grid(section_id)
+        data = self._read_binary_member(section_id, "data")
+        if data.shape != grid.shape:
+            raise self._payload_failure(
+                section_id, "data", QVFError("cached data shape differs from grid shape"),
+            )
+        return data
 
     # ── Other section readers ─────────────────────────────────────────
 
@@ -2188,19 +2119,12 @@ class QVFReader:
     def read_phonon_dos(self, section_id: str) -> PhononDOSData:
         """Read a phonon_dos section (QVF spec §4.13).
 
-        ``frequencies`` and ``dos`` are ``[n_points]``; ``meta`` is optional
-        producer metadata (smearing, n_atoms, …) and absent on minimal files.
+        ``frequencies`` and ``dos`` are ``[n_points]``; ``meta`` is required
+        producer metadata (smearing, n_atoms, …), possibly an empty object.
         """
         frequencies = self._read_binary_member(section_id, "frequencies")
         dos = self._read_binary_member(section_id, "dos")
-        try:
-            meta = self._read_json_member(section_id, "meta")
-        except SHA256MismatchError:
-            # Verify-before-use contract: a corrupt member is a hard error,
-            # never silently replaced by an empty dict.
-            raise
-        except QVFError:
-            meta = {}
+        meta = self._read_json_member(section_id, "meta")
         return PhononDOSData(frequencies=frequencies, dos=dos, meta=meta)
 
     def read_equation_of_state(self, section_id: str) -> EquationOfStateData:
@@ -2222,22 +2146,41 @@ class QVFReader:
             intensities=np.array(raw["intensities"], dtype=np.float64),
         )
 
-    def read_trajectory(self, section_id: str) -> TrajectoryData:
-        meta = self._read_json_member(section_id, "metadata")
+    def _read_frame_payload(
+        self, section_id: str,
+    ) -> tuple[dict[str, Any], list[Atom], np.ndarray, list[float] | None]:
+        raw = self._read_json_member(section_id, "metadata")
         coords = self._read_binary_member(section_id, "coords")
-        atoms = [
-            Atom(
-                symbol=a["symbol"],
-                position=np.zeros(3),
-                atomic_number=a["atomic_number"],
-            )
-            for a in meta["atoms"]
-        ]
-        return TrajectoryData(
-            atoms=atoms,
-            coords=coords,
-            energies=meta.get("energies"),
-        )
+        try:
+            meta = _json_object(raw)
+            atoms = _frame_atoms_from_json(meta)
+            energies = _frame_energies(meta)
+        except QVFError as error:
+            raise self._payload_failure(section_id, "metadata", error) from None
+        member = self.get_section(section_id).members["coords"]
+        key = (section_id, member.sha256)
+        try:
+            if coords.ndim != 3 or coords.shape[1:] != (len(atoms), 3):
+                raise QVFError(
+                    f"coords shape {coords.shape} must be (n_frames, {len(atoms)}, 3)"
+                )
+            if coords.dtype != np.dtype(member.dtype or "float64"):
+                raise QVFError("cached coords dtype differs from its declared binary dtype")
+            if coords.shape != tuple(member.shape or []):
+                raise QVFError("cached coords shape differs from its declared binary shape")
+            immutable = _has_immutable_bytes(coords)
+            if not immutable or self._validated_frame_arrays.get(key) is not coords:
+                if not np.all(np.isfinite(coords)):
+                    raise QVFError("coords must contain only finite positions")
+                if immutable:
+                    self._validated_frame_arrays[key] = coords
+        except QVFError as error:
+            raise self._payload_failure(section_id, "coords", error) from None
+        return meta, atoms, coords, energies
+
+    def read_trajectory(self, section_id: str) -> TrajectoryData:
+        _, atoms, coords, energies = self._read_frame_payload(section_id)
+        return TrajectoryData(atoms=atoms, coords=coords, energies=energies)
 
     def read_vibrations(self, section_id: str) -> VibrationsData:
         meta = self._read_json_member(section_id, "metadata")
@@ -2310,7 +2253,7 @@ class QVFReader:
             if "mo_coefficients" in self.get_section(section_id).members:
                 coeffs = self._read_binary_member(section_id, "mo_coefficients")
 
-        def _decode_coefficients(values):
+        def _decode_coefficients(values: np.ndarray | None) -> np.ndarray | None:
             if values is None:
                 return None
             encoding = meta_raw.get("coefficient_encoding")
@@ -2338,7 +2281,7 @@ class QVFReader:
             if k_point.shape != (3,) or not np.isfinite(k_point).all():
                 raise QVFError("k_point must contain three finite numbers")
 
-        def _optional_array(key: str, dtype) -> np.ndarray | None:
+        def _optional_array(key: str, dtype: type[np.generic]) -> np.ndarray | None:
             raw = meta_raw.get(key)
             if raw is None:
                 return None
@@ -2382,25 +2325,11 @@ class QVFReader:
         integer in the metadata JSON; both surface on the returned
         ``ReactionPathData`` (None on v1 / molecular).
         """
-        meta = self._read_json_member(section_id, "metadata")
-        coords = self._read_binary_member(section_id, "coords")
-        atoms = [
-            Atom(
-                symbol=a["symbol"],
-                position=np.zeros(3),
-                atomic_number=a["atomic_number"],
-            )
-            for a in meta["atoms"]
-        ]
-        waypoints = [
-            ReactionWaypoint(
-                frame_index=int(wp["frame_index"]),
-                label=str(wp["label"]),
-                kind=str(wp["kind"]),
-                energy_eh=(float(wp["energy_eh"]) if "energy_eh" in wp else None),
-            )
-            for wp in meta.get("waypoints", [])
-        ]
+        meta, atoms, coords, energies = self._read_frame_payload(section_id)
+        try:
+            waypoints = _waypoints_from_json(meta, coords.shape[0])
+        except QVFError as error:
+            raise self._payload_failure(section_id, "metadata", error) from None
         rxn_coord = meta.get("reaction_coordinate")
 
         # v2 periodic fields. The lattice binary member is optional —
@@ -2419,18 +2348,15 @@ class QVFReader:
         volume_grid = None
         if section.members.get("frame_volumes") is not None:
             frame_volumes = self._read_binary_member(section_id, "frame_volumes")
-            grid_raw = self._read_json_member(section_id, "volume_grid")
-            volume_grid = GridData(
-                origin=np.array(grid_raw["origin"], dtype=np.float64),
-                voxel_vectors=np.array(grid_raw["voxel_vectors"], dtype=np.float64),
-                shape=tuple(grid_raw["shape"]),
+            volume_grid = self._read_grid_payload(
+                section_id, "volume_grid", "frame_volumes", frame_axis=True,
             )
         vol_frame_index = meta.get("volume_frame_index")
 
         return ReactionPathData(
             atoms=atoms,
             coords=coords,
-            energies=meta.get("energies"),
+            energies=energies,
             reaction_coordinate=list(rxn_coord) if rxn_coord is not None else None,
             waypoints=waypoints,
             lattice=lattice,
@@ -2467,17 +2393,21 @@ class QVFReader:
             extras = getattr(section, "model_extra", None) or {}
             traj_ref = extras.get("trajectory_ref")
         if not traj_ref:
-            raise QVFError(f"reaction.waypoints {section_id!r} missing trajectory_ref")
-        payload = self._read_json_member(section_id, "waypoints")
-        waypoints = [
-            ReactionWaypoint(
-                frame_index=int(wp["frame_index"]),
-                label=str(wp["label"]),
-                kind=str(wp["kind"]),
-                energy_eh=(float(wp["energy_eh"]) if "energy_eh" in wp else None),
+            raise self._payload_failure(
+                section_id, "waypoints", QVFError("missing trajectory_ref"),
             )
-            for wp in payload.get("waypoints", [])
-        ]
+        raw = self._read_json_member(section_id, "waypoints")
+        try:
+            payload = _json_object(raw)
+            target = self.get_section(str(traj_ref))
+            if target.kind != "trajectory":
+                raise QVFError(f"trajectory_ref {traj_ref!r} must reference a trajectory")
+            coords_member = target.members.get("coords")
+            if coords_member is None or coords_member.shape is None:
+                raise QVFError(f"trajectory_ref {traj_ref!r} has no coords shape")
+            waypoints = _waypoints_from_json(payload, coords_member.shape[0])
+        except QVFError as error:
+            raise self._payload_failure(section_id, "waypoints", error) from None
         rxn_coord = payload.get("reaction_coordinate")
         return ReactionWaypointsData(
             trajectory_ref=str(traj_ref),
@@ -2606,12 +2536,7 @@ class QVFReader:
         § 1.4 / qvf.py::_write_citations_section. We decode to str
         here so renderers don't need to know the on-disk encoding.
         """
-        section = self.get_section(section_id)
-        member = section.members.get("references")
-        if member is None:
-            raise QVFError(f"member 'references' not found in citations section {section_id!r}")
-        raw = self._verify_and_read(member)
-        return CitationsData(bibtex=raw.decode("utf-8"))
+        return CitationsData(bibtex=self._read_text_member(section_id, "references"))
 
     def read_run_record(self, section_id: str) -> RunRecordData:
         """Read a run.record section — verbatim input + full log of one
@@ -2633,12 +2558,11 @@ class QVFReader:
                 size = int(self._zf.getinfo(member.path).file_size)
             except KeyError:
                 size = 0
-            raw = self._verify_and_read(member)
-            return raw.decode("utf-8", errors="replace"), size
+            return self._read_text_member(section_id, role, errors="replace"), size
 
         input_text, input_size = _text_and_size("input")
         log_text, log_size = _text_and_size("log")
-        files: dict = {}
+        files: dict[str, Any] = {}
         if "files" in section.members:
             raw_files = self._read_json_member(section_id, "files")
             if isinstance(raw_files, dict):
@@ -2685,7 +2609,7 @@ class QVFReader:
             return None
         if size > max_bytes:
             return None
-        raw = self._verify_and_read(member)
+        raw = self._read_member(section_id, role)
         try:
             return raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -2706,7 +2630,7 @@ class QVFReader:
         :attr:`ATTACHMENT_DOWNLOAD_MAX_BYTES`.
         """
         section = self.get_section(section_id)
-        files = {}
+        files: dict[str, Any] = {}
         if "files" in section.members:
             raw = self._read_json_member(section_id, "files")
             if isinstance(raw, dict):
@@ -2720,7 +2644,8 @@ class QVFReader:
                 size = int(self._zf.getinfo(member.path).file_size)
             except KeyError:
                 continue
-            entry = files.get(role) if isinstance(files.get(role), dict) else {}
+            raw_entry = files.get(role)
+            entry: dict[str, Any] = raw_entry if isinstance(raw_entry, dict) else {}
             out.append(
                 {
                     "role": role,
@@ -2760,7 +2685,7 @@ class QVFReader:
             return None
         if size > self.ATTACHMENT_DOWNLOAD_MAX_BYTES:
             return None
-        return self._verify_and_read(member)
+        return self._read_member(section_id, role)
 
     def read_job_spec(self, section_id: str) -> JobSpecData:
         """Read a job.spec section — the declarative request the archive
@@ -2795,16 +2720,13 @@ class QVFReader:
         )
 
     def read_bond_orders(self, section_id: str) -> BondOrdersData:
-        """Read a bond_orders section (Mayer/Wiberg bond-order analysis)."""
-        raw = self._read_json_member(section_id, "bond_orders")
-        if not isinstance(raw, dict):
-            raise QVFError(
-                f"bond_orders section {section_id!r}: 'bond_orders' member is not a JSON object"
-            )
-        return BondOrdersData(
-            method=str(raw.get("method", "unknown")),
-            pairs=list(raw.get("pairs", [])),
-        )
+        """Read analysis pairs validated against original file geometry.
+
+        Edit overlays do not change the atom identities of archived analyses.
+        Standalone analysis sections still validate without an upper bound.
+        """
+        raw, pairs = self._read_pair_payload(section_id, "bond_orders", self._file_atom_count())
+        return BondOrdersData(method=str(raw.get("method", "unknown")), pairs=pairs)
 
     def read_topology_qtaim(self, section_id: str) -> QTAIMData:
         """Read a topology.qtaim section (critical points + bond paths)."""
@@ -2814,9 +2736,10 @@ class QVFReader:
                 f"topology.qtaim section {section_id!r}: "
                 "'critical_points' member is not a JSON object"
             )
+        raw_paths = raw.get("bond_paths")
         return QTAIMData(
             points=list(raw.get("points", [])),
-            bond_paths=list(raw.get("bond_paths")) if raw.get("bond_paths") else None,
+            bond_paths=list(raw_paths) if raw_paths else None,
         )
 
     def read_dos_coop(self, section_id: str) -> DOSCOOPData:

@@ -15,25 +15,25 @@ renderer.
 
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._mpl import agg_pyplot, figure_to_png
+from vibeview.units import EV_NM as _EV_NM
+from vibeview.units import EV_TO_CM1 as _CM1_PER_EV
 
 if TYPE_CHECKING:
-    from vibeview.qvf import QVFReader, Section, SpectraData
+    from collections.abc import Iterable
 
-matplotlib.use("Agg")
+    from vibeview.qvf import QVFReader, Section, SpectraData
 
 
 @dataclass(frozen=True)
-class _SpectrumStyle:
+class SpectrumStyle:
     """Per-kind axis labels + broadening defaults."""
     title: str
     x_label: str
@@ -45,8 +45,8 @@ class _SpectrumStyle:
 
 # Registry — keep keys in sync with the kinds dispatched in
 # vibeview/renderers/__init__.py::_KIND_RENDERER.
-_STYLES: dict[str, _SpectrumStyle] = {
-    "spectra.ir": _SpectrumStyle(
+_STYLES: dict[str, SpectrumStyle] = {
+    "spectra.ir": SpectrumStyle(
         title="IR Spectrum",
         x_label="Frequency (cm⁻¹)",
         y_label="Intensity (km/mol)",
@@ -54,7 +54,7 @@ _STYLES: dict[str, _SpectrumStyle] = {
         x_buffer=100.0,
         gamma=5.0,
     ),
-    "spectra.raman": _SpectrumStyle(
+    "spectra.raman": SpectrumStyle(
         title="Raman Spectrum",
         x_label="Raman shift (cm⁻¹)",
         y_label="Activity (Å⁴/amu)",
@@ -62,7 +62,7 @@ _STYLES: dict[str, _SpectrumStyle] = {
         x_buffer=100.0,
         gamma=5.0,
     ),
-    "spectra.uvvis": _SpectrumStyle(
+    "spectra.uvvis": SpectrumStyle(
         title="UV-Vis Spectrum",
         x_label="Energy (eV)",
         y_label="Oscillator strength",
@@ -70,7 +70,7 @@ _STYLES: dict[str, _SpectrumStyle] = {
         x_buffer=0.5,
         gamma=0.1,
     ),
-    "spectra.ecd": _SpectrumStyle(
+    "spectra.ecd": SpectrumStyle(
         title="ECD Spectrum",
         x_label="Energy (eV)",
         y_label="Δε (L·mol⁻¹·cm⁻¹)",
@@ -78,7 +78,7 @@ _STYLES: dict[str, _SpectrumStyle] = {
         x_buffer=0.5,
         gamma=0.1,
     ),
-    "spectra.vcd": _SpectrumStyle(
+    "spectra.vcd": SpectrumStyle(
         title="VCD Spectrum",
         x_label="Frequency (cm⁻¹)",
         y_label="Δε (L·mol⁻¹·cm⁻¹)",
@@ -89,7 +89,7 @@ _STYLES: dict[str, _SpectrumStyle] = {
 }
 
 
-def _style_for(section: Section, freqs: np.ndarray) -> _SpectrumStyle:
+def spectrum_style(section: Section, freqs: np.ndarray) -> SpectrumStyle:
     """Resolve the rendering style for a section. Falls back to a
     generic style for ``spectra.generic`` (or any unknown spectra.*
     kind) that reads the section label and adapts the broadening
@@ -99,14 +99,11 @@ def _style_for(section: Section, freqs: np.ndarray) -> _SpectrumStyle:
         return style
     # spectra.generic + unknown — adapt buffer/gamma to the data range
     # so the broadened envelope is visible regardless of X scale.
-    if len(freqs) > 0:
-        span = float(np.max(freqs) - np.min(freqs))
-    else:
-        span = 1.0
+    span = float(np.max(freqs) - np.min(freqs)) if len(freqs) > 0 else 1.0
     buf = max(span * 0.05, 0.01)
     gamma = max(span * 0.005, 0.001)
     label = getattr(section, "label", None) or "Spectrum"
-    return _SpectrumStyle(
+    return SpectrumStyle(
         title=label,
         x_label="X",
         y_label="Intensity",
@@ -116,12 +113,21 @@ def _style_for(section: Section, freqs: np.ndarray) -> _SpectrumStyle:
     )
 
 
+def spectrum_grid(freqs: np.ndarray, style: SpectrumStyle) -> np.ndarray:
+    """Sample an envelope in native units with the shared display padding."""
+    if not len(freqs):
+        return np.empty(0, dtype=float)
+    lower = float(np.min(freqs)) - style.x_buffer
+    if style.x_unit_short == "cm⁻¹":
+        lower = max(0.0, lower)
+    upper = float(np.max(freqs)) + style.x_buffer
+    return np.linspace(lower, upper, 2000)
+
+
 # X-axis unit conversion (design refresh 2026, spectra controls). The
 # native X unit of a spectrum is cm⁻¹ (vibrational) or eV (electronic);
 # eV is the common base. 1 eV = 8065.543937 cm⁻¹ (CODATA 2018); the
 # energy/wavelength product E[eV]·λ[nm] = 1239.841984 (hc in eV·nm).
-_CM1_PER_EV = 8065.543937
-_EV_NM = 1239.841984
 _UNIT_LABELS = {
     "cm⁻¹": "Wavenumber (cm⁻¹)",
     "eV": "Energy (eV)",
@@ -165,7 +171,7 @@ def _convert_x(
     return x_native, native_unit, None
 
 
-def _broadened_envelope(
+def broadened_envelope(
     freqs: np.ndarray, intens: np.ndarray, gamma: float, x_grid: np.ndarray
 ) -> np.ndarray:
     """Sum of per-mode Lorentzians at the given grid points.
@@ -180,6 +186,12 @@ def _broadened_envelope(
         if abs(intensity) > 1e-10:
             env += intensity * (gamma**2) / ((x_grid - f) ** 2 + gamma**2)
     return env
+
+
+# Preserve existing imports while real callers use the shared helpers.
+_SpectrumStyle = SpectrumStyle
+_style_for = spectrum_style
+_broadened_envelope = broadened_envelope
 
 
 class SpectraRenderer(BaseRenderer):
@@ -199,26 +211,17 @@ class SpectraRenderer(BaseRenderer):
         data = self.load()
         freqs = data.frequencies
         intens = data.intensities
-        style = _style_for(self.section, freqs)
+        style = spectrum_style(self.section, freqs)
 
-        fig, ax = plt.subplots(figsize=(8, 4))
+        fig, ax = agg_pyplot().subplots(figsize=(8, 4))
 
         if len(freqs) > 0:
-            f_min = float(np.min(freqs)) - style.x_buffer
-            # Frequencies are non-negative for IR/Raman/VCD; clamp at 0
-            # so the broadened envelope doesn't extend below the
-            # physical axis. UV-Vis/ECD can in principle have negative
-            # excitation reports too, but the typical case is positive
-            # — leave the data-driven minimum if it's already < 0.
-            if style.x_unit_short == "cm⁻¹":
-                f_min = max(0.0, f_min)
-            f_max = float(np.max(freqs)) + style.x_buffer
-            f_grid = np.linspace(f_min, f_max, 2000)
-            broadened = _broadened_envelope(freqs, intens, style.gamma, f_grid)
+            f_grid = spectrum_grid(freqs, style)
+            broadened = broadened_envelope(freqs, intens, style.gamma, f_grid)
 
             ax.plot(f_grid, broadened, color="#CC3333", linewidth=1.5)
             ax.vlines(freqs, 0, intens, colors="#3366CC", linewidths=1.0, alpha=0.6)
-            ax.set_xlim(f_min, f_max)
+            ax.set_xlim(float(f_grid[0]), float(f_grid[-1]))
         else:
             ax.set_xlim(0, 1)
 
@@ -228,11 +231,7 @@ class SpectraRenderer(BaseRenderer):
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=120)
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
+        return figure_to_png(fig)
 
     def render_to_html(
         self,
@@ -257,18 +256,14 @@ class SpectraRenderer(BaseRenderer):
         data = self.load()
         freqs = data.frequencies
         intens = data.intensities
-        style = _style_for(self.section, freqs)
+        style = spectrum_style(self.section, freqs)
         gamma = style.gamma * max(0.05, float(gamma_scale))
 
         fig = go.Figure()
 
         if len(freqs) > 0:
-            f_min = float(np.min(freqs)) - style.x_buffer
-            if style.x_unit_short == "cm⁻¹":
-                f_min = max(0.0, f_min)
-            f_max = float(np.max(freqs)) + style.x_buffer
-            f_grid = np.linspace(f_min, f_max, 2000)
-            broadened = _broadened_envelope(freqs, intens, gamma, f_grid)
+            f_grid = spectrum_grid(freqs, style)
+            broadened = broadened_envelope(freqs, intens, gamma, f_grid)
             if normalize and np.abs(broadened).max() > 0:
                 broadened = broadened / np.abs(broadened).max()
 
@@ -335,7 +330,7 @@ class SpectraRenderer(BaseRenderer):
             showlegend=False,
         )
 
-        return fig.to_html(full_html=False, include_plotlyjs="cdn")
+        return str(fig.to_html(full_html=False, include_plotlyjs="cdn"))
 
     def to_csv(
         self,
@@ -351,17 +346,13 @@ class SpectraRenderer(BaseRenderer):
         data = self.load()
         freqs = np.asarray(data.frequencies, dtype=float)
         intens = np.asarray(data.intensities, dtype=float)
-        style = _style_for(self.section, freqs)
+        style = spectrum_style(self.section, freqs)
         gamma = style.gamma * max(0.05, float(gamma_scale))
 
         lines: list[str] = []
         if len(freqs) > 0:
-            f_min = float(np.min(freqs)) - style.x_buffer
-            if style.x_unit_short == "cm⁻¹":
-                f_min = max(0.0, f_min)
-            f_max = float(np.max(freqs)) + style.x_buffer
-            f_grid = np.linspace(f_min, f_max, 2000)
-            env = _broadened_envelope(freqs, intens, gamma, f_grid)
+            f_grid = spectrum_grid(freqs, style)
+            env = broadened_envelope(freqs, intens, gamma, f_grid)
             if normalize and np.abs(env).max() > 0:
                 env = env / np.abs(env).max()
             x_grid, unit_short, _ = _convert_x(f_grid, style.x_unit_short, x_unit)
@@ -388,7 +379,7 @@ _COMPARE_COLORS = ("#CC3333", "#3366CC", "#33AA55", "#CC8800", "#8844CC", "#00AA
 
 
 def render_comparison_html(
-    entries,
+    entries: Iterable[tuple[str, Section, QVFReader]],
     gamma_scale: float = 1.0,
     normalize: bool = False,
     x_unit: str = "native",
@@ -412,17 +403,17 @@ def render_comparison_html(
         freqs = np.asarray(data.frequencies, dtype=float)
         intens = np.asarray(data.intensities, dtype=float)
         if style is None:
-            style = _style_for(section, freqs)
+            style = spectrum_style(section, freqs)
         if len(freqs):
             series.append((label, freqs, intens))
     if not series or style is None:
         return '<div style="padding: 16px;">No spectra to compare.</div>'
 
-    f_min = min(float(np.min(f)) for _, f, _ in series) - style.x_buffer
-    if style.x_unit_short == "cm⁻¹":
-        f_min = max(0.0, f_min)
-    f_max = max(float(np.max(f)) for _, f, _ in series) + style.x_buffer
-    f_grid = np.linspace(f_min, f_max, 2000)
+    bounds = np.array([
+        min(float(np.min(f)) for _, f, _ in series),
+        max(float(np.max(f)) for _, f, _ in series),
+    ])
+    f_grid = spectrum_grid(bounds, style)
 
     fig = go.Figure()
     x_grid, unit_short, axis_label = _convert_x(f_grid, style.x_unit_short, x_unit)
@@ -432,7 +423,7 @@ def render_comparison_html(
     for i, (label, freqs, intens) in enumerate(series):
         color = _COMPARE_COLORS[i % len(_COMPARE_COLORS)]
         if display in ("both", "envelope"):
-            broadened = _broadened_envelope(freqs, intens, gamma, f_grid)
+            broadened = broadened_envelope(freqs, intens, gamma, f_grid)
             if normalize and np.abs(broadened).max() > 0:
                 broadened = broadened / np.abs(broadened).max()
             fig.add_trace(
@@ -480,4 +471,4 @@ def render_comparison_html(
         legend={"orientation": "h", "y": -0.3},
         showlegend=True,
     )
-    return fig.to_html(full_html=False, include_plotlyjs="cdn")
+    return str(fig.to_html(full_html=False, include_plotlyjs="cdn"))

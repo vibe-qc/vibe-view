@@ -37,9 +37,9 @@ import os
 import threading
 import time
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 __all__ = ["QVFChange", "QVFChangeTracker", "QVFFileWatcher", "watch_qvf"]
 
@@ -270,7 +270,7 @@ class QVFFileWatcher:
                 event = tracker.poll()
                 if event is not None:
                     self.last_event = event
-                    if self._callback:
+                    if self._callback is not None:
                         self._callback(str(self._path))
                     if self._on_event:
                         self._on_event(event)

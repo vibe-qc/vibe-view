@@ -277,18 +277,13 @@ def launch_desktop_app() -> bool:
     import shutil
     import subprocess
 
-    from vibeview.install_hints import source_project_dir
+    from vibeview.install_hints import electron_dir
 
-    project = source_project_dir()
-    electron_dir = (
-        project / "electron"
-        if project is not None
-        else Path(__file__).resolve().parent.parent.parent / "electron"
-    )
-    if not electron_dir.is_dir():
+    app_dir = electron_dir()
+    if not app_dir.is_dir():
         print(
             "Electron app not found at",
-            electron_dir,
+            app_dir,
             "\nRun from the vibe-view checkout root:  cd electron && npm install",
         )
         return False
@@ -299,12 +294,12 @@ def launch_desktop_app() -> bool:
         return False
 
     # Check that node_modules exist; if not, try to install.
-    if not (electron_dir / "node_modules").is_dir():
+    if not (app_dir / "node_modules").is_dir():
         print("Installing npm dependencies (one-time)...")
         try:
             subprocess.run(
                 [npm, "install"],
-                cwd=str(electron_dir),
+                cwd=str(app_dir),
                 check=True,
             )
         except subprocess.CalledProcessError as e:
@@ -314,7 +309,7 @@ def launch_desktop_app() -> bool:
     try:
         subprocess.Popen(
             [npm, "start"],
-            cwd=str(electron_dir),
+            cwd=str(app_dir),
             start_new_session=True,
         )
         return True

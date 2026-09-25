@@ -154,17 +154,18 @@ class TestBondInference:
     def test_explicit_bonds_not_overridden(self) -> None:
         from vibeview.qvf import Atom, QVFReader, StructureData
 
+        # 10 Å apart: inference would find nothing, so the returned bond can
+        # only be the producer's. A bare pair is filled out to the full
+        # (i, j, order, image) form every consumer unpacks.
         atoms = [
             Atom("H", np.array([0.0, 0.0, 0.0]), 1),
-            Atom("H", np.array([1.0, 0.0, 0.0]), 1),
+            Atom("H", np.array([10.0, 0.0, 0.0]), 1),
         ]
-        explicit = [(0, 1)]
         structure = StructureData(
-            atoms=atoms, pbc=(False, False, False), lattice_vectors=None, bonds=explicit
+            atoms=atoms, pbc=(False, False, False), lattice_vectors=None, bonds=[(0, 1)]
         )
         reader = QVFReader.__new__(QVFReader)
-        bonds = reader.infer_bonds(structure)
-        assert bonds == explicit
+        assert reader.infer_bonds(structure) == [(0, 1, 1.0, (0, 0, 0))]
 
 
 class TestPlotlyRendering:
@@ -223,8 +224,10 @@ class TestPlotlyRendering:
             "source": {"program": "x", "version": "1", "calculation": "t"},
             "sections": sections,
         }
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        with zipfile.ZipFile(tmp, "w") as zf:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+            zipfile.ZipFile(tmp, "w") as zf,
+        ):
             zf.writestr("manifest.json", json.dumps(manifest))
             zf.writestr("s/k.json", kpath)
             zf.writestr("s/e.dat", evals)
@@ -278,8 +281,10 @@ class TestPlotlyRendering:
             "source": {"program": "x", "version": "1", "calculation": "t"},
             "sections": sections,
         }
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        with zipfile.ZipFile(tmp, "w") as zf:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+            zipfile.ZipFile(tmp, "w") as zf,
+        ):
             zf.writestr("manifest.json", json.dumps(manifest))
             zf.writestr("s/sp.json", spectrum)
         try:

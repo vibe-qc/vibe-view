@@ -36,8 +36,12 @@ look for it in the viewer.
 ## 2. Open it
 
 ```sh
-vibe-view open calculation.qvf
+vibe-view open water.qvf
 ```
+
+For your own data, replace `water.qvf` with the archive you inspected in
+step 1. From the density section onward, the examples describe a calculated
+archive; those panels will not appear in the structure-only water demo.
 
 The terminal prints the startup banner, one row per section with its render
 status, and your browser opens at `http://127.0.0.1:8080`. The server stays
@@ -47,7 +51,8 @@ in the foreground until you press <kbd>Ctrl</kbd>+<kbd>C</kbd>.
 :alt: Formaldehyde displayed as red oxygen, grey carbon and white hydrogen atoms in the browser structure view.
 
 The structure panel. Sidebar on the left, viewport in the centre, the
-section's controls on the right.
+section's controls on the right. Scientific charts and tables open in the
+resizable result panel below the viewport.
 ```
 
 Rotate with a left drag, pan with a middle drag, zoom with the wheel,
@@ -73,10 +78,11 @@ Formaldehyde in ball-and-stick.
 
 Click a `volume.density` section. The payload is read from the archive now,
 not at open time, and the isosurface appears translucent over the structure
-at the default isovalue of 0.05 e/bohr³. Drag **Volume isovalue** down and
-the surface grows outward; drag it up and it collapses onto the nuclei. The
-lone-pair region is where the density stays largest as you raise the
-isovalue.
+at the default isovalue of 0.05 (in the field's stored units). Lower the
+**Isovalue** and the surface generally grows outward; raise it to restrict
+the contour to regions of higher density. Use the archive's units when
+reporting a contour value; changing the contour changes the view, not the
+electron density in the archive.
 
 ```{figure} images/02-density.png
 :alt: A computed formaldehyde electron-density surface surrounding its ball-and-stick geometry, beside the volume controls.
@@ -108,8 +114,14 @@ A stored orbital grid.
 A `wavefunction.gto` section is different, and better: it carries the basis
 and the coefficient matrix, and the **Molecular Orbitals** panel evaluates
 whichever orbital you click. Press the HOMO button, then the next-orbital
-arrow a few times. Nothing was pre-computed; each surface is sampled when you
-ask for it, and cached after that.
+arrow a few times. The basis and coefficients came from the producer; the
+viewer samples each requested surface on a grid and caches it for subsequent
+views.
+
+The orbital play button advances through the picker and stops at the final
+orbital. Starting on the final (or only) orbital renders it once. Scheduled
+frames update the surface and picker without requiring another click; stopping
+playback or switching sections cancels the pending frame.
 
 ```{figure} images/15-orbital-homo.png
 :alt: The positive and negative formaldehyde HOMO lobes evaluated from the stored wavefunction.
@@ -227,8 +239,10 @@ Session**. Next time, **Load Session** brings every bookmark back, and
 
 ## 13. The same archive, elsewhere
 
-Everything above came out of one file, and the file does not care which
-surface reads it:
+Use an archive with the sections shown by `vibe-view info`. The following
+commands assume its section IDs are `homo` and `density`; replace them with
+your file's IDs. A *kind* describes the data; an *ID* selects one particular
+section.
 
 ```sh
 vibe-view show calculation.qvf                     # one braille frame, no display needed
@@ -249,6 +263,8 @@ headers, rows = get_table("calculation.qvf", "atom_properties")
 
 ## Where next
 
+* [From input to a shareable result](workflows.md), for commands you can run
+  from a fresh install without a computed showcase archive.
 * [The browser viewer](browser.md), the reference for every control on this
   tour.
 * [Building and editing](editing.md), for changing the structure rather than

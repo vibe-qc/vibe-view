@@ -15,7 +15,7 @@ energy means an iteration-count-only sanity plot.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import plotly.graph_objects as go
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 def _extract_xy(
-    iters: list[dict], key: str, *, x_key: str = "iter"
+    iters: list[dict[str, Any]], key: str, *, x_key: str = "iter"
 ) -> tuple[list[float], list[float]]:
     """Return ``(xs, ys)`` for the records that carry a numeric ``key``.
 
@@ -171,7 +171,7 @@ class SCFHistoryRenderer(BaseRenderer):
                 )
             )
 
-        layout: dict = {
+        layout: dict[str, Any] = {
             "title": "SCF Convergence",
             "xaxis": {"title": "Iteration"},
             "template": "plotly_dark",
@@ -205,4 +205,4 @@ class SCFHistoryRenderer(BaseRenderer):
             }
         fig.update_layout(**layout)
 
-        return fig.to_html(full_html=False, include_plotlyjs="cdn")
+        return str(fig.to_html(full_html=False, include_plotlyjs="cdn"))

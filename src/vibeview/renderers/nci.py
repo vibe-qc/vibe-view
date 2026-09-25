@@ -24,12 +24,14 @@ Waals (sign(λ₂)ρ ≈ 0), red = repulsive/steric (sign(λ₂)ρ > 0).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 if TYPE_CHECKING:
     import pyvista as pv
+    from matplotlib.colors import LinearSegmentedColormap
 
     from vibeview.qvf import GridData
 
@@ -38,7 +40,7 @@ RDG_ISOVALUE = 0.3       # s(r) isosurface value defining the NCI surface
 COLOR_CLIM = 0.05        # sign(λ₂)ρ color range, atomic units (±0.05 a.u.)
 
 
-def nci_colormap():
+def nci_colormap() -> LinearSegmentedColormap:
     """Blue→green→red diverging colormap (the NCIPLOT sign(λ₂)ρ convention).
 
     Blue at the negative clim (attractive), green at zero (van der Waals), red
@@ -85,8 +87,9 @@ def sign_lambda2_rho(rho: np.ndarray, voxel_vectors: np.ndarray) -> np.ndarray:
     hess[..., 1, 2] = hess[..., 2, 1] = hyz
 
     # eigvalsh returns eigenvalues in ascending order: λ₁ ≤ λ₂ ≤ λ₃.
-    lam2 = np.linalg.eigvalsh(hess)[..., 1]
-    return np.sign(lam2) * rho
+    lam2: np.ndarray = np.linalg.eigvalsh(hess)[..., 1]
+    field: np.ndarray = np.sign(lam2) * rho
+    return field
 
 
 def build_nci_mesh(
@@ -94,7 +97,11 @@ def build_nci_mesh(
     color_data: np.ndarray | None,
     grid: GridData,
     isovalue: float = RDG_ISOVALUE,
-) -> "pv.PolyData | None":
+    *,
+    replication: tuple[int, int, int] = (1, 1, 1),
+    lattice_vectors: np.ndarray | None = None,
+    pbc: Sequence[bool] | None = None,
+) -> pv.PolyData | None:
     """Contour the RDG field at ``isovalue``; carry sign(λ₂)ρ onto the surface.
 
     Builds a PyVista grid with the RDG field as ``rdg`` and (when available)
@@ -106,33 +113,19 @@ def build_nci_mesh(
     The grid geometry is converted bohr→Å to match the atoms, mirroring
     :func:`vibeview.renderers.volume.build_isosurface_mesh`.
     """
-    import pyvista as pv
+    from vibeview.renderers.volume import build_isosurface_mesh
 
-    from vibeview.renderers.volume import _BOHR_TO_ANGSTROM
-
-    nx, ny, nz = grid.shape
-    voxel = grid.voxel_vectors * _BOHR_TO_ANGSTROM
-    origin = grid.origin * _BOHR_TO_ANGSTROM
-    dims = (nx, ny, nz)
-
-    spacing = [float(voxel[i, i]) for i in range(3)]
-    origin_xyz = [float(origin[i]) for i in range(3)]
-    flip_axes: list[int] = []
-    for i in range(3):
-        if spacing[i] < 0.0:
-            origin_xyz[i] += (dims[i] - 1) * spacing[i]
-            spacing[i] = -spacing[i]
-            flip_axes.append(i)
-
-    def _oriented(arr: np.ndarray) -> np.ndarray:
-        return np.flip(arr, axis=tuple(flip_axes)) if flip_axes else arr
-
-    mesh = pv.ImageData(dimensions=dims, spacing=tuple(spacing), origin=tuple(origin_xyz))
-    mesh.point_data["rdg"] = _oriented(rdg_data).ravel(order="F")
-    if color_data is not None:
-        mesh.point_data["color"] = _oriented(color_data).ravel(order="F")
-
-    contour = mesh.contour(isosurfaces=[isovalue], scalars="rdg")
-    if contour.n_points == 0:
+    contour = build_isosurface_mesh(
+        rdg_data,
+        grid,
+        isovalue,
+        replication=replication,
+        lattice_vectors=lattice_vectors,
+        pbc=pbc,
+        extra_point_arrays={"color": color_data} if color_data is not None else None,
+    )
+    if contour is None or contour.n_points == 0:
         return None
+    # Preserve the public NCI mesh's scalar names for existing consumers.
+    contour.rename_array("values", "rdg")
     return contour

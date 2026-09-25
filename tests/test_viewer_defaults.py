@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from vibeview.qvf import Manifest, ViewerDefaults
 from vibeview.viewer_defaults import ViewerState, VolumeHints
 
@@ -107,6 +109,42 @@ class TestViewerStateGetVolumeHints:
         # Should also have been stored
         assert "unknown" in state.volume_hints
 
+    @pytest.mark.parametrize("separate_state", [False, True], ids=["section", "state"])
+    @pytest.mark.parametrize(
+        ("kind", "expected"),
+        [
+            ("volume.difference", (0.005, "RdBu", 0.6)),
+            ("volume.spin", (0.005, "RdBu", 0.6)),
+            ("volume.density", (0.05, "viridis", 0.6)),
+            ("volume.orbital", (0.05, "coolwarm", 0.6)),
+            ("volume.elf", (0.5, "plasma", 0.6)),
+            ("volume.potential", (0.03, "coolwarm", 0.6)),
+            ("volume.rdg", (0.3, "coolwarm", 0.65)),
+            ("volume.generic", (0.05, "viridis", 0.6)),
+            ("", (0.05, "viridis", 0.6)),
+        ],
+    )
+    def test_volume_edits_are_isolated(
+        self, kind: str, expected: tuple[float, str, float], separate_state: bool
+    ) -> None:
+        state = ViewerState.from_manifest(None)
+        other = ViewerState.from_manifest(None) if separate_state else state
+        edited = state.get_volume_hints("edited", kind=kind)
+        existing = other.get_volume_hints("existing", kind=kind)
+
+        edited.isovalue = 0.123
+        edited.colormap = "magma"
+        edited.opacity = 0.25
+
+        # Existing and newly opened sections retain independently specified
+        # defaults, including when a new file creates another ViewerState.
+        later = other.get_volume_hints("later", kind=kind)
+        for hints in (existing, later):
+            assert (hints.isovalue, hints.colormap, hints.opacity) == expected
+            assert hints is not edited
+        assert state.get_volume_hints("edited", kind=kind) is edited
+        assert (edited.isovalue, edited.colormap, edited.opacity) == (0.123, "magma", 0.25)
+
 
 class TestKindDefaultMerge:
     """A partial manifest hint must not erase the kind-specific defaults
@@ -136,6 +174,26 @@ class TestKindDefaultMerge:
         state = ViewerState.from_manifest(defaults)
         hints = state.get_volume_hints("spin", kind="volume.spin")
         assert (hints.isovalue, hints.colormap, hints.opacity) == (0.02, "seismic", 0.5)
+
+    @pytest.mark.parametrize("separate_state", [False, True], ids=["section", "state"])
+    def test_partial_hints_ignore_edits_to_another_volume(self, separate_state: bool) -> None:
+        defaults = ViewerDefaults.model_validate({"partial": {"opacity": 0.8}})
+        state = ViewerState.from_manifest(defaults)
+        other = ViewerState.from_manifest(defaults) if separate_state else state
+        edited = state.get_volume_hints("edited", kind="volume.difference")
+        edited.isovalue = 0.123
+        edited.colormap = "magma"
+        edited.opacity = 0.25
+
+        partial = other.get_volume_hints("partial", kind="volume.difference")
+        assert (partial.isovalue, partial.colormap, partial.opacity) == (0.005, "RdBu", 0.8)
+        partial.isovalue = 0.02
+        assert other.get_volume_hints("partial", kind="volume.difference") is partial
+        assert partial.isovalue == 0.02
+        fresh = ViewerState.from_manifest(defaults).get_volume_hints(
+            "partial", kind="volume.difference"
+        )
+        assert (fresh.isovalue, fresh.colormap, fresh.opacity) == (0.005, "RdBu", 0.8)
 
 
 class TestFromManifestIdempotent:

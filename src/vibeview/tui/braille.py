@@ -78,7 +78,10 @@ def to_cells(
     return _to_braille_cells(pixels, covered)
 
 
-def _to_braille_cells(pixels, covered):
+Cells = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+
+
+def _to_braille_cells(pixels: np.ndarray, covered: np.ndarray) -> Cells:
     height, width = covered.shape
     rows, cols = height // 4, width // 2
     if rows == 0 or cols == 0:
@@ -104,7 +107,7 @@ def _to_braille_cells(pixels, covered):
     return codepoints, fg, bg, filled
 
 
-def _to_half_cells(pixels):
+def _to_half_cells(pixels: np.ndarray) -> Cells:
     height, width = pixels.shape[:2]
     rows, cols = height // 2, width
     if rows == 0 or cols == 0:
@@ -141,10 +144,10 @@ def to_ansi(
     lines: list[str] = []
     for r in range(rows):
         parts: list[str] = []
-        prev: tuple | None = None
+        prev: tuple[object, ...] | None = None
         for c in range(cols):
             if not filled[r, c] and mode != "half":
-                style: tuple = ("plain",)
+                style: tuple[object, ...] = ("plain",)
                 char = " "
             else:
                 fr, fg_, fb = (int(v) for v in fg[r, c])
@@ -187,7 +190,11 @@ class CellGrid:
     def __init__(self, cols: int, rows: int, background: tuple[int, int, int] = (0, 0, 0)) -> None:
         self.cols = max(1, int(cols))
         self.rows = max(1, int(rows))
-        self.background = tuple(background)
+        self.background: tuple[int, int, int] = (
+            int(background[0]),
+            int(background[1]),
+            int(background[2]),
+        )
         self.chars = np.full((self.rows, self.cols), " ", dtype="<U1")
         self.fg = np.zeros((self.rows, self.cols, 3), dtype=np.uint8)
         self.bg = np.tile(np.array(background, dtype=np.uint8), (self.rows, self.cols, 1))
@@ -253,7 +260,9 @@ class CellGrid:
             if background is not None:
                 self.bg[row, c] = background
 
-    def text_right(self, row: int, col_end: int, value: str, color=(210, 214, 224)) -> None:
+    def text_right(
+        self, row: int, col_end: int, value: str, color: tuple[int, int, int] = (210, 214, 224)
+    ) -> None:
         """Right-align ``value`` so its last character lands on ``col_end``."""
         self.text(row, col_end - len(value) + 1, value, color)
 
@@ -268,8 +277,9 @@ class CellGrid:
         """
         runs: list[tuple[str, tuple[int, int, int] | None, tuple[int, int, int]]] = []
         chars: list[str] = []
-        prev: tuple | None = None
+        prev: tuple[tuple[int, int, int] | None, tuple[int, int, int]] | None = None
         for c in range(self.cols):
+            style: tuple[tuple[int, int, int] | None, tuple[int, int, int]]
             if not self.filled[row, c]:
                 style = (None, self.background)
                 char = " "
@@ -295,10 +305,10 @@ class CellGrid:
         lines: list[str] = []
         for r in range(self.rows):
             parts: list[str] = []
-            prev: tuple | None = None
+            prev: tuple[int, ...] | None = None
             for c in range(self.cols):
                 if not self.filled[r, c]:
-                    style: tuple = ()
+                    style: tuple[int, ...] = ()
                     char = " "
                 else:
                     style = (

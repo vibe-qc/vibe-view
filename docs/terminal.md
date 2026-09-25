@@ -19,6 +19,16 @@ vibe-view show ~/scratch/job.qvf          # one frame, then exit
 vibe-view tui  ~/scratch/job.qvf          # interactive
 ```
 
+For a first run without a remote calculation, create the bundled geometry:
+
+```sh
+vibe-view demo -o terminal-water.qvf
+vibe-view show terminal-water.qvf --labels
+```
+
+This file contains only a structure. The orbital and spectrum examples below
+need a calculated archive carrying those sections.
+
 ## Two commands
 
 | | `vibe-view show` | `vibe-view tui` |
@@ -170,14 +180,33 @@ draw their isosurface over the structure; signed fields get both lobes,
 unsigned density one surface. Trajectories and reaction paths also have an
 energy-profile chart (<kbd>g</kbd> in the TUI, `--chart` for `show`).
 
+Animated sections use their own atom identities and frame positions, even
+when the archive has a different primary structure or no structure section.
+Display bonds are inferred from those frame atoms. Trajectories and vibrations
+retain the primary structure’s cell and periodic axes when available, as
+legacy display context; the primary atom list and explicit bonds are not
+borrowed. Reaction paths instead use their own selected-frame cell and
+dimensionality. A reaction path without a lattice is molecular and draws no
+cell, even when another section is periodic. Fixed and variable reaction cells
+both use the stored bohr column vectors converted to Å row vectors for display.
+
 **Charted:** `bands`, `dos.total`, `dos.projected`, `dos.coop`, `dos.cohp`,
 every `spectra.*` stick spectrum, `scf_history`, `equation_of_state`,
 `phonon_bands`, `phonon_dos`, and `scan.surface` as a colour heat map. The
-conventions match the browser's Plotly charts so the two tell the same
-story: bands and DOS are Fermi-referenced when E_F falls inside the data
-window and labelled absolute when it does not; SCF convergence is |ΔE| on a
-log axis; spectrum axes carry each kind's native unit, with the Lorentzian
-envelope named in the legend.
+DOS grids are stored in eV relative to E_F = 0 and are displayed without
+subtracting the optional absolute Fermi metadata again, matching the browser.
+Projected DOS uses the producer's channel labels. Bands currently use a
+Fermi reference when its metadata falls inside the data window; that separate
+convention does not apply to DOS. SCF convergence is |ΔE| on a log axis;
+spectrum axes carry each kind's native unit, with the Lorentzian envelope
+named in the legend. Default Lorentzian half-widths match the browser: 5 cm⁻¹
+for IR/Raman/VCD and 0.1 eV for UV-Vis/ECD; generic spectra use a width based
+on their data span. Changing the terminal width does not broaden spectral
+features. Signed intensities remain signed. Equation-of-state charts evaluate
+the producer’s fitted
+Birch–Murnaghan or Murnaghan parameters in eV/Å³/GPa, using the same curve as
+the browser. Computed points remain separate. Incomplete fit parameters leave
+only the computed points.
 
 ```{figure} images/tui-04-spectrum.svg
 :alt: The formaldehyde IR spectrum rendered as a terminal chart with sticks and an envelope.

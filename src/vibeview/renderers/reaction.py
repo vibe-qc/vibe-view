@@ -14,17 +14,20 @@ column c is left alone.
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._mpl import agg_pyplot, figure_to_png
+from vibeview.renderers.cell import cell_edges
+from vibeview.units import BOHR_TO_ANGSTROM as _BOHR_TO_ANGSTROM
 
 if TYPE_CHECKING:
+    import pyvista as pv
+
     from vibeview.qvf import (
+        GridData,
         QVFReader,
         ReactionPathData,
         ReactionWaypoint,
@@ -32,13 +35,11 @@ if TYPE_CHECKING:
         Section,
     )
 
-matplotlib.use("Agg")
 
 # Bohr → Ångström (CODATA 2018). The QVF v2 schema stores lattice
 # vectors in bohr to match ``vibeqc.PeriodicSystem.lattice`` exactly;
 # the renderer converts to Å on output for consistency with the atom
 # coords (which the writer has already converted to Å).
-_BOHR_TO_ANGSTROM = 0.529177210903
 
 
 _KIND_COLORS = {
@@ -87,49 +88,8 @@ def _wrap_positions(
     frac_wrapped[:, :wrap_axes] = frac[:, :wrap_axes] - np.floor(
         frac[:, :wrap_axes]
     )
-    return frac_wrapped @ lattice_angstrom.T
-
-
-def _cell_edges(
-    lattice_angstrom: np.ndarray,
-    dim: int = 3,
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Edges of the cell spanned by the first ``dim`` lattice vectors.
-
-    Returns ``(p1, p2)`` pairs of corner positions in Å, with the cell origin at
-    the world origin. ``dim=3`` gives the familiar 12-edge parallelepiped;
-    ``dim=2`` gives the 4-edge in-plane parallelogram; ``dim=1`` a single edge.
-
-    Columns beyond ``dim`` are **non-physical** — vibe-qc synthesizes them so
-    the lattice stays full-rank for AO integrals and spglib, and the SCF energy
-    is invariant to them. Drawing them would render a 2D slab as a sheet inside
-    a phantom box.
-
-    LATTICE CONVENTION (reaction.path): the binary ``lattice`` member stores
-    vectors as **COLUMNS** (``lattice[:, 0]`` = a) — raw
-    ``PeriodicSystem.lattice``, no transpose. This is the OPPOSITE of the
-    ``structure`` section, which stores ROWS (see
-    renderers/structure.py::_draw_unit_cell). Both are correct for their own
-    source; never feed one renderer the other's lattice without transposing.
-    """
-    n = max(0, min(int(dim), 3))
-    if n == 0:
-        return []
-    vecs = [lattice_angstrom[:, i] for i in range(n)]
-
-    # Corners are every subset-sum of the periodic vectors; an edge joins two
-    # corners differing by exactly one vector.
-    corners = [
-        sum((vecs[k] for k in range(n) if mask & (1 << k)), np.zeros(3))
-        for mask in range(1 << n)
-    ]
-    edge_pairs = [
-        (mask, mask | (1 << k))
-        for mask in range(1 << n)
-        for k in range(n)
-        if not (mask & (1 << k))
-    ]
-    return [(corners[i], corners[j]) for i, j in edge_pairs]
+    wrapped: np.ndarray = frac_wrapped @ lattice_angstrom.T
+    return wrapped
 
 
 class ReactionPathRenderer(BaseRenderer):
@@ -147,7 +107,7 @@ class ReactionPathRenderer(BaseRenderer):
 
     @property
     def n_frames(self) -> int:
-        return self.load().coords.shape[0]
+        return int(self.load().coords.shape[0])
 
     @property
     def n_atoms(self) -> int:
@@ -200,7 +160,8 @@ class ReactionPathRenderer(BaseRenderer):
         if arr.ndim == 2:
             return arr * _BOHR_TO_ANGSTROM
         if arr.ndim == 3:
-            return arr[index] * _BOHR_TO_ANGSTROM
+            frame: np.ndarray = arr[index] * _BOHR_TO_ANGSTROM
+            return frame
         raise ValueError(
             f"reaction.path: lattice has unexpected ndim={arr.ndim} "
             f"(expected 2 or 3)"
@@ -251,7 +212,10 @@ class ReactionPathRenderer(BaseRenderer):
         if lattice is None:
             return None
         dim = self.dim_for_frame(index)
-        return _cell_edges(lattice, 3 if dim is None else dim)
+        dim = 3 if dim is None else max(0, min(int(dim), 3))
+        # cell_for_frame gives Å columns; the shared helper takes rows.
+        starts, ends = cell_edges(lattice.T, (dim > 0, dim > 1, dim > 2))
+        return list(zip(starts, ends, strict=True))
 
     def has_energies(self) -> bool:
         data = self.load()
@@ -271,7 +235,7 @@ class ReactionPathRenderer(BaseRenderer):
     def volume_isovalue(self) -> float | None:
         return self.load().volume_isovalue
 
-    def volume_grid(self):  # -> GridData | None
+    def volume_grid(self) -> GridData | None:
         """Shared real-space grid (bohr) for the per-frame volumes."""
         return self.load().volume_grid
 
@@ -302,7 +266,7 @@ class ReactionPathRenderer(BaseRenderer):
         self,
         index: int,
         isovalue: float | None = None,
-    ):  # -> pv.PolyData | None
+    ) -> pv.PolyData | None:
         """Marching-cubes isosurface of the density at path frame
         ``index``, ready to add to the 3D scene. None if this archive
         has no volumes. ``isovalue`` defaults to the archive's stored
@@ -313,6 +277,8 @@ class ReactionPathRenderer(BaseRenderer):
         from vibeview.renderers.volume import build_isosurface_mesh
 
         field = self.volume_data_for_frame(index)
+        if field is None:
+            return None
         iso = (
             isovalue
             if isovalue is not None
@@ -375,7 +341,7 @@ class ReactionPathRenderer(BaseRenderer):
         idx = max(0, min(current_frame, n - 1))
         return self._frame_pngs[idx]
 
-    def _prerender_all_frames(self, data) -> list[bytes]:
+    def _prerender_all_frames(self, data: ReactionPathData) -> list[bytes]:
         """Render one PNG per frame (frame indicator moves; everything else fixed)."""
         if not data.energies:
             return []
@@ -388,12 +354,12 @@ class ReactionPathRenderer(BaseRenderer):
             assert data.reaction_coordinate is not None
             xs = np.array(data.reaction_coordinate, dtype=np.float64)
         else:
-            xs = np.arange(n)
+            xs = np.arange(n, dtype=np.float64)
         x_label = self.energy_plot_x_label()
 
         pngs: list[bytes] = []
         for frame in range(n):
-            fig, ax = plt.subplots(figsize=(6, 2.8))
+            fig, ax = agg_pyplot().subplots(figsize=(6, 2.8))
             ax.plot(xs, energies, "-", color="#3366CC", linewidth=1.0, zorder=1)
             ax.plot(xs, energies, "o", color="#3366CC", markersize=3, zorder=2)
 
@@ -422,11 +388,7 @@ class ReactionPathRenderer(BaseRenderer):
             ax.grid(True, alpha=0.3)
             fig.tight_layout()
 
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=100)
-            plt.close(fig)
-            buf.seek(0)
-            pngs.append(buf.read())
+            pngs.append(figure_to_png(fig))
         return pngs
 
 

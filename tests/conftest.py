@@ -96,8 +96,10 @@ def sample_qvf() -> Path:
         "sections/density.dat": density_data.tobytes(),
     }
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         for path, data in files.items():
             zf.writestr(path, data)

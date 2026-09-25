@@ -36,8 +36,8 @@ Python 3.11+, one script, no compiler. Which optional extra buys you what.
 :link: quickstart
 :link-type: doc
 
-Five minutes from a fresh checkout to a rendered molecule, with no
-calculation of your own to hand.
+A first successful view, with a bundled molecule, expected output and
+commands you can run in sequence.
 :::
 
 :::{grid-item-card} {octicon}`eye` A tour of the viewer
@@ -57,11 +57,13 @@ Every command, grouped by what you are trying to do.
 
 ::::
 
-## Four ways to look at the same file
+## Choose how to use the viewer
 
-vibe-view is one renderer stack behind four front ends. Every one of them
-reads the same archive and draws it with the same code, so a figure captured
-headlessly on a compute node matches what the browser shows.
+Choose a surface for the task and the machine you have. They read the same
+archive, but differ in interaction, rendering and export support. Browser
+and desktop use the interactive 3-D scene; the terminal uses a text
+rasterizer; PNG capture uses an offscreen renderer. Camera and material
+settings need to be matched when comparing images.
 
 | Surface | Command | Needs | Good for |
 |---|---|---|---|
@@ -75,6 +77,18 @@ headlessly on a compute node matches what the browser shows.
 bonds and isosurfaces, as Unicode braille, needs no OpenGL context at all,
 and therefore works anywhere a shell does.
 
+## What are you trying to do?
+
+| Task | Start here | What you will produce |
+|---|---|---|
+| Try the viewer without running a calculation | [Quickstart](quickstart.md) | A water archive and its browser or terminal view |
+| Turn an XYZ file into a result you can share | [Worked workflows](workflows.md) | A validated QVF, image and exported geometry |
+| Understand a density or orbital | [Guided tour](walkthrough.md#4-density-and-difference-density) | A view with a chosen section, sign and contour |
+| Inspect a result on a remote machine | [Terminal mode](terminal.md) | A text view or an interactive terminal session |
+| Inspect a protein or crystal | [Biomolecules](biomolecules.md), [periodic controls](browser.md) | Chain, residue or unit-cell views |
+| Automate a directory of results | [Python SDK](python_api.md), [headless rendering](headless.md) | Metadata, tables and reproducible exports |
+| Diagnose missing data or a blank view | [Troubleshooting](troubleshooting.md) | The distinction between absent data and a rendering problem |
+
 ## Documentation
 
 ```{toctree}
@@ -83,6 +97,7 @@ and therefore works anywhere a shell does.
 
 installation
 quickstart
+workflows
 walkthrough
 capabilities
 ```
@@ -132,7 +147,7 @@ internal
 
 ## Where things live
 
-vibe-view is one of five repositories split out of the private `vibe-qc`
+vibe-view is one of the repositories split out of the private `vibe-qc`
 monorepo on 2026-09-08. Each is independently installable and separately
 versioned.
 

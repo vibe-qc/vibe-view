@@ -30,8 +30,10 @@ def _make_qvf(
         },
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         if files:
             for path, data in files.items():
@@ -118,21 +120,6 @@ class TestPOVRayExport:
                 assert "sphere" in content
             finally:
                 Path(path).unlink(missing_ok=True)
-
-    def test_detect_bonds(self) -> None:
-        """Bond detection finds bonds between close atoms."""
-        from vibeview.povray_export import _detect_bonds
-
-        # H2 molecule: two H atoms at ~0.74 A
-        positions = np.array([[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]])
-        z_list = [1, 1]  # H-H
-        bonds = _detect_bonds(positions, z_list)
-        assert len(bonds) > 0
-
-        # Far apart atoms
-        positions_far = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
-        bonds_far = _detect_bonds(positions_far, z_list)
-        assert len(bonds_far) == 0
 
     def test_cpk_colors(self) -> None:
         """CPK colour map has entries for common elements."""

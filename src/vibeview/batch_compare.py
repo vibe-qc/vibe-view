@@ -7,13 +7,19 @@ Useful for screening calculations or benchmarking.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from vibeview.units import HARTREE_TO_KCAL_MOL
 
-def _energy_eh(reader) -> float | None:
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
+
+
+def _energy_eh(reader: QVFReader) -> float | None:
     """SCF energy (Eh) from a reader's provenance, mirroring cli._energy_eh."""
     prov = getattr(reader.manifest, "provenance", None) or {}
     if hasattr(prov, "model_dump"):
@@ -101,7 +107,7 @@ def compare_batch(
     # Section matrix
     for kind in sorted(all_section_kinds):
         results["sections"][kind] = []
-        for path, reader in readers:
+        for _path, reader in readers:
             has_it = any(s.kind == kind for s in reader.sections)
             results["sections"][kind].append(has_it)
 
@@ -149,7 +155,7 @@ def compare_batch(
             if i == reference_idx:
                 continue
             if e.get("scf_energy_eh") is not None:
-                delta = (e["scf_energy_eh"] - ref_energy) * 627.509  # kcal/mol
+                delta = (e["scf_energy_eh"] - ref_energy) * HARTREE_TO_KCAL_MOL  # kcal/mol
                 lines.append(f"  {Path(e['path']).name}: ΔE = {delta:.2f} kcal/mol")
 
     if results["rmsd"]:
@@ -167,15 +173,13 @@ def compare_batch(
 
     # Close readers
     for _, reader in readers:
-        try:
+        with contextlib.suppress(Exception):
             reader.close()
-        except Exception:
-            pass
 
     return results
 
 
-def batch_compare_to_table(results: dict) -> str:
+def batch_compare_to_table(results: dict[str, Any]) -> str:
     """Format batch comparison results as a markdown table."""
     files = results.get("files", [])
     energies = results.get("energies", [])

@@ -12,20 +12,49 @@ import json
 import logging
 import logging.handlers
 import os
-import socket
 import sys
-import threading
-import time
-import webbrowser
+from collections.abc import Callable
 from pathlib import Path
+from types import TracebackType
+from typing import TYPE_CHECKING, Any
 
 import click
+
+from vibeview import install_hints
+from vibeview._fmt import human_size
+from vibeview.cli_common import (
+    Size,
+    colormap_option,
+    default_output,
+    describe_default,
+    fps_option,
+    host_option,
+    isovalue_option,
+    json_flag,
+    log_file_option,
+    no_browser_option,
+    open_reader_or_exit,
+    output_option,
+    parse_csv_list,
+    port_option,
+    resolve_server_options,
+    size_option,
+)
+from vibeview.netutil import announce_when_bound, port_open
+from vibeview.paths import interpreter_record_path, log_path
+from vibeview.units import (
+    HARTREE_TO_EV,
+    HARTREE_TO_KCAL_MOL,
+)
 
 _NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate",
     "Pragma": "no-cache",
     "Expires": "0",
 }
+
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
 
 
 def _disable_http_caching() -> None:
@@ -57,7 +86,7 @@ def _disable_http_caching() -> None:
     # patch above already stuck).
     orig_init = backend.WebAppServer.__init__
 
-    def _patched_init(self, server_config):
+    def _patched_init(self: Any, server_config: Any) -> Any:
         backend.HTTP_HEADERS = dict(_NO_CACHE_HEADERS)
         return orig_init(self, server_config)
 
@@ -77,34 +106,20 @@ _LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB per file
 _LOG_BACKUPS = 3  # keep N rolled files alongside the active one
 
 
-def _default_log_path() -> Path:
-    """User-level cache location, kept out of any git checkout.
-
-    Honors ``XDG_CACHE_HOME`` so power users / CI can redirect, falls back
-    to ``~/.cache`` on Linux + macOS.
-    """
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "vibe-view" / "vibe-view.log"
-
-
-def _interpreter_record_path() -> Path:
-    """Persistent record of a vibe-view-capable interpreter, in the shared
-    cache dir. The Electron desktop app's ``findPython()`` reads this so a
-    plain double-click on a ``.qvf`` (which sets no VIBEVIEW_DESKTOP_CONFIG)
-    can reuse the venv vibe-view was installed in, instead of falling back to
-    a bare ``python3`` on PATH that lacks vibeview."""
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "vibe-view" / "interpreter.json"
-
-
 def _record_interpreter() -> None:
-    """Record this interpreter (best-effort) for the desktop app to reuse."""
+    """Record this interpreter (best-effort) for the desktop app to reuse.
+
+    The Electron desktop app's ``findPython()`` reads the record so a plain
+    double-click on a ``.qvf`` (which sets no VIBEVIEW_DESKTOP_CONFIG) can
+    reuse the venv vibe-view was installed in, instead of falling back to a
+    bare ``python3`` on PATH that lacks vibeview.
+    """
     import json as _json
 
     from vibeview import __version__
 
     try:
-        path = _interpreter_record_path()
+        path = interpreter_record_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             _json.dumps({"python": sys.executable, "version": __version__}, indent=2)
@@ -145,84 +160,41 @@ def _configure_logging(log_path: Path) -> None:
         logging.getLogger(_noisy).setLevel(logging.WARNING)
     logging.getLogger("vibeview").setLevel(logging.INFO)
 
-    def _log_uncaught(exc_type, exc, tb):
+    def _log_uncaught(
+        exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
+    ) -> None:
         logging.getLogger("vibeview").error("Uncaught exception", exc_info=(exc_type, exc, tb))
         sys.__excepthook__(exc_type, exc, tb)
 
     sys.excepthook = _log_uncaught
 
 
-def _wait_until_bound_and_announce(
-    host: str,
-    port: int,
-    *,
-    open_browser: bool,
-    timeout: float = 10.0,
-) -> None:
-    """Background-thread helper. Polls the port until uvicorn binds, then
-    prints the "ready" message and (optionally) opens the browser. Runs
-    only the announcement once the listener is actually accepting TCP
-    connections, so users do not refresh the browser too early and see
-    a misleading "Unable to connect" page (the historical CLI printed
-    "server starting" *before* the bind happened).
+def _announce_when_bound(host: str, port: int, *, open_browser: bool) -> None:
+    """Report "ready" and open the browser once the server has actually bound.
 
-    On binds that never complete within ``timeout`` the announcement is
-    skipped and a stderr warning is emitted instead. The main thread is
-    still blocked in :func:`vibeview.app.serve` regardless, so this
-    helper never interferes with the SCF-server lifecycle.
+    Start this after the application is built, so a cold import of the
+    render stack cannot eat the bind timeout.
     """
-    # When uvicorn binds 0.0.0.0 the TCP listener is reachable via
-    # localhost; probe that instead of literally connecting to the
-    # wildcard address (which Python refuses to dial).
-    probe_host = "127.0.0.1" if host == "0.0.0.0" else host
-    url = f"http://{host}:{port}"
-    probe_url = f"http://{probe_host}:{port}"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((probe_host, port), timeout=0.5):
-                pass
-        except OSError:
-            time.sleep(0.2)
-            continue
-        click.echo(f"vibe-view ready at {probe_url}")
+
+    def _ready(url: str) -> None:
+        click.echo(f"vibe-view ready at {url}")
         click.echo("Press Ctrl+C to stop.")
-        if open_browser:
-            try:
-                webbrowser.open(probe_url)
-            except Exception:
-                pass
-        return
-    click.echo(
-        f"vibe-view: warning, server did not bind within {timeout:.0f}s "
-        f"on {url}. Check stderr for uvicorn errors.",
-        err=True,
-    )
 
+    def _warn(message: str) -> None:
+        click.echo(f"vibe-view: warning, {message}", err=True)
 
-def _port_in_use(host: str, port: int) -> bool:
-    """True if something is already accepting TCP connections on (host, port).
-
-    ``vibe-view open`` otherwise *races* on a busy port: the announce thread
-    (:func:`_wait_until_bound_and_announce`) connects to the **existing**
-    listener, prints "ready", and opens the browser against that stale server —
-    while the freshly launched server dies with ``EADDRINUSE`` buried in the log
-    file. The user is left looking at the old session's last rendered frame,
-    which displays fine but no longer responds to the mouse ("I can see the
-    molecule but can't rotate it"). Pre-checking turns that silent footgun into
-    an actionable error.
-    """
-    probe_host = "127.0.0.1" if host == "0.0.0.0" else host
-    try:
-        with socket.create_connection((probe_host, port), timeout=0.5):
-            return True
-    except OSError:
-        return False
+    announce_when_bound(host, port, open_browser=open_browser, announce=_ready, warn=_warn)
 
 
 def _abort_if_port_in_use(host: str, port: int) -> None:
-    """Fail loudly (don't announce "ready" / open the browser) on a busy port."""
-    if _port_in_use(host, port):
+    """Fail loudly (don't announce "ready" / open the browser) on a busy port.
+
+    ``vibe-view open`` otherwise races on a busy port: the announce thread
+    connects to the existing listener, prints "ready" and opens the browser
+    against that stale server, while the freshly launched server dies with
+    EADDRINUSE buried in the log file.
+    """
+    if port_open(host, port):
         click.echo(
             f"vibe-view: port {port} is already in use on {host}.\n"
             "Another vibe-view server is probably still running there (servers "
@@ -257,7 +229,7 @@ def main(ctx: click.Context, show_version: bool) -> None:
         click.echo("\nRun 'vibe-view demo' for a standalone first example.\n")
 
 
-def _load_app():
+def _load_app() -> tuple[Callable[..., Any], Callable[..., Any]]:
     """Import the interactive-viewer app, or exit with a clear hint.
 
     The interactive viewer (`vibe-view open` / `serve` / `dashboard`) needs
@@ -286,36 +258,10 @@ def _load_app():
     type=click.Path(exists=True, path_type=Path),
     required=True,
 )
-@click.option(
-    "--port",
-    default=8080,
-    show_default=True,
-    type=click.IntRange(min=1, max=65535),
-    help="TCP port for the web server.",
-)
-@click.option(
-    "--host",
-    default="127.0.0.1",
-    show_default=True,
-    help="Interface to bind. Default = localhost-only.",
-)
-@click.option(
-    "--no-browser",
-    is_flag=True,
-    default=False,
-    help="Don't open the browser automatically.",
-)
-@click.option(
-    "--log-file",
-    "log_file",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help=(
-        "Path to write the server log. Defaults to "
-        "$XDG_CACHE_HOME/vibe-view/vibe-view.log (~/.cache/vibe-view/vibe-view.log) "
-        "with size-based rotation (5 MiB x 3 backups)."
-    ),
-)
+@port_option()
+@host_option()
+@no_browser_option()
+@log_file_option()
 @click.option(
     "--section",
     "-s",
@@ -352,22 +298,11 @@ def open_cmd(
     from vibeview.qvf import QVFReader
 
     if log_file is None:
-        log_file = _default_log_path()
+        log_file = log_path()
 
-    from click.core import ParameterSource
-
-    from vibeview.config import get as _cfg
-
-    # The config file supplies DEFAULTS only — an explicitly passed
-    # --port/--host must win (the old unconditional read made
-    # `--port 9999` silently run on the config's port).
-    ctx = click.get_current_context()
-    if ctx.get_parameter_source("port") == ParameterSource.DEFAULT:
-        port = int(_cfg("server.port", port))
-    if ctx.get_parameter_source("host") == ParameterSource.DEFAULT:
-        host = str(_cfg("server.host", host))
-    if not no_browser:
-        no_browser = not _cfg("server.open_browser", True)
+    port, host, no_browser = resolve_server_options(
+        click.get_current_context(), port, host, no_browser
+    )
 
     _configure_logging(log_file)
     click.echo(f"Logging server activity to {log_file}")
@@ -454,15 +389,7 @@ def open_cmd(
     # IMPORTANT: the watcher starts *after* the heavy imports and
     # create_app so VTK cold-start overhead doesn't eat into the
     # 10 s timeout before the port binds.
-    threading.Thread(
-        target=_wait_until_bound_and_announce,
-        kwargs={
-            "host": host,
-            "port": port,
-            "open_browser": not no_browser,
-        },
-        daemon=True,
-    ).start()
+    _announce_when_bound(host, port, open_browser=not no_browser)
 
     serve(app, host=host, port=port)
 
@@ -470,21 +397,10 @@ def open_cmd(
 @main.command("compare")
 @click.argument("qvf_a", type=click.Path(exists=True, path_type=Path))
 @click.argument("qvf_b", type=click.Path(exists=True, path_type=Path))
-@click.option(
-    "--port",
-    default=8080,
-    show_default=True,
-    type=click.IntRange(min=1, max=65535),
-    help="TCP port.",
-)
-@click.option("--host", default="127.0.0.1", show_default=True, help="Interface to bind.")
-@click.option("--no-browser", is_flag=True, default=False, help="Don't open the browser.")
-@click.option(
-    "--log-file",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Server log path.",
-)
+@port_option()
+@host_option()
+@no_browser_option()
+@log_file_option()
 def compare_cmd(
     qvf_a: Path, qvf_b: Path, port: int, host: str, no_browser: bool, log_file: Path | None
 ) -> None:
@@ -496,8 +412,11 @@ def compare_cmd(
     from vibeview.banner import print_banner
     from vibeview.qvf import QVFError, QVFReader
 
+    port, host, no_browser = resolve_server_options(
+        click.get_current_context(), port, host, no_browser
+    )
     if log_file is None:
-        log_file = _default_log_path()
+        log_file = log_path()
     _configure_logging(log_file)
     click.echo(f"Logging server activity to {log_file}")
     _abort_if_port_in_use(host, port)
@@ -514,7 +433,6 @@ def compare_cmd(
     for r in readers:
         print_banner(r)
 
-    import threading
 
     create_app, serve = _load_app()
 
@@ -522,11 +440,7 @@ def compare_cmd(
     app.state.compare_mode = True
     app.state.status_message = f"Compare mode: {qvf_a.name} vs {qvf_b.name}"
 
-    threading.Thread(
-        target=_wait_until_bound_and_announce,
-        kwargs={"host": host, "port": port, "open_browser": not no_browser},
-        daemon=True,
-    ).start()
+    _announce_when_bound(host, port, open_browser=not no_browser)
     serve(app, host=host, port=port)
 
 
@@ -539,32 +453,10 @@ def compare_cmd(
     default=None,
     help=("Directory to fetch job workspaces into. Defaults to $PWD/vq-fetched."),
 )
-@click.option(
-    "--port",
-    default=8080,
-    show_default=True,
-    type=click.IntRange(min=1, max=65535),
-    help="TCP port for the web server.",
-)
-@click.option(
-    "--host",
-    default="127.0.0.1",
-    show_default=True,
-    help="Interface to bind.",
-)
-@click.option(
-    "--no-browser",
-    is_flag=True,
-    default=False,
-    help="Don't open the browser automatically.",
-)
-@click.option(
-    "--log-file",
-    "log_file",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Path to write the server log.",
-)
+@port_option()
+@host_option()
+@no_browser_option()
+@log_file_option()
 def from_vq_cmd(
     job_ids: tuple[str, ...],
     output_dir: Path | None,
@@ -586,6 +478,9 @@ def from_vq_cmd(
 
         vibe-view from-vq abc123 def456 -o ./my-results
     """
+    port, host, no_browser = resolve_server_options(
+        click.get_current_context(), port, host, no_browser
+    )
     from pathlib import Path as _Path
 
     # ── Fetch jobs via vq ─────────────────────────────────────────────
@@ -648,7 +543,7 @@ def from_vq_cmd(
     from vibeview.qvf import QVFError, QVFReader
 
     if log_file is None:
-        log_file = _default_log_path()
+        log_file = log_path()
     _configure_logging(log_file)
 
     readers: list[QVFReader] = []
@@ -671,35 +566,26 @@ def from_vq_cmd(
     url = f"http://{host}:{port}"
     click.echo(f"\nvibe-view starting up on {url}...")
 
-    threading.Thread(
-        target=_wait_until_bound_and_announce,
-        kwargs={"host": host, "port": port, "open_browser": not no_browser},
-        daemon=True,
-    ).start()
-
     create_app, serve = _load_app()
 
     app = create_app(readers)
+    # After the imports and create_app, as in `open`: the bind timeout must
+    # not run while the render stack cold-starts.
+    _announce_when_bound(host, port, open_browser=not no_browser)
     serve(app, host=host, port=port)
 
 
 @main.command("batch")
 @click.argument("patterns", nargs=-1, required=True)
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(file_okay=False, path_type=Path),
-    default=None,
-    help="Directory for the rendered PNGs (default ./vibe-view-gallery).",
-)
-@click.option("--size", default="900x600", show_default=True, help="Image size as WxH.")
+@output_option("Directory for the rendered PNGs (default ./vibe-view-gallery).", file_okay=False)
+@size_option()
 @click.option(
     "--volumes",
     is_flag=True,
     default=False,
     help="Also render each volume section (density, orbitals, etc.)",
 )
-def batch_cmd(patterns: tuple[str, ...], output: Path | None, size: str, volumes: bool) -> None:
+def batch_cmd(patterns: tuple[str, ...], output: Path | None, size: Size, volumes: bool) -> None:
     """Render a gallery of PNGs from many .qvf files (offscreen).
 
     PATTERNS are file paths or globs; each matched .qvf is rendered with the same
@@ -718,11 +604,7 @@ def batch_cmd(patterns: tuple[str, ...], output: Path | None, size: str, volumes
     from vibeview.batch import render_all_png, render_structure_png
     from vibeview.qvf import QVFError, QVFReader
 
-    try:
-        width, height = (int(x) for x in size.lower().split("x"))
-    except ValueError:
-        click.echo(f"batch: invalid --size {size!r}, expected WxH (e.g. 900x600)", err=True)
-        raise SystemExit(1) from None
+    width, height = size
 
     files: list[Path] = []
     for pattern in patterns:
@@ -770,7 +652,7 @@ def batch_cmd(patterns: tuple[str, ...], output: Path | None, size: str, volumes
         raise SystemExit(1)
 
 
-def _print_text_table(cols: list[str], rows: list[list]) -> None:
+def _print_text_table(cols: list[str], rows: list[list[Any]]) -> None:
     str_rows = [["" if c is None else str(c) for c in r] for r in rows]
     widths = [max([len(cols[i])] + [len(r[i]) for r in str_rows]) for i in range(len(cols))]
 
@@ -812,14 +694,9 @@ def table_cmd(qvf_file: Path, kind: str | None, fmt: str) -> None:
 
         vibe-view table h2co.qvf --kind atom_properties
     """
-    from vibeview.qvf import QVFError, QVFReader
     from vibeview.tables import TABULATABLE, extract_table
 
-    try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        click.echo(f"table: error opening {qvf_file}: {e}", err=True)
-        raise SystemExit(1) from None
+    reader = open_reader_or_exit(qvf_file, prefix="table: ")
 
     present = [k for k in TABULATABLE if any(s.kind == k for s in reader.sections)]
     if not kind:
@@ -841,7 +718,10 @@ def table_cmd(qvf_file: Path, kind: str | None, fmt: str) -> None:
     if fmt == "json":
         import json as _json
 
-        click.echo(_json.dumps([dict(zip(cols, r)) for r in rows], indent=2))
+        # strict=False: a short row from an extractor drops the trailing
+        # columns, as it already does for --format text and csv. A ragged
+        # table must not turn `vibe-view table` into a traceback.
+        click.echo(_json.dumps([dict(zip(cols, r, strict=False)) for r in rows], indent=2))
     elif fmt == "csv":
         import csv as _csv
         import io as _io
@@ -857,25 +737,14 @@ def table_cmd(qvf_file: Path, kind: str | None, fmt: str) -> None:
 
 @main.command("info")
 @click.argument("qvf_file", type=click.Path(exists=True, path_type=Path))
-@click.option(
-    "--json", "fmt_json", is_flag=True, default=False, help="Output as JSON for machine parsing."
-)
+@json_flag("Output as JSON for machine parsing.")
 @click.option("--short", "short_fmt", is_flag=True, default=False, help="One-line summary.")
-def info_cmd(qvf_file: Path, fmt_json: bool, short_fmt: bool) -> None:
+def info_cmd(qvf_file: Path, json_output: bool, short_fmt: bool) -> None:
     """Print detailed metadata and section summary for a .qvf file."""
-    from vibeview.qvf import QVFError, QVFReader
 
-    try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        if fmt_json:
-            click.echo(json.dumps({"error": str(e)}))
-        else:
-            click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from None
+    reader = open_reader_or_exit(qvf_file, json_errors=json_output)
 
     import json as _json
-    import zipfile
 
     try:
         src = reader.manifest.source
@@ -896,7 +765,8 @@ def info_cmd(qvf_file: Path, fmt_json: bool, short_fmt: bool) -> None:
                 else ("✗" if prov.get("scf_converged") is False else "?")
             )
             click.echo(
-                f"{qvf_file.name}: {src.calculation}  E={e_str} Eh  conv={conv}  {len(reader.sections)} sections"
+                f"{qvf_file.name}: {src.calculation}  E={e_str} Eh  "
+                f"conv={conv}  {len(reader.sections)} sections"
             )
             return
 
@@ -917,15 +787,15 @@ def info_cmd(qvf_file: Path, fmt_json: bool, short_fmt: bool) -> None:
                     "kind": sec.kind,
                     "n_members": len(sec.members),
                     "size_bytes": sec_size,
-                    "size": _human_size(sec_size),
+                    "size": human_size(sec_size),
                 }
             )
 
-        if fmt_json:
+        if json_output:
             energy_val = None
-            e = prov.get("scf_energy", {})
-            if isinstance(e, dict):
-                energy_val = e.get("value")
+            scf = prov.get("scf_energy", {})
+            if isinstance(scf, dict):
+                energy_val = scf.get("value")
             click.echo(
                 _json.dumps(
                     {
@@ -949,9 +819,9 @@ def info_cmd(qvf_file: Path, fmt_json: bool, short_fmt: bool) -> None:
                         "n_sections": len(reader.sections),
                         "sections": sections_out,
                         "total_size_bytes": total_size,
-                        "total_size": _human_size(total_size),
+                        "total_size": human_size(total_size),
                         "archive_size_bytes": qvf_file.stat().st_size,
-                        "archive_size": _human_size(qvf_file.stat().st_size),
+                        "archive_size": human_size(qvf_file.stat().st_size),
                     },
                     indent=2,
                 )
@@ -1008,19 +878,10 @@ def info_cmd(qvf_file: Path, fmt_json: bool, short_fmt: bool) -> None:
             )
 
         click.echo(f"{'-' * 70}")
-        click.echo(f"{'Total':20s} {_human_size(total_size)}")
-        click.echo(f"{'Archive size':20s} {_human_size(qvf_file.stat().st_size)}")
+        click.echo(f"{'Total':20s} {human_size(total_size)}")
+        click.echo(f"{'Archive size':20s} {human_size(qvf_file.stat().st_size)}")
     finally:
         reader.close()
-
-
-def _human_size(size_bytes: int) -> str:
-    """Format byte count as human-readable string."""
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(size_bytes) < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
 
 
 @main.command("export")
@@ -1035,13 +896,7 @@ def _human_size(size_bytes: int) -> str:
     default="xyz",
     help="Output format.",
 )
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Output file (default: <stem>.<fmt>).",
-)
+@output_option(f"File to write (default: {describe_default('.<fmt>')}).")
 def export_cmd(qvf_file: Path, fmt: str, output: Path | None) -> None:
     """Export geometry from a .qvf.
 
@@ -1049,15 +904,9 @@ def export_cmd(qvf_file: Path, fmt: str, output: Path | None) -> None:
     Meshes:    OBJ, glTF. Scenes: POV-Ray, Blender. Pages/figures: HTML,
     SVG, PDF.
     """
-    import numpy as np
 
-    from vibeview.qvf import QVFError, QVFReader
 
-    try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from None
+    reader = open_reader_or_exit(qvf_file)
 
     try:
         sdata = reader.read_structure()
@@ -1066,76 +915,29 @@ def export_cmd(qvf_file: Path, fmt: str, output: Path | None) -> None:
         reader.close()
         raise SystemExit(1) from None
 
-    out = output or qvf_file.with_suffix(f".{fmt}")
+    out = output or default_output(qvf_file, f".{fmt}")
 
-    if fmt == "xyz":
-        lines = [str(len(sdata.atoms)), f"vibe-view export from {qvf_file.name}"]
-        for a in sdata.atoms:
-            x, y, z = a.position
-            lines.append(f"{a.symbol:<2} {x:12.6f} {y:12.6f} {z:12.6f}")
-        out.write_text("\n".join(lines) + "\n")
-    elif fmt == "cif":
-        lines = ["data_vibe-view", f"# CIF exported by vibe-view from {qvf_file.name}"]
-        if sdata.lattice_vectors is not None and any(sdata.pbc):
-            lat = np.asarray(sdata.lattice_vectors)
-            a, b, c = (
-                float(np.linalg.norm(lat[0])),
-                float(np.linalg.norm(lat[1])),
-                float(np.linalg.norm(lat[2])),
-            )
-            al = float(np.degrees(np.arccos(np.dot(lat[1], lat[2]) / (b * c))))
-            be = float(np.degrees(np.arccos(np.dot(lat[0], lat[2]) / (a * c))))
-            ga = float(np.degrees(np.arccos(np.dot(lat[0], lat[1]) / (a * b))))
-            lines += [
-                f"_cell_length_a {a:.4f}",
-                f"_cell_length_b {b:.4f}",
-                f"_cell_length_c {c:.4f}",
-                f"_cell_angle_alpha {al:.4f}",
-                f"_cell_angle_beta {be:.4f}",
-                f"_cell_angle_gamma {ga:.4f}",
-            ]
-        lines.append("loop_")
-        lines.append("_atom_site_label")
-        if sdata.lattice_vectors is not None:
-            lines.append("_atom_site_fract_x")
-            lines.append("_atom_site_fract_y")
-            lines.append("_atom_site_fract_z")
-            # Row convention: QVF lattice rows are the vectors, so
-            # frac = cart @ inv(L) (inv @ cart is the transpose — wrong
-            # for any non-symmetric cell).
-            inv = np.linalg.inv(np.asarray(sdata.lattice_vectors))
-            for a in sdata.atoms:
-                frac = np.asarray(a.position) @ inv
-                lines.append(f"{a.symbol:<4} {frac[0]:10.6f} {frac[1]:10.6f} {frac[2]:10.6f}")
-        else:
-            # No cell → these are Cartesian Å; labelling them fract_*
-            # would make every consumer misread the file.
-            lines.append("_atom_site_Cartn_x")
-            lines.append("_atom_site_Cartn_y")
-            lines.append("_atom_site_Cartn_z")
-            for a in sdata.atoms:
-                x, y, z = a.position
-                lines.append(f"{a.symbol:<4} {x:10.6f} {y:10.6f} {z:10.6f}")
-        out.write_text("\n".join(lines) + "\n")
+    if fmt in ("xyz", "cif"):
+        from vibeview.geometry_text import cif_text, xyz_text
+
+        text = (
+            xyz_text(sdata, f"vibe-view export from {qvf_file.name}")
+            if fmt == "xyz"
+            else cif_text(sdata, f"CIF exported by vibe-view from {qvf_file.name}")
+        )
+        out.write_text(text)
     elif fmt in ("obj", "gltf"):
-        import pyvista as pv
+        from vibeview.headless import add_structure, headless_plotter
 
-        from vibeview.renderers.structure import StructureRenderer
-
-        sec = next((s for s in reader.sections if s.kind == "structure"), None)
-        if sec is None:
-            click.echo("No structure section found.", err=True)
-            reader.close()
-            raise SystemExit(1)
-        plotter = pv.Plotter(off_screen=True)
-        try:
-            StructureRenderer(sec, reader).add_to_plotter(plotter)
+        with headless_plotter() as plotter:
+            if not add_structure(plotter, reader):
+                click.echo("No structure section found.", err=True)
+                reader.close()
+                raise SystemExit(1)
             if fmt == "obj":
                 plotter.export_obj(str(out))
             else:
                 plotter.export_gltf(str(out))
-        finally:
-            plotter.close()
     elif fmt == "html":
         from vibeview.export_html import export_html
 
@@ -1225,10 +1027,8 @@ def export_cmd(qvf_file: Path, fmt: str, output: Path | None) -> None:
 @main.command("diff")
 @click.argument("qvf_a", type=click.Path(exists=True, path_type=Path))
 @click.argument("qvf_b", type=click.Path(exists=True, path_type=Path))
-@click.option(
-    "--json", "fmt_json", is_flag=True, default=False, help="Machine-readable JSON output."
-)
-def diff_cmd(qvf_a: Path, qvf_b: Path, fmt_json: bool) -> None:
+@json_flag("Machine-readable JSON output.")
+def diff_cmd(qvf_a: Path, qvf_b: Path, json_output: bool) -> None:
     """Compare two .qvf files: energy delta, section differences, geometry RMSD."""
     import numpy as np
 
@@ -1269,7 +1069,7 @@ def diff_cmd(qvf_a: Path, qvf_b: Path, fmt_json: bool) -> None:
         except Exception:
             geo_rmsd = None
 
-        if fmt_json:
+        if json_output:
             import json as _json
 
             click.echo(
@@ -1280,8 +1080,12 @@ def diff_cmd(qvf_a: Path, qvf_b: Path, fmt_json: bool) -> None:
                         "energy_a_eh": ea,
                         "energy_b_eh": eb,
                         "delta_e_eh": delta_e,
-                        "delta_e_kcal_mol": (delta_e * 627.509) if delta_e else None,
-                        "delta_e_ev": (delta_e * 27.2114) if delta_e else None,
+                        "delta_e_kcal_mol": (
+                            delta_e * HARTREE_TO_KCAL_MOL if delta_e is not None else None
+                        ),
+                        "delta_e_ev": (
+                            delta_e * HARTREE_TO_EV if delta_e is not None else None
+                        ),
                         "geo_rmsd_a": geo_rmsd,
                         "n_sections_a": len(ra.sections),
                         "n_sections_b": len(rb.sections),
@@ -1304,15 +1108,23 @@ def diff_cmd(qvf_a: Path, qvf_b: Path, fmt_json: bool) -> None:
         if ea is not None and eb is not None:
             click.echo(f"{'Energy A':20s} {ea:.10f} Eh")
             click.echo(f"{'Energy B':20s} {eb:.10f} Eh")
-            if delta_e:
+            if delta_e is not None:
                 # delta_e = E_A - E_B: positive delta means B sits BELOW A.
                 # (The old test was inverted — 'B is X higher than A' was
                 # printed exactly when B was lower.)
                 sign = "lower" if delta_e > 0 else "higher"
                 click.echo(
-                    f"{'Delta (A-B)':20s} {delta_e:+.10f} Eh  ({delta_e * 627.509:+.2f} kcal/mol, {delta_e * 27.2114:+.3f} eV)"
+                    f"{'Delta (A-B)':20s} {delta_e:+.10f} Eh  "
+                    f"({delta_e * HARTREE_TO_KCAL_MOL:+.2f} kcal/mol, "
+                    f"{delta_e * HARTREE_TO_EV:+.3f} eV)"
                 )
-                click.echo(f"{'':20s} B is {abs(delta_e * 627.509):.2f} kcal/mol {sign} than A")
+                if delta_e == 0:
+                    click.echo(f"{'':20s} A and B have equal energy")
+                else:
+                    click.echo(
+                        f"{'':20s} B is {abs(delta_e * HARTREE_TO_KCAL_MOL):.2f} "
+                        f"kcal/mol {sign} than A"
+                    )
 
         # Section comparison
         click.echo()
@@ -1348,14 +1160,14 @@ def diff_cmd(qvf_a: Path, qvf_b: Path, fmt_json: bool) -> None:
         rb.close()
 
 
-def _get_prov(reader):
+def _get_prov(reader: QVFReader) -> dict[str, Any]:
     prov = getattr(reader.manifest, "provenance", None) or {}
     if hasattr(prov, "model_dump"):
         prov = prov.model_dump()
     return prov if isinstance(prov, dict) else {}
 
 
-def _energy_eh(prov: dict) -> float | None:
+def _energy_eh(prov: dict[str, Any]) -> float | None:
     e = prov.get("scf_energy", {})
     if isinstance(e, dict):
         e = e.get("value")
@@ -1406,15 +1218,11 @@ def validate_cmd(qvf_files: tuple[Path, ...]) -> None:
 
 
 @main.command("capture-selftest")
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Where to write the test PNG (default: a temp dir, removed afterwards).",
+@output_option(
+    "Where to write the test PNG (default: a temp dir, removed afterwards).", dir_okay=False
 )
-@click.option("--size", default="400x300", show_default=True, help="Image size WxH.")
-def capture_selftest_cmd(output: Path | None, size: str) -> None:
+@size_option(default="400x300")
+def capture_selftest_cmd(output: Path | None, size: Size) -> None:
     """Validate that headless PyVista capture can render a nonblank image.
 
     Renders a tiny built-in structure offscreen through the same
@@ -1429,11 +1237,7 @@ def capture_selftest_cmd(output: Path | None, size: str) -> None:
 
     from vibeview.capture import capture_selftest
 
-    try:
-        w, h = (int(x) for x in size.lower().split("x"))
-    except ValueError:
-        click.echo(f"Invalid --size {size!r}", err=True)
-        raise SystemExit(1) from None
+    w, h = size
 
     # Deliberately no PYVISTA_OFF_SCREEN=True here: capture.py always passes
     # off_screen=True explicitly, and setting the env var would force the
@@ -1480,43 +1284,31 @@ def capture_selftest_cmd(output: Path | None, size: str) -> None:
 @main.command("capture")
 @click.argument("qvf_file", type=click.Path(exists=True, path_type=Path))
 @click.option("--section", "-s", default=None, help="Section ID to capture (default: structure).")
-@click.option("--output", "-o", default=None, help="Output file (default: <section>.png).")
-@click.option("--isovalue", type=float, default=None, help="Isovalue for volume sections.")
-@click.option("--colormap", default=None, help="Colormap for volume sections.")
-@click.option("--size", default="900x600", help="Image size WxH.")
+@output_option(f"PNG to write (default: {describe_default('.png', tag='<section>')}).")
+@isovalue_option()
+@colormap_option()
+@size_option()
 def capture_cmd(
     qvf_file: Path,
     section: str | None,
-    output: str | None,
+    output: Path | None,
     isovalue: float | None,
     colormap: str | None,
-    size: str,
+    size: Size,
 ) -> None:
     """Render a section to PNG via the headless capture API."""
-    from pathlib import Path as P
-
     from vibeview.capture import capture_bands, capture_structure, capture_volume
-    from vibeview.qvf import QVFError, QVFReader
 
-    try:
-        w, h = (int(x) for x in size.lower().split("x"))
-    except ValueError:
-        click.echo(f"Invalid --size {size!r}", err=True)
-        raise SystemExit(1) from None
-
-    try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from None
+    w, h = size
+    reader = open_reader_or_exit(qvf_file)
 
     try:
         if section is None:
-            out = P(output) if output else P(f"{qvf_file.stem}_structure.png")
+            out = output or default_output(qvf_file, ".png", tag="structure")
             ok = capture_structure(reader, out, size=(w, h))
         elif reader.has_section(section):
             sec = reader.get_section(section)
-            out = P(output) if output else P(f"{qvf_file.stem}_{section}.png")
+            out = output or default_output(qvf_file, ".png", tag=section)
             if sec.kind.startswith("volume.") or sec.kind == "basis.ao":
                 iso = isovalue if isovalue is not None else 0.05
                 cmap = (
@@ -1569,10 +1361,13 @@ def _parse_rotation(value: str) -> tuple[float, float, float]:
     try:
         parts = [float(p) for p in value.split(",")]
     except ValueError:
-        raise click.BadParameter("rotation must be comma-separated degrees, e.g. -15,-30,0") from None
+        raise click.BadParameter(
+            "rotation must be comma-separated degrees, e.g. -15,-30,0"
+        ) from None
     while len(parts) < 3:
         parts.append(0.0)
-    return tuple(math.radians(p) for p in parts[:3])
+    radians = [math.radians(p) for p in parts[:3]]
+    return (radians[0], radians[1], radians[2])
 
 
 @main.command("tui")
@@ -1608,7 +1403,9 @@ def tui_cmd(qvf_file: Path, mode: str) -> None:
 
 @main.command("show")
 @click.argument("qvf_file", type=click.Path(exists=True, path_type=Path))
-@click.option("--section", "-s", default=None, help="Section ID to render (default: the structure).")
+@click.option(
+    "--section", "-s", default=None, help="Section ID to render (default: the structure)."
+)
 @click.option("--all", "render_all", is_flag=True, help="Render every graphable section in turn.")
 @click.option("--info", is_flag=True, help="Print the archive summary instead of a picture.")
 @click.option("--size", default=None, help="Character grid as COLSxROWS (default: this terminal).")
@@ -1667,12 +1464,7 @@ def show_cmd(
     """
     from vibeview.tui import show as show_mod
 
-    try:
-        counts = tuple(int(v) for v in replicate.split(","))
-    except ValueError:
-        raise click.BadParameter("replicate must be nx,ny,nz") from None
-    if len(counts) != 3:
-        raise click.BadParameter("replicate must be nx,ny,nz")
+    counts = tuple(parse_csv_list(replicate, cast=int, option="--replicate", expected=3))
 
     options = {
         "mode": mode,
@@ -1706,12 +1498,13 @@ def show_cmd(
 @click.argument(
     "directory", default=None, required=False, type=click.Path(exists=True, file_okay=False)
 )
-@click.option("--port", default=8080, show_default=True, type=click.IntRange(min=1, max=65535))
-@click.option("--host", default="127.0.0.1", show_default=True)
+@port_option(help="TCP port for the file browser.")
+@host_option()
 def serve_cmd(directory: str | None, port: int, host: str) -> None:
     """Start a web-based QVF file browser for a directory."""
     from vibeview.serve import serve_directory
 
+    port, host, _ = resolve_server_options(click.get_current_context(), port, host, True)
     target = Path(directory) if directory else Path.cwd()
     serve_directory(target, host=host, port=port)
 
@@ -1720,7 +1513,7 @@ def serve_cmd(directory: str | None, port: int, host: str) -> None:
 @click.argument("qvf_file", type=click.Path(exists=True, path_type=Path))
 @click.option("--keep", "-k", default=None, help="Comma-separated section IDs or kinds to keep.")
 @click.option("--drop", "-d", default=None, help="Comma-separated section IDs or kinds to drop.")
-@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Output file.")
+@output_option(f"Archive to write (default: {describe_default('.qvf', tag='sliced')}).")
 def slice_cmd(qvf_file: Path, keep: str | None, drop: str | None, output: Path | None) -> None:
     """Extract a subset of sections into a new .qvf file.
 
@@ -1729,231 +1522,43 @@ def slice_cmd(qvf_file: Path, keep: str | None, drop: str | None, output: Path |
         vibe-view slice big.qvf -k structure,vol_dens_0 -o small.qvf
         vibe-view slice big.qvf -d citations0 -o no-cites.qvf
     """
-    import json as _json
-    import shutil
-    import tempfile
-    import zipfile
+    from vibeview.api import slice_qvf
+    from vibeview.qvf import QVFError
 
-    from vibeview.qvf import QVFError, QVFReader
-
-    # --keep and --drop together are ambiguous (the old code silently
-    # ignored --keep); refuse loudly instead.
-    if keep and drop:
-        click.echo("Error: --keep and --drop are mutually exclusive.", err=True)
-        raise SystemExit(1)
-
-    # Each selector matches section IDs *and* kinds — dot-detection
-    # made dotless kinds (structure, vibrations, bands, ...) unselectable
-    # as kinds despite the help text promising 'IDs or kinds'.
-    keep_sel = {item.strip() for item in keep.split(",")} if keep else set()
-    drop_sel = {item.strip() for item in drop.split(",")} if drop else set()
-
+    out_path = output or default_output(qvf_file, ".qvf", tag="sliced")
     try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from None
-
-    try:
-        # Decide which sections to keep
-        to_keep = []
-        for sec in reader.sections:
-            if drop_sel:
-                if sec.id in drop_sel or sec.kind in drop_sel:
-                    continue
-                to_keep.append(sec)
-            elif keep_sel:
-                if sec.id in keep_sel or sec.kind in keep_sel:
-                    to_keep.append(sec)
-            else:
-                to_keep.append(sec)
-
-        if not to_keep:
-            click.echo("No sections to keep.", err=True)
-            reader.close()
-            raise SystemExit(1)
-
-        out_path = output or qvf_file.with_stem(f"{qvf_file.stem}_sliced")
-        if out_path.suffix != ".qvf":
-            out_path = out_path.with_suffix(".qvf")
-
-        # Build new manifest — preserve only required source fields
-        kept_ids = {s.id for s in to_keep}
-        kept_paths: set[str] = set()
-        new_sections = []
-        for sec in to_keep:
-            new_members = {}
-            for name, member in sec.members.items():
-                m = {"path": member.path, "format": member.format, "sha256": member.sha256}
-                if member.dtype:
-                    m["dtype"] = member.dtype
-                if member.shape:
-                    m["shape"] = member.shape
-                new_members[name] = m
-                kept_paths.add(member.path)
-            # Only include non-None extra fields to pass schema validation
-            sec_dict: dict = {"id": sec.id, "kind": sec.kind, "members": new_members}
-            if getattr(sec, "label", None):
-                sec_dict["label"] = sec.label
-            if getattr(sec, "component", None):
-                sec_dict["component"] = sec.component
-            new_sections.append(sec_dict)
-
-        src = reader.manifest.source
-        new_source = {
-            "program": src.program,
-            "version": src.version,
-            "calculation": src.calculation,
-        }
-        manifest: dict = {
-            "qvf_version": reader.manifest.qvf_version,
-            "source": new_source,
-            "sections": new_sections,
-        }
-        if hasattr(reader.manifest, "provenance") and reader.manifest.provenance:
-            prov = reader.manifest.provenance
-            manifest["provenance"] = prov.model_dump() if hasattr(prov, "model_dump") else prov
-
-        # Copy kept members
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf_out:
-            zf_out.writestr("manifest.json", _json.dumps(manifest))
-            with zipfile.ZipFile(qvf_file, "r") as zf_in:
-                for member_path in sorted(kept_paths):
-                    zf_out.writestr(member_path, zf_in.read(member_path))
-
-        n_kept = len(to_keep)
-        n_total = len(reader.sections)
-        click.echo(f"Sliced: {n_kept}/{n_total} sections kept → {out_path}")
-        out_size = out_path.stat().st_size
-        in_size = qvf_file.stat().st_size
-        click.echo(
-            f"Size: {_human_size(in_size)} → {_human_size(out_size)} ({(100 * out_size / max(1, in_size)):.0f}%)"
+        result = slice_qvf(
+            qvf_file, out_path,
+            keep=parse_csv_list(keep, cast=str, option="--keep") if keep else None,
+            drop=parse_csv_list(drop, cast=str, option="--drop") if drop else None,
         )
-    finally:
-        reader.close()
+    except (QVFError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Sliced → {result}")
 
 
 @main.command("merge")
 @click.argument("qvf_files", nargs=-1, type=click.Path(exists=True, path_type=Path), required=True)
-@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Output file.")
+@output_option("Archive to write (default: <first stem>_merged.qvf in the working directory).")
 def merge_cmd(qvf_files: tuple[Path, ...], output: Path | None) -> None:
     """Combine sections from multiple .qvf files into one archive.
 
-    Structure and provenance are taken from the first file. Duplicate section
-    IDs are renamed. Useful for merging density from one calculation with
-    orbitals from another.
+    Root metadata and viewer defaults come from the first file. All sections
+    are retained; duplicate IDs and their references are remapped together.
+    The output is verified before replacing the destination.
     """
-    import json as _json
-    import zipfile
-    from collections import Counter
+    from vibeview.archive import merge_archives
+    from vibeview.qvf import QVFError
 
-    from vibeview.qvf import QVFError, QVFReader
-
-    if len(qvf_files) < 2:
-        click.echo("Need at least two .qvf files to merge.", err=True)
-        raise SystemExit(1)
-
-    readers = []
-    for qvf_file in qvf_files:
-        try:
-            readers.append(QVFReader(qvf_file))
-        except QVFError as e:
-            for r in readers:
-                r.close()
-            click.echo(f"Error opening {qvf_file}: {e}", err=True)
-            raise SystemExit(1) from None
-
+    out_path = output or default_output(qvf_files[0], ".qvf", tag="merged", beside_input=False)
+    if out_path.suffix != ".qvf":
+        out_path = out_path.with_suffix(".qvf")
     try:
-        primary = readers[0]
-        all_sections = []
-        seen_ids: set[str] = set()
-        id_counter: Counter[str] = Counter()
-        # Map original member path → (source_qvf_path, new_member_path)
-        member_sources: list[tuple[str, Path]] = []
-
-        for i, reader in enumerate(readers):
-            src_qvf = qvf_files[i]
-            for sec in reader.sections:
-                sid = sec.id
-                if sid in seen_ids:
-                    id_counter[sid] += 1
-                    sid = f"{sid}_{id_counter[sid]}"
-                seen_ids.add(sid)
-                id_counter[sid] = 0
-
-                members = {}
-                for name, member in sec.members.items():
-                    new_path = member.path
-                    if i > 0:
-                        # Prefix member path with file index to avoid collisions
-                        new_path = f"{i}/{member.path}"
-                    m = {"path": new_path, "format": member.format, "sha256": member.sha256}
-                    if member.dtype:
-                        m["dtype"] = member.dtype
-                    if member.shape:
-                        m["shape"] = member.shape
-                    members[name] = m
-                    member_sources.append((member.path, src_qvf, new_path))
-
-                sec_dict: dict = {"id": sid, "kind": sec.kind, "members": members}
-                if getattr(sec, "label", None):
-                    sec_dict["label"] = sec.label
-                if getattr(sec, "component", None):
-                    sec_dict["component"] = sec.component
-                if getattr(sec, "critical", False):
-                    sec_dict["critical"] = True
-                if getattr(sec, "trajectory_ref", None):
-                    sec_dict["trajectory_ref"] = sec.trajectory_ref
-                # Kind-specific peer fields (run.record's required `program`,
-                # reaction.waypoints' `trajectory_ref`, volume.difference's
-                # operand links, …) live in the model's extra fields — carry
-                # them through instead of silently flattening the section.
-                # (Cross-section id references are kept verbatim; they stay
-                # valid because only *duplicate* ids are renamed.)
-                for key, value in (getattr(sec, "model_extra", None) or {}).items():
-                    sec_dict.setdefault(key, value)
-                all_sections.append(sec_dict)
-
-        src = primary.manifest.source
-        new_source = {
-            "program": src.program,
-            "version": src.version,
-            "calculation": f"merge of {len(qvf_files)} files",
-        }
-        manifest: dict = {
-            "qvf_version": primary.manifest.qvf_version,
-            "source": new_source,
-            "sections": all_sections,
-        }
-        # Help text promises "provenance taken from the first file" —
-        # actually carry it (and the viewer hints) through.
-        prov = getattr(primary.manifest, "provenance", None)
-        if prov:
-            manifest["provenance"] = prov.model_dump() if hasattr(prov, "model_dump") else prov
-        vd = getattr(primary.manifest, "viewer_defaults", None)
-        if vd:
-            manifest["viewer_defaults"] = vd.model_dump() if hasattr(vd, "model_dump") else vd
-
-        out_path = output or Path(f"merged_{qvf_files[0].stem}.qvf")
-        if out_path.suffix != ".qvf":
-            out_path = out_path.with_suffix(".qvf")
-
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf_out:
-            zf_out.writestr("manifest.json", _json.dumps(manifest))
-            done: set[str] = set()
-            for orig_path, src_qvf, new_path in member_sources:
-                if new_path in done:
-                    continue
-                done.add(new_path)
-                with zipfile.ZipFile(src_qvf, "r") as zf:
-                    zf_out.writestr(new_path, zf.read(orig_path))
-
-        total = sum(len(r.sections) for r in readers)
-        click.echo(f"Merged: {total} sections from {len(qvf_files)} files → {out_path}")
-        click.echo(f"Size: {_human_size(out_path.stat().st_size)}")
-    finally:
-        for r in readers:
-            r.close()
+        result = merge_archives(qvf_files, out_path)
+    except (QVFError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Merged {len(qvf_files)} files → {result}")
+    click.echo(f"Size: {human_size(result.stat().st_size)}")
 
 
 @main.command("import")
@@ -1963,15 +1568,9 @@ def merge_cmd(qvf_files: tuple[Path, ...], output: Path | None) -> None:
     type=click.Path(exists=True, path_type=Path),
     required=True,
 )
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(path_type=Path),
-    default=None,
-    help=(
-        "Output QVF for one file, or output directory for multiple files/a directory. "
-        "Defaults to a sibling .qvf or ./vibe-view-imports."
-    ),
+@output_option(
+    "Output QVF for one file, or output directory for multiple files/a directory. "
+    "Defaults to a sibling .qvf or ./vibe-view-imports."
 )
 @click.option(
     "--from",
@@ -2042,13 +1641,11 @@ def import_cmd(
 
 
 @main.command("demo")
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(dir_okay=False, path_type=Path),
+@output_option(
+    "Where to write the standalone demo QVF.",
+    dir_okay=False,
     default=Path("vibe-view-demo.qvf"),
     show_default=True,
-    help="Where to write the standalone demo QVF.",
 )
 @click.option("--force", is_flag=True, help="Replace an existing output file.")
 @click.option(
@@ -2057,18 +1654,9 @@ def import_cmd(
     is_flag=True,
     help="Launch the browser viewer after creating the demo.",
 )
-@click.option(
-    "--port",
-    default=8080,
-    show_default=True,
-    type=click.IntRange(min=1, max=65535),
-    help="Browser-viewer port used with --open.",
-)
-@click.option(
-    "--no-browser",
-    is_flag=True,
-    help="Start the server without opening a browser (used with --open).",
-)
+@port_option(help="Browser-viewer port used with --open.")
+@host_option(help="Browser-viewer interface used with --open.")
+@no_browser_option(help="Start the server without opening a browser (used with --open).")
 @click.pass_context
 def demo_cmd(
     ctx: click.Context,
@@ -2076,6 +1664,7 @@ def demo_cmd(
     force: bool,
     open_browser_viewer: bool,
     port: int,
+    host: str,
     no_browser: bool,
 ) -> None:
     """Create a standalone water demo without requiring vibe-qc.
@@ -2115,11 +1704,14 @@ def demo_cmd(
     click.echo(f"  vibe-view desktop {display_path}")
 
     if open_browser_viewer:
+        # Resolve the config defaults here: the invoked command sees these
+        # values as passed, not as defaults, and keeps them.
+        port, host, no_browser = resolve_server_options(ctx, port, host, no_browser)
         ctx.invoke(
             open_cmd,
             input_files=(written,),
             port=port,
-            host="127.0.0.1",
+            host=host,
             no_browser=no_browser,
             log_file=None,
             section=None,
@@ -2128,7 +1720,7 @@ def demo_cmd(
 
 
 @main.command("doctor")
-@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@json_flag()
 def doctor_cmd(json_output: bool) -> None:
     """Diagnose the core install and optional viewer modes."""
     from vibeview.onboarding import doctor_report
@@ -2168,7 +1760,7 @@ def doctor_cmd(json_output: bool) -> None:
 
 
 @main.command("formats")
-@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@json_flag()
 def formats_cmd(json_output: bool) -> None:
     """Show built-in, optional, and installed-plugin import formats."""
     from vibeview.onboarding import format_report
@@ -2296,10 +1888,11 @@ Full guide: https://vibe-qc.com/vibe-view/docs/
 @click.option("--path", "show_path", is_flag=True, default=False, help="Show config file path.")
 def config_cmd(do_init: bool, show_path: bool) -> None:
     """Manage vibe-view configuration."""
-    from vibeview.config import _config_path, init_config, read_config
+    from vibeview.config import init_config, read_config
+    from vibeview.paths import config_path
 
     if show_path:
-        click.echo(str(_config_path()))
+        click.echo(str(config_path()))
         return
 
     if do_init:
@@ -2307,7 +1900,7 @@ def config_cmd(do_init: bool, show_path: bool) -> None:
         click.echo(f"Config created: {path}")
         return
 
-    path = _config_path()
+    path = config_path()
     config = read_config()
     if not config:
         click.echo(f"No config found at {path}")
@@ -2378,10 +1971,10 @@ def stats_cmd(directory: str) -> None:
 
     click.echo(f"Directory: {dir_path}")
     click.echo(f"Files:     {len(qvfs)}")
-    click.echo(f"Total size:{_human_size(total_size)}")
+    click.echo(f"Total size:{human_size(total_size)}")
     click.echo(f"Sections:  {total_sections} ({len(kinds)} kinds)")
     if methods:
-        click.echo(f"\nMethods:")
+        click.echo("\nMethods:")
         for m, n in sorted(methods.items(), key=lambda x: -x[1]):
             click.echo(f"  {m:20s} {n}")
     click.echo(f"\nConverged:     {converged}/{len(qvfs)}")
@@ -2392,7 +1985,7 @@ def stats_cmd(directory: str) -> None:
     if largest[0]:
         click.echo(f"Highest energy: {largest[0]} ({largest[1]:.8f} Eh)")
     if len(kinds) > 1:
-        click.echo(f"\nSection kinds:")
+        click.echo("\nSection kinds:")
         for k, n in sorted(kinds.items(), key=lambda x: -x[1]):
             click.echo(f"  {k:25s} {n}")
 
@@ -2412,7 +2005,7 @@ def recent_cmd(limit: int) -> None:
 
 
 @main.command("quickstart")
-@click.option("--port", default=8080, type=click.IntRange(min=1, max=65535))
+@port_option()
 def quickstart_cmd(port: int) -> None:
     """Run a demo calculation and open it in vibe-view — fastest path to a 3D molecule."""
     click.echo("vibe-view quickstart — running H2O RHF/STO-3G...")
@@ -2463,8 +2056,10 @@ def quickstart_cmd(port: int) -> None:
     default="auto",
     help="Section kind: trajectory, vibration, reaction, orbital, turntable, or auto-detect.",
 )
-@click.option("--output", "-o", default=None, help="Output file (default: <stem>_<kind>.mp4).")
-@click.option("--fps", default=5, type=float, help="Frames per second.")
+@output_option(
+    f"Video or frame directory to write (default: {describe_default('.mp4', tag='<kind>')})."
+)
+@fps_option()
 @click.option(
     "--format",
     "-f",
@@ -2473,16 +2068,16 @@ def quickstart_cmd(port: int) -> None:
     default="mp4",
     help="Output format.",
 )
-@click.option("--size", default="900x600", help="Image size WxH.")
+@size_option()
 @click.option("--mode", default=0, type=int, help="Vibrational mode index (0-based).")
-@click.option("--isovalue", default=0.04, type=float, help="Isovalue for orbital animation.")
+@isovalue_option(default=0.04, help="Isovalue for orbital animation.")
 def animate_cmd(
     qvf_file: Path,
     kind: str,
-    output: str | None,
+    output: Path | None,
     fps: float,
     fmt: str,
-    size: str,
+    size: Size,
     mode: int,
     isovalue: float,
 ) -> None:
@@ -2498,19 +2093,9 @@ def animate_cmd(
         render_turntable,
         render_vibration_video,
     )
-    from vibeview.qvf import QVFError, QVFReader
 
-    try:
-        w, h = (int(x) for x in size.lower().split("x"))
-    except ValueError:
-        click.echo(f"Invalid --size {size!r}", err=True)
-        raise SystemExit(1) from None
-
-    try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from None
+    w, h = size
+    reader = open_reader_or_exit(qvf_file)
 
     try:
         if kind == "auto":
@@ -2531,15 +2116,8 @@ def animate_cmd(
                 )
                 raise SystemExit(1) from None
 
-        stem = qvf_file.stem
-        ext = fmt if fmt != "frames" else ""
-        out = (
-            Path(output)
-            if output
-            else Path(f"{stem}_{kind}.{ext}")
-            if ext
-            else Path(f"{stem}_{kind}")
-        )
+        suffix = f".{fmt}" if fmt != "frames" else ""
+        out = output or default_output(qvf_file, suffix, tag=kind)
 
         if kind == "trajectory":
             result = render_trajectory_video(reader, out, fps=fps, size=(w, h), format=fmt)
@@ -2555,20 +2133,13 @@ def animate_cmd(
             )
         elif kind == "turntable":
             # Turntable needs a live plotter, so build a PyVista scene
-            import pyvista as pv
+            from vibeview.headless import add_structure, frame, headless_plotter
 
-            from vibeview.renderers.structure import StructureRenderer
-
-            struct_sec = next((s for s in reader.sections if s.kind == "structure"), None)
-            if struct_sec is None:
-                click.echo("No structure section for turntable animation.", err=True)
-                raise SystemExit(1) from None
-            plotter = pv.Plotter(off_screen=True, window_size=[w, h])
-            try:
-                plotter.set_background("#1a1a2e")
-                StructureRenderer(struct_sec, reader).add_to_plotter(plotter)
-                plotter.view_isometric()
-                plotter.reset_camera()
+            with headless_plotter((w, h)) as plotter:
+                if not add_structure(plotter, reader):
+                    click.echo("No structure section for turntable animation.", err=True)
+                    raise SystemExit(1) from None
+                frame(plotter)
                 result = render_turntable(
                     plotter,
                     out,
@@ -2577,8 +2148,6 @@ def animate_cmd(
                     resolution=(w, h),
                     format=fmt,
                 )
-            finally:
-                plotter.close()
         else:
             click.echo(
                 f"Unknown kind: {kind}. Use trajectory, vibration, orbital, or turntable.",
@@ -2591,7 +2160,7 @@ def animate_cmd(
                 n_frames = len(list(result.glob("frame_*.png")))
                 click.echo(f"Animation: {n_frames} frames in {result}/")
             else:
-                size_str = _human_size(result.stat().st_size)
+                size_str = human_size(result.stat().st_size)
                 click.echo(f"Animation: {result} ({size_str})")
         else:
             click.echo("Animation failed.", err=True)
@@ -2602,20 +2171,13 @@ def animate_cmd(
 
 @main.command("h-add")
 @click.argument("qvf_file", type=click.Path(exists=True, path_type=Path))
-@click.option("--output", "-o", default=None, help="Output QVF file (default: <stem>_h.qvf).")
-def hadd_cmd(qvf_file: Path, output: str | None) -> None:
+@output_option(f"Archive to write (default: {describe_default('.qvf', tag='h')}).")
+def hadd_cmd(qvf_file: Path, output: Path | None) -> None:
     """Add hydrogen atoms to saturate all open valences."""
-    import json as _json
-    import zipfile
 
     from vibeview.build_tools import add_hydrogens
-    from vibeview.qvf import QVFError, QVFReader
 
-    try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from None
+    reader = open_reader_or_exit(qvf_file)
 
     try:
         sdata = reader.read_structure()
@@ -2631,43 +2193,17 @@ def hadd_cmd(qvf_file: Path, output: str | None) -> None:
         added = len(new_atoms) - len(atoms)
         click.echo(f"Added {added} hydrogen atom(s). Total: {len(new_atoms)}")
 
-        out = Path(output) if output else qvf_file.with_stem(f"{qvf_file.stem}_h")
+        out = output or default_output(qvf_file, ".qvf", tag="h")
         if out.suffix != ".qvf":
             out = out.with_suffix(".qvf")
 
-        # Write new QVF with updated structure — carry the lattice through,
-        # otherwise a periodic input comes out with pbc=[True]*3 but no
-        # lattice_vectors (self-inconsistent structure).
-        import hashlib
+        # Carry the lattice through, otherwise a periodic input comes out
+        # with pbc=[True]*3 but no lattice_vectors (self-inconsistent).
+        from vibeview.qvf_writer import structure_archive
 
-        lat = (
-            sdata.lattice_vectors.tolist()
-            if hasattr(sdata.lattice_vectors, "tolist")
-            else sdata.lattice_vectors
-        )
-        structure = _json.dumps(
-            {"atoms": new_atoms, "pbc": list(sdata.pbc), "lattice_vectors": lat}
-        ).encode()
-        manifest = {
-            "qvf_version": 1,
-            "source": {"program": "vibe-view", "version": "1.0", "calculation": "h-add"},
-            "sections": [
-                {
-                    "id": "structure",
-                    "kind": "structure",
-                    "members": {
-                        "structure": {
-                            "path": "s.json",
-                            "format": "json",
-                            "sha256": hashlib.sha256(structure).hexdigest(),
-                        }
-                    },
-                }
-            ],
-        }
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", _json.dumps(manifest))
-            zf.writestr("s.json", structure)
+        structure_archive(
+            new_atoms, sdata.pbc, sdata.lattice_vectors, calculation="h-add"
+        ).write(out)
         click.echo(f"Written: {out}")
     finally:
         reader.close()
@@ -2678,31 +2214,20 @@ def hadd_cmd(qvf_file: Path, output: str | None) -> None:
 @click.option("--nx", default=1, type=int, help="Replication in x direction.")
 @click.option("--ny", default=1, type=int, help="Replication in y direction.")
 @click.option("--nz", default=1, type=int, help="Replication in z direction.")
-@click.option("--output", "-o", default=None, help="Output QVF file.")
-def supercell_cmd(qvf_file: Path, nx: int, ny: int, nz: int, output: str | None) -> None:
+@output_option(f"Archive to write (default: {describe_default('.qvf', tag='<nx>x<ny>x<nz>')}).")
+def supercell_cmd(qvf_file: Path, nx: int, ny: int, nz: int, output: Path | None) -> None:
     """Build a supercell by replicating the unit cell Nx x Ny x Nz times."""
-    import json as _json
-    import zipfile
 
     from vibeview.build_tools import build_supercell
-    from vibeview.qvf import QVFError, QVFReader
 
-    try:
-        reader = QVFReader(qvf_file)
-    except QVFError as e:
-        click.echo(f"Error: {e}", err=True)
-        raise SystemExit(1) from None
+    reader = open_reader_or_exit(qvf_file)
 
     try:
         sdata = reader.read_structure()
         if sdata.lattice_vectors is None:
             click.echo("Not a periodic system (no lattice vectors).", err=True)
             raise SystemExit(1) from None
-        lat = (
-            sdata.lattice_vectors.tolist()
-            if hasattr(sdata.lattice_vectors, "tolist")
-            else sdata.lattice_vectors
-        )
+        lat = [[float(v) for v in row] for row in sdata.lattice_vectors]
         atoms = [
             {
                 "symbol": a.symbol,
@@ -2714,44 +2239,20 @@ def supercell_cmd(qvf_file: Path, nx: int, ny: int, nz: int, output: str | None)
         new_atoms = build_supercell(atoms, lat, (nx, ny, nz))
         click.echo(f"Supercell {nx}x{ny}x{nz}: {len(atoms)} → {len(new_atoms)} atoms")
 
-        out = Path(output) if output else qvf_file.with_stem(f"{qvf_file.stem}_{nx}x{ny}x{nz}")
+        out = output or default_output(qvf_file, ".qvf", tag=f"{nx}x{ny}x{nz}")
         if out.suffix != ".qvf":
             out = out.with_suffix(".qvf")
 
-        import hashlib
+        from vibeview.qvf_writer import structure_archive
 
         # Scale each lattice VECTOR (row) — the old expression built the
         # transpose, wrong for any non-symmetric cell.
         super_lat = [
             [c * n for c in vec] for vec, n in zip(lat[:3], (nx, ny, nz), strict=True)
         ]
-        structure = _json.dumps(
-            {"atoms": new_atoms, "pbc": list(sdata.pbc), "lattice_vectors": super_lat}
-        ).encode()
-        manifest = {
-            "qvf_version": 1,
-            "source": {
-                "program": "vibe-view",
-                "version": "1.0",
-                "calculation": f"supercell {nx}x{ny}x{nz}",
-            },
-            "sections": [
-                {
-                    "id": "structure",
-                    "kind": "structure",
-                    "members": {
-                        "structure": {
-                            "path": "s.json",
-                            "format": "json",
-                            "sha256": hashlib.sha256(structure).hexdigest(),
-                        }
-                    },
-                }
-            ],
-        }
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", _json.dumps(manifest))
-            zf.writestr("s.json", structure)
+        structure_archive(
+            new_atoms, sdata.pbc, super_lat, calculation=f"supercell {nx}x{ny}x{nz}"
+        ).write(out)
         click.echo(f"Written: {out}")
     finally:
         reader.close()
@@ -2760,8 +2261,8 @@ def supercell_cmd(qvf_file: Path, nx: int, ny: int, nz: int, output: str | None)
 @main.command("batch-compare")
 @click.argument("qvf_files", nargs=-1, type=click.Path(exists=True, path_type=Path), required=True)
 @click.option("--reference", "-r", type=int, default=0, help="Index of reference file")
-@click.option("--json", "fmt_json", is_flag=True, help="Output JSON")
-def batch_compare_cmd(qvf_files, reference, fmt_json):
+@json_flag("Output JSON.")
+def batch_compare_cmd(qvf_files: tuple[Path, ...], reference: int, json_output: bool) -> None:
     """Compare multiple .qvf files: energies, RMSD, sections."""
     from vibeview.batch_compare import batch_compare_to_table, compare_batch
 
@@ -2772,7 +2273,7 @@ def batch_compare_cmd(qvf_files, reference, fmt_json):
     paths = [str(p) for p in qvf_files]
     results = compare_batch(paths, reference_idx=reference)
 
-    if fmt_json:
+    if json_output:
         click.echo(json.dumps(results, indent=2, default=str))
     else:
         click.echo(results["summary"])
@@ -2782,11 +2283,13 @@ def batch_compare_cmd(qvf_files, reference, fmt_json):
 
 @main.command("dashboard")
 @click.argument("patterns", nargs=-1, required=True)
-@click.option("--output", "-o", type=click.Path(path_type=Path), help="Output file")
+@output_option("Image or page to write (default: dashboard.png or dashboard.html).")
 @click.option("--cols", type=int, default=3, help="Grid columns")
 @click.option("--cell-size", type=int, default=300, help="Cell size in pixels")
 @click.option("--html", "fmt_html", is_flag=True, help="Generate HTML dashboard")
-def dashboard_cmd(patterns, output, cols, cell_size, fmt_html):
+def dashboard_cmd(
+    patterns: tuple[str, ...], output: Path | None, cols: int, cell_size: int, fmt_html: bool
+) -> None:
     """Render a grid preview of multiple QVF files."""
     import glob as _glob
     from pathlib import Path as _Path
@@ -2801,10 +2304,10 @@ def dashboard_cmd(patterns, output, cols, cell_size, fmt_html):
 
     # Unmatched patterns fall through as literal paths — check they exist
     # instead of reporting success for files that were never rendered.
-    missing = [p for p in paths if not p.exists()]
+    missing = [path for path in paths if not path.exists()]
     if missing:
-        for p in missing:
-            click.echo(f"Error: no such file: {p}", err=True)
+        for path in missing:
+            click.echo(f"Error: no such file: {path}", err=True)
         raise SystemExit(1)
 
     paths = sorted(set(p for p in paths if p.suffix == ".qvf"))
@@ -2831,9 +2334,9 @@ def dashboard_cmd(patterns, output, cols, cell_size, fmt_html):
 
 @main.command("vq-features")
 @click.argument("feature", required=False)
-def vq_features_cmd(feature):
+def vq_features_cmd(feature: str | None) -> None:
     """Show what vibe-qc needs to produce for specific visualizations."""
-    from vibeview.feature_requests import VIS_NEEDS, list_needed, list_supported, what_do_i_need
+    from vibeview.feature_requests import list_needed, list_supported, what_do_i_need
 
     if feature:
         click.echo(what_do_i_need(feature))
@@ -2844,16 +2347,6 @@ def vq_features_cmd(feature):
         click.echo(f"Already supported ({len(supported)}): {', '.join(supported)}")
         click.echo(f"Needs backend work ({len(needed)}): {', '.join(needed)}")
         click.echo("\nUse: vibe-view vq-features <feature> for details.")
-
-
-def _electron_dir() -> Path:
-    """The Electron app directory at the standalone checkout root (electron/)."""
-    from vibeview.install_hints import source_project_dir
-
-    project = source_project_dir()
-    if project is not None:
-        return project / "electron"
-    return Path(__file__).resolve().parent.parent.parent / "electron"
 
 
 def _electron_binary(electron_dir: Path) -> Path:
@@ -2903,20 +2396,14 @@ def _write_desktop_config(port: int, file: str | None) -> Path:
 
 
 @main.command("desktop")
-@click.option(
-    "--port",
-    default=8765,
-    show_default=True,
-    type=click.IntRange(min=1, max=65535),
-    help="Port for the vibe-view server behind the window.",
-)
+@port_option(help="Port for the vibe-view server behind the window.", default=8765)
 @click.option(
     "--no-sandbox",
     is_flag=True,
     help="Disable Electron's Linux sandbox (unsafe; restricted environments only).",
 )
 @click.argument("file", required=False, type=click.Path(exists=True))
-def desktop_cmd(file, port, no_sandbox):
+def desktop_cmd(file: str | None, port: int, no_sandbox: bool) -> None:
     """Launch the vibe-view desktop application (native Electron window).
 
     Opens the 3D molecular viewer in its own window with native menus,
@@ -2944,7 +2431,7 @@ def desktop_cmd(file, port, no_sandbox):
     if no_sandbox and not sys.platform.startswith("linux"):
         raise click.UsageError("--no-sandbox is supported only on Linux")
 
-    electron_dir = _electron_dir()
+    electron_dir = install_hints.electron_dir()
     if not electron_dir.exists():
         click.echo(f"Electron directory not found: {electron_dir}", err=True)
         click.echo(

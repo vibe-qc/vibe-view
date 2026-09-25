@@ -60,7 +60,8 @@ def rotation_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
     mx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
     my = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
     mz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
-    return mz @ my @ mx
+    matrix: np.ndarray = mz @ my @ mx
+    return matrix
 
 
 def shade(normals: np.ndarray, colors: np.ndarray) -> np.ndarray:
@@ -73,7 +74,8 @@ def shade(normals: np.ndarray, colors: np.ndarray) -> np.ndarray:
     intensity = np.minimum(1.0, _AMBIENT + _DIFFUSE * n_dot_l)
     specular = _SPECULAR * np.power(n_dot_h, _SHININESS)
     lit = colors * intensity[:, None] + 255.0 * specular[:, None]
-    return np.clip(lit, 0.0, 255.0).astype(np.uint8)
+    shaded: np.ndarray = np.clip(lit, 0.0, 255.0).astype(np.uint8)
+    return shaded
 
 
 @dataclass
@@ -93,7 +95,7 @@ class Camera:
     def to_camera(self, points: np.ndarray) -> np.ndarray:
         """World (N,3) angstroms to camera-frame (N,3)."""
         pts = np.atleast_2d(np.asarray(points, dtype=np.float64))
-        out = (self.rotation @ (pts - self.center).T).T
+        out: np.ndarray = (self.rotation @ (pts - self.center).T).T
         out[:, 0] += self.pan[0]
         out[:, 1] += self.pan[1]
         out[:, 2] += self.distance
@@ -249,10 +251,19 @@ class Canvas:
                 int(bucket), sx[sel], sy[sel], sz[sel], pr[sel], rw[sel], rgb[sel]
             )
 
-    def _sphere_bucket(self, radius_px, sx, sy, sz, pr, rw, rgb) -> None:
+    def _sphere_bucket(
+        self,
+        radius_px: int,
+        sx: np.ndarray,
+        sy: np.ndarray,
+        sz: np.ndarray,
+        pr: np.ndarray,
+        rw: np.ndarray,
+        rgb: np.ndarray,
+    ) -> None:
         span = np.arange(-radius_px - 1, radius_px + 2, dtype=np.float64)
-        ox, oy = np.meshgrid(span, span, indexing="xy")
-        ox, oy = ox.ravel(), oy.ravel()
+        grid_x, grid_y = np.meshgrid(span, span, indexing="xy")
+        ox, oy = grid_x.ravel(), grid_y.ravel()
         n_samples = len(ox)
         if n_samples == 0:
             return
@@ -423,7 +434,15 @@ class Canvas:
             sel = buckets == bucket
             self._mesh_bucket(int(bucket), s[sel], fz[sel], fn[sel], base_rgb, opacity)
 
-    def _mesh_bucket(self, n_edge, s, fz, fn, base_rgb, opacity) -> None:
+    def _mesh_bucket(
+        self,
+        n_edge: int,
+        s: np.ndarray,
+        fz: np.ndarray,
+        fn: np.ndarray,
+        base_rgb: np.ndarray,
+        opacity: float,
+    ) -> None:
         steps = np.linspace(0.0, 1.0, max(2, n_edge))
         uu, vv = np.meshgrid(steps, steps, indexing="ij")
         keep = (uu + vv) <= 1.0 + 1e-9

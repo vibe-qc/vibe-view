@@ -515,8 +515,9 @@ milestones.
 - ~~Crystal `miller_slab` d-spacing fix (audit deferred item).~~ **Done
   2026-07-28.** Reciprocal-lattice spacing; thickness and layer selection
   corrected with it; non-c-normal orientations now raise instead of
-  returning a mislabelled box. A general surface cell (two lattice vectors
-  spanning the plane, as ASE's `surface()` does) remains unimplemented.
+  returning a mislabelled box. **General surface cell done 2026-09-18:**
+  two lattice vectors spanning the plane and one stepping along the normal,
+  the construction ASE's `surface()` uses; any orientation of any cell.
 - Fragment/template expansion. **Auto-bonding: the periodic edge case is
   fixed (2026-07-28)** — bonds through cell walls were missed entirely, so
   crystals and slabs rendered with unbonded surfaces. Remaining bonding

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -328,7 +326,10 @@ class TestConvertersExtended:
     def test_xyz_to_qvf_water(self):
         from vibeview.converters import xyz_to_qvf
 
-        xyz = b"3\n\nO   0.000   0.000   0.117\nH   0.000   0.757  -0.469\nH   0.000  -0.757  -0.469\n"
+        xyz = (
+            b"3\n\nO   0.000   0.000   0.117\n"
+            b"H   0.000   0.757  -0.469\nH   0.000  -0.757  -0.469\n"
+        )
         buf = xyz_to_qvf(xyz)
         import zipfile
 

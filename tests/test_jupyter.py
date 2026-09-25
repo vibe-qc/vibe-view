@@ -436,6 +436,9 @@ class TestInlineImage:
                 self.close_calls = 0
                 self.instances.append(self)
 
+            def set_background(self, _color) -> None:
+                pass  # the shared headless scene themes the plotter first
+
             def close(self) -> None:
                 self.close_calls += 1
 
@@ -443,7 +446,7 @@ class TestInlineImage:
             def __init__(self, _section, _reader) -> None:
                 pass
 
-            def add_to_plotter(self, _plotter, *, representation) -> None:
+            def add_to_plotter(self, _plotter, *, representation, **_options) -> None:
                 assert representation == "ball_and_stick"
                 raise failure
 
