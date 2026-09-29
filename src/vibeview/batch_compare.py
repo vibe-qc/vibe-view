@@ -7,23 +7,21 @@ Useful for screening calculations or benchmarking.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from vibeview.units import HARTREE_TO_KCAL_MOL
 
-def _energy_eh(reader) -> float | None:
-    """SCF energy (Eh) from a reader's provenance, mirroring cli._energy_eh."""
-    prov = getattr(reader.manifest, "provenance", None) or {}
-    if hasattr(prov, "model_dump"):
-        prov = prov.model_dump()
-    if not isinstance(prov, dict):
-        return None
-    e = prov.get("scf_energy", {})
-    if isinstance(e, dict):
-        e = e.get("value")
-    return float(e) if e is not None else None
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
+
+
+def _energy_eh(reader: QVFReader) -> float | None:
+    """SCF energy (Eh) from a reader's provenance."""
+    return reader.scf_energy_eh()
 
 
 def compare_batch(
@@ -63,119 +61,119 @@ def compare_batch(
     }
 
     readers = []
-    for p in qvf_paths:
-        try:
-            reader = QVFReader(p)
-            readers.append((p, reader))
-        except Exception:
-            continue
-
-    if not readers:
-        results["summary"] = "No valid QVF files found."
-        return results
-
-    # Validate the reference index against the readers that actually loaded,
-    # so an out-of-range -r/reference produces a clean error rather than a raw
-    # IndexError deep inside the RMSD/summary code.
-    if not (0 <= reference_idx < len(readers)):
-        raise ValueError(
-            f"reference index {reference_idx} out of range "
-            f"(0..{len(readers) - 1} for {len(readers)} valid file(s))"
-        )
-
-    # Collect energies and sections
-    all_section_kinds = set()
-    for path, reader in readers:
-        results["files"].append(str(path))
-        # Energy lives in manifest.provenance["scf_energy"]["value"], not a
-        # (nonexistent) manifest.scf_energy_eh attribute. Mirror cli._energy_eh.
-        try:
-            scf = _energy_eh(reader)
-            results["energies"].append({"path": str(path), "scf_energy_eh": scf})
-        except Exception:
-            results["energies"].append({"path": str(path), "scf_energy_eh": None})
-
-        for s in reader.sections:
-            all_section_kinds.add(s.kind)
-
-    # Section matrix
-    for kind in sorted(all_section_kinds):
-        results["sections"][kind] = []
-        for path, reader in readers:
-            has_it = any(s.kind == kind for s in reader.sections)
-            results["sections"][kind].append(has_it)
-
-    # RMSD (if structures available)
-    if align:
-        try:
-            # doc says "RMSD-align": use the superposing Kabsch fit, not the
-            # non-superposing index-wise rmsd (which would report frame
-            # differences, not the residual displacement).
-            from vibeview.align import kabsch_fit
-
-            _ref_path, ref_reader = readers[reference_idx]
-            ref_sdata = ref_reader.read_structure()
-            ref_pos = np.array([a.position for a in ref_sdata.atoms])
-
-            for i, (path, reader) in enumerate(readers):
-                if i == reference_idx:
-                    results["rmsd"].append({"path": str(path), "rmsd_angstrom": 0.0})
-                    continue
-                try:
-                    sdata = reader.read_structure()
-                    pos = np.array([a.position for a in sdata.atoms])
-                    if len(pos) == len(ref_pos):
-                        _aligned, r = kabsch_fit(pos, ref_pos)
-                        results["rmsd"].append({"path": str(path), "rmsd_angstrom": float(r)})
-                    else:
-                        results["rmsd"].append(
-                            {
-                                "path": str(path),
-                                "rmsd_angstrom": None,
-                                "note": "atom count mismatch",
-                            }
-                        )
-                except Exception:
-                    results["rmsd"].append({"path": str(path), "rmsd_angstrom": None})
-        except ImportError:
-            pass
-
-    # Build summary
-    lines = [f"Batch comparison: {len(readers)} files"]
-    ref_energy = results["energies"][reference_idx].get("scf_energy_eh")
-    if ref_energy is not None:
-        lines.append(f"Reference energy: {ref_energy:.8f} Eh")
-        for i, e in enumerate(results["energies"]):
-            if i == reference_idx:
+    # Every reader opened here belongs to this function: close each exactly
+    # once on every exit -- an interrupt while a later file opens, the early
+    # "no valid files" return, the bad reference ValueError, and any
+    # exception in the body (#39-18). An unreadable file is skipped.
+    try:
+        for p in qvf_paths:
+            try:
+                reader = QVFReader(p)
+            except Exception:
                 continue
-            if e.get("scf_energy_eh") is not None:
-                delta = (e["scf_energy_eh"] - ref_energy) * 627.509  # kcal/mol
-                lines.append(f"  {Path(e['path']).name}: ΔE = {delta:.2f} kcal/mol")
+            readers.append((p, reader))
 
-    if results["rmsd"]:
-        for r in results["rmsd"]:
-            if r["rmsd_angstrom"] is not None:
-                lines.append(f"  RMSD to ref: {r['rmsd_angstrom']:.4f} Å")
+        if not readers:
+            results["summary"] = "No valid QVF files found."
+            return results
 
-    common_sections = [k for k, v in results["sections"].items() if all(v)]
-    if common_sections:
-        lines.append(
-            f"Common sections ({len(common_sections)}): {', '.join(sorted(common_sections)[:10])}"
-        )
+        # Validate the reference index against the readers that actually loaded,
+        # so an out-of-range -r/reference produces a clean error rather than a raw
+        # IndexError deep inside the RMSD/summary code.
+        if not (0 <= reference_idx < len(readers)):
+            raise ValueError(
+                f"reference index {reference_idx} out of range "
+                f"(0..{len(readers) - 1} for {len(readers)} valid file(s))"
+            )
 
-    results["summary"] = "\n".join(lines)
+        # Collect energies and sections
+        all_section_kinds = set()
+        for path, reader in readers:
+            results["files"].append(str(path))
+            # Energy lives in manifest.provenance["scf_energy"]["value"], not a
+            # (nonexistent) manifest.scf_energy_eh attribute. Mirror cli._energy_eh.
+            try:
+                scf = _energy_eh(reader)
+                results["energies"].append({"path": str(path), "scf_energy_eh": scf})
+            except Exception:
+                results["energies"].append({"path": str(path), "scf_energy_eh": None})
 
-    # Close readers
-    for _, reader in readers:
-        try:
-            reader.close()
-        except Exception:
-            pass
+            for s in reader.sections:
+                all_section_kinds.add(s.kind)
 
-    return results
+        # Section matrix
+        for kind in sorted(all_section_kinds):
+            results["sections"][kind] = []
+            for _path, reader in readers:
+                has_it = any(s.kind == kind for s in reader.sections)
+                results["sections"][kind].append(has_it)
+
+        # RMSD (if structures available)
+        if align:
+            try:
+                # doc says "RMSD-align": use the superposing Kabsch fit, not the
+                # non-superposing index-wise rmsd (which would report frame
+                # differences, not the residual displacement).
+                from vibeview.align import kabsch_fit
+
+                _ref_path, ref_reader = readers[reference_idx]
+                ref_sdata = ref_reader.read_structure()
+                ref_pos = np.array([a.position for a in ref_sdata.atoms])
+
+                for i, (path, reader) in enumerate(readers):
+                    if i == reference_idx:
+                        results["rmsd"].append({"path": str(path), "rmsd_angstrom": 0.0})
+                        continue
+                    try:
+                        sdata = reader.read_structure()
+                        pos = np.array([a.position for a in sdata.atoms])
+                        if len(pos) == len(ref_pos):
+                            _aligned, r = kabsch_fit(pos, ref_pos)
+                            results["rmsd"].append({"path": str(path), "rmsd_angstrom": float(r)})
+                        else:
+                            results["rmsd"].append(
+                                {
+                                    "path": str(path),
+                                    "rmsd_angstrom": None,
+                                    "note": "atom count mismatch",
+                                }
+                            )
+                    except Exception:
+                        results["rmsd"].append({"path": str(path), "rmsd_angstrom": None})
+            except ImportError:
+                pass
+
+        # Build summary
+        lines = [f"Batch comparison: {len(readers)} files"]
+        ref_energy = results["energies"][reference_idx].get("scf_energy_eh")
+        if ref_energy is not None:
+            lines.append(f"Reference energy: {ref_energy:.8f} Eh")
+            for i, e in enumerate(results["energies"]):
+                if i == reference_idx:
+                    continue
+                if e.get("scf_energy_eh") is not None:
+                    delta = (e["scf_energy_eh"] - ref_energy) * HARTREE_TO_KCAL_MOL  # kcal/mol
+                    lines.append(f"  {Path(e['path']).name}: ΔE = {delta:.2f} kcal/mol")
+
+        if results["rmsd"]:
+            for r in results["rmsd"]:
+                if r["rmsd_angstrom"] is not None:
+                    lines.append(f"  RMSD to ref: {r['rmsd_angstrom']:.4f} Å")
+
+        common_sections = [k for k, v in results["sections"].items() if all(v)]
+        if common_sections:
+            shown = ", ".join(sorted(common_sections)[:10])
+            lines.append(f"Common sections ({len(common_sections)}): {shown}")
+
+        results["summary"] = "\n".join(lines)
+        return results
+    finally:
+        for _, reader in readers:
+            with contextlib.suppress(Exception):
+                reader.close()
 
 
-def batch_compare_to_table(results: dict) -> str:
+def batch_compare_to_table(results: dict[str, Any]) -> str:
     """Format batch comparison results as a markdown table."""
     files = results.get("files", [])
     energies = results.get("energies", [])

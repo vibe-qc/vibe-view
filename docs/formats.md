@@ -5,6 +5,9 @@ vibe-qc, and the file does not have to be a QVF. Common structure and volume
 files open directly, and any of them can be turned into a persistent,
 checksummed archive.
 
+For a complete import with a bundled XYZ input, expected section inventory
+and exports, follow [the worked workflow](workflows.md).
+
 ## Open now, or import once
 
 Use `open` when you only want to look:
@@ -17,7 +20,9 @@ vibe-view open calculation.hdf5                 # needs the [trexio] extra
 ```
 
 The conversion happens in memory for that session. The source file is not
-changed and no archive is written.
+changed and no archive is written. A file uploaded through the browser
+viewer's **Load file** dialog is converted the same way, by the same
+importers, so any single-file format `open` reads also opens as an upload.
 
 Use `import` when you want a reusable QVF:
 
@@ -63,17 +68,36 @@ of truth for an installed version.
 | Input | Extra | Kept | Limits |
 |---|---|---|---|
 | QVF (`.qvf`) | none | Every valid section, its metadata and checksums | The only built-in path for a complete calculation record. |
-| XYZ (`.xyz`) | none | One molecular geometry, coordinates in Å | No cell, bonds, properties, or reliable multi-frame import. |
-| CIF (`.cif`) | none | Explicit atom sites and cell parameters | Symmetry operations are not expanded. Supply an expanded cell when the file stores only the asymmetric unit. |
+| XYZ (`.xyz`) | none | The first complete frame, coordinates in Å | Later frames, extra per-atom columns and comment metadata are ignored. No cell or explicit bonds are imported. |
+| CIF (`.cif`) | none | Explicit atom sites and cell parameters, read with CIF 1.1 tokenization (quoted values, loop rows spanning lines, `;` text fields, comments) | Symmetry operations are not expanded. Supply an expanded cell when the file stores only the asymmetric unit. A non-numeric site coordinate or an incomplete loop is an error. |
 | Gaussian cube (`.cube`) | none | Structure and one scalar volume | The volume kind is inferred from the comment lines and defaults to density. No wavefunction, spectra or provenance. `.cub` is not recognized. |
 | TREXIO (`.h5`, `.hdf5`, `.trexio`, or a text-backend directory) | `[trexio]` | Geometry, cell, electron count, real molecular Gaussian basis and MOs, available energies, occupations and spin/symmetry labels | Orbital evaluation covers spherical or Cartesian s/p/d/f shells. Unsupported or incomplete wavefunctions raise an error; see below. |
-| PDB (`.pdb`) | none | Coordinates, atom, residue and chain names, B factors, the `CRYST1` cell | Explicit connectivity is not imported. Use a cleaned single model; alternate locations and multiple models are not resolved. |
-| Tripos Mol2 (`.mol2`) | none | Geometry and explicit bond orders | Charges, force-field atom types beyond the element, and substructure metadata are dropped. |
-| Gaussian input (`.gjf`, `.com`) | none | The Cartesian geometry | Route, basis, constraints and Z-matrix input are not interpreted. Gaussian output, `.chk` and `.fchk` are not supported. |
-| GROMACS (`.gro`) | none | Coordinates and a three-length orthorhombic box | Velocities and residue metadata are dropped; triclinic box terms are not imported. |
+| PDB (`.pdb`) | none | Coordinates, atom, residue and chain names, B factors, the `CRYST1` cell | Explicit connectivity is not imported. Only the first `MODEL` is read, and only the first alternate location (altLoc) of each atom. The wwPDB placeholder `CRYST1` of a non-crystallographic entry (a = b = c = 1 Å, 90° angles) is not a cell. |
+| Tripos Mol2 (`.mol2`) | none | The first molecule and its explicit bond orders | Later molecules, charges, force-field atom types beyond the element, and substructure metadata are dropped. |
+| Gaussian input (`.gjf`, `.com`) | none | The Cartesian geometry, with element labels given as a symbol, an atomic number, a numbered label (`C1`), parameters (`C(Fragment=1)`) or an MM type (`C-CA-0.25`), and an optional freeze code | Route, basis and constraints are not interpreted. Z-matrix input is refused with an error. Gaussian output, `.chk` and `.fchk` are not supported. |
+| GROMACS (`.gro`) | none | Coordinates and the box, orthorhombic or triclinic (all nine box values); a zero box is not periodic | Velocities and residue metadata are dropped. A `.gro` has no element column, so elements come from atom names: the first letter (`CA` is a C-alpha, `HE1` a hydrogen), a two-letter element only for a one-atom residue named after it (the ions `NA`, `CL`, `CA`) or a name that cannot start with an organic element (`FE`, `ZN`). |
 | MDL Mol / SDF (`.mol`, `.sdf`) | none | The first V2000 molecule and its bond orders | Later SDF records and data fields are ignored; V3000 is not supported. |
 | vibe-qc Python input (`.py`) | none | The structure and selected run parameters, parsed statically | The script is not executed. This is a parser for vibe-qc input syntax, not for arbitrary Python. |
 | ASE trajectory (`.traj`), extended XYZ (`.extxyz`), VASP (`.vasp`, `.poscar`, `POSCAR`, `CONTCAR`) | `[ase]` | One ASE-readable geometry, cell and periodic flags | Only these names are routed to ASE. Per-atom arrays, trajectories, calculator results and other ASE formats are not retained. |
+
+XYZ imports require a positive integer atom count, a comment line (which may
+be empty), and that many valid atom rows with finite coordinates. A malformed
+or truncated first frame raises an error before writing, preserving an existing
+destination even with `--force`. Later frames are ignored rather than combined
+into the first geometry. Extra per-atom columns remain accepted and ignored;
+unknown nonempty element labels retain atomic number zero. The native `.xyz`
+importer does not interpret extended-XYZ cell or property metadata; `.extxyz`
+continues to use the optional ASE route.
+
+Mol2 and V2000 Mol/SDF imports validate the first molecule’s declared atom
+records and bond references before writing an archive. Malformed or truncated
+records raise an import error; even `--force` leaves an existing destination
+untouched on these errors. Mol2 bonds use the source atom IDs, which may be
+nonsequential or zero; duplicate atom IDs are rejected as ambiguous. Blank
+lines and comments do not end a Mol2 section, and its bond count may be omitted.
+Both formats import only the first molecule, so later molecules have no effect
+on its atom counts or connectivity. Unknown element labels retain atomic
+number zero, and the existing bond-order mappings are preserved.
 
 "Kept" means the information reaches the archive. It does not mean every
 record in the source format is interpreted. The viewer can infer display
@@ -83,6 +107,45 @@ aid, not evidence that the source contained bond orders.
 `[ase]` is optional because ASE is a large dependency that most people
 opening a common format never need. When you open a file that needs it,
 vibe-view names the extra and the exact install command.
+
+Cube grids with positive voxel counts use bohr for the origin, voxel vectors
+and atom positions. The importer also accepts the negative-count ångström
+extension described in [Bourke's cube format notes](https://paulbourke.net/dataformats/cube/):
+all three counts must be negative. Zero counts and mixed signs raise a clear
+error. A negative vector component reverses an axis without changing the unit.
+Skewed grids retain their vectors, and samples keep cube's x-outermost,
+z-innermost order. Only length coordinates are converted; scalar field values
+are preserved.
+
+For cubes with multiple datasets, the importer keeps the first dataset in
+file order as its single scalar volume. It reads the per-voxel field count
+from `NVAL`, or from the orbital ID record when the atom count is negative,
+and separates the interleaved samples before choosing that field. Wrapped
+orbital ID records are supported. Invalid counts, incomplete ID records and
+truncated declared datasets raise an error; later datasets are not exported.
+
+Python input is parsed without executing its code. A periodic import needs a
+lattice that this static parser can resolve, such as a literal 3×3 matrix or
+the supported array/transpose expressions. An unresolved lattice raises an
+error instead of substituting a unit cube. Supply explicit lattice values or
+import a structure file that carries the cell.
+
+## Element identities
+
+The built-in element table covers hydrogen through curium (atomic numbers
+1–96). Python inputs retain the correct symbols for heavier elements such as
+Pt and U, whether an `Atom` uses its atomic number or a symbol. Previously
+this parser's table stopped at barium, so `Atom(78, ...)` was labeled `Z78`.
+For an atomic number outside the supported table, Python input preserves its
+numeric value and the `Z<number>` label. Other import formats retain their
+existing unknown-element handling.
+
+The structure viewer uses the same symbol coverage when an atom has a symbol
+but no atomic number. Its stock Jmol colors and radius values are unchanged;
+per-element color overrides still apply. Covalent radii use the selected
+[Cordero et al. (2008) values](https://doi.org/10.1039/B801115J). The small
+van der Waals display table and its style-dependent estimates are visual
+approximations, not an inference of oxidation state, spin or bond order.
 
 ## TREXIO wavefunctions
 

@@ -12,9 +12,19 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from vibeview.headless import (
+    add_signed_isosurfaces,
+    add_structure,
+    frame,
+    headless_plotter,
+    snapshot,
+    structure_frame_writer,
+)
 
 if TYPE_CHECKING:
+
     from vibeview.qvf import QVFReader
 
 
@@ -103,47 +113,53 @@ def _frames_to_pngs(frame_dir: Path, output_dir: Path) -> bool:
     return True
 
 
-def _render_structure_frame(
-    reader: QVFReader,
-    path: Path,
-    size=(900, 600),
-    representation="ball_and_stick",
-    positions=None,
-) -> bool:
-    """Render one structure frame to a PNG. Returns True on success.
+class AnimationEncodeError(RuntimeError):
+    """Frames were rendered but could not be written in the requested format."""
 
-    ``positions`` (``[n_atoms, 3]`` Å, optional) overrides the stored
-    geometry — the per-frame hook for trajectory/vibration videos. A
-    fresh ``StructureRenderer`` re-reads the archive, so mutating a
-    previously loaded StructureData has no effect here (that was the
-    static-video bug: every frame rendered the stored geometry).
+
+# Suffixes the animation writers own; any other suffix is part of the name.
+_ANIMATION_SUFFIXES = (".mp4", ".gif")
+
+
+def _without_animation_suffix(output: Path) -> Path:
+    """``output`` without a trailing ``.mp4``/``.gif``, and nothing else.
+
+    ``Path.with_suffix("")`` strips whatever follows the last dot, so an
+    output named ``job.opt_trajectory`` became ``job`` and frames landed in
+    ``./job/`` (#39-4).
     """
-    import pyvista as pv
+    if output.suffix.lower() in _ANIMATION_SUFFIXES:
+        return output.with_suffix("")
+    return output
 
-    from vibeview.renderers.structure import StructureRenderer
 
-    section = next((s for s in reader.sections if s.kind == "structure"), None)
-    if section is None:
-        return False
-    plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
-    try:
-        plotter.set_background("#1a1a2e")
-        renderer = StructureRenderer(section, reader)
-        if positions is not None:
-            import numpy as np
+def _encode_frames(frame_dir: Path, output: Path, format: str, fps: float) -> Path:
+    """Write rendered ``frame_*.png`` files as ``format``; return what was written.
 
-            data = renderer.load()
-            for atom, pos in zip(data.atoms, positions):
-                atom.position = np.asarray(pos, dtype=float)
-            # Bonds must follow the displaced geometry.
-            renderer._bonds = reader.infer_bonds(data)
-        renderer.add_to_plotter(plotter, representation=representation)
-        plotter.view_isometric()
-        plotter.reset_camera()
-        plotter.screenshot(str(path))
-    finally:
-        plotter.close()
-    return True
+    ``mp4`` needs ffmpeg and falls back to a GIF without it; ``frames``
+    copies the PNGs into a directory. Raises :class:`AnimationEncodeError`
+    when nothing could be written (no frames, Pillow missing, ffmpeg
+    failing): a path to a file that does not exist used to be returned, and
+    the CLI then crashed on it (#39-3).
+    """
+    if format == "mp4" and _ffmpeg_available():
+        if _frames_to_mp4(frame_dir, output, fps=fps) and output.exists():
+            return output
+        raise AnimationEncodeError(f"ffmpeg could not write {output}")
+    if format == "frames":
+        out = _without_animation_suffix(output)
+        if _frames_to_pngs(frame_dir, out):
+            return out
+        raise AnimationEncodeError(f"no frames were rendered for {out}")
+    if format in ("gif", "mp4"):
+        out = _without_animation_suffix(output)
+        out = out.with_name(out.name + ".gif")
+        if _frames_to_gif(frame_dir, out, fps=fps) and out.exists():
+            return out
+        raise AnimationEncodeError(
+            f"could not write {out}: no frames were rendered, or Pillow is not installed"
+        )
+    raise ValueError(f"unknown animation format {format!r}; use mp4, gif or frames")
 
 
 def render_trajectory_video(
@@ -151,7 +167,7 @@ def render_trajectory_video(
     output: str | Path,
     *,
     fps: float = 5,
-    size=(900, 600),
+    size: tuple[int, int] = (900, 600),
     format: str = "mp4",
 ) -> Path | None:
     """Render a geometry-optimisation trajectory as an MP4/GIF video.
@@ -171,24 +187,14 @@ def render_trajectory_video(
 
     with tempfile.TemporaryDirectory() as td:
         frame_dir = Path(td)
-        import numpy as np
 
-        for i in range(n_frames):
-            path = frame_dir / f"frame_{i:04d}.png"
-            _render_structure_frame(reader, path, size=size, positions=data.coords[i])
+        with structure_frame_writer(reader, size=size) as write:
+            if write is None:
+                return None
+            for i in range(n_frames):
+                write(frame_dir / f"frame_{i:04d}.png", data.coords[i])
 
-        if format == "mp4" and _ffmpeg_available():
-            _frames_to_mp4(frame_dir, output, fps=fps)
-        elif format == "frames":
-            out = output.with_suffix("")
-            _frames_to_pngs(frame_dir, out)
-            return out
-        elif format in ("gif", "mp4"):
-            out = output.with_suffix(".gif")
-            _frames_to_gif(frame_dir, out, fps=fps)
-            return out
-
-    return output if output.exists() else None
+        return _encode_frames(frame_dir, output, format, fps)
 
 
 def render_reaction_video(
@@ -196,7 +202,7 @@ def render_reaction_video(
     output: str | Path,
     *,
     fps: float = 5,
-    size=(900, 600),
+    size: tuple[int, int] = (900, 600),
     format: str = "mp4",
 ) -> Path | None:
     """Render a ``reaction.path`` (NEB band) as an MP4/GIF video.
@@ -220,26 +226,17 @@ def render_reaction_video(
     with tempfile.TemporaryDirectory() as td:
         frame_dir = Path(td)
 
-        for i in range(n_frames):
-            # get_frame returns [(symbol, position Å), ...] in the same
-            # atom order as the structure section, which is what the
-            # shared frame renderer overrides positions from.
-            positions = [np.asarray(pos, dtype=float) for _, pos in renderer.get_frame(i)]
-            path = frame_dir / f"frame_{i:04d}.png"
-            _render_structure_frame(reader, path, size=size, positions=positions)
+        with structure_frame_writer(reader, size=size) as write:
+            if write is None:
+                return None
+            for i in range(n_frames):
+                # get_frame returns [(symbol, position Å), ...] in the same
+                # atom order as the structure section, which is what the
+                # shared frame writer overrides positions from.
+                positions = [np.asarray(pos, dtype=float) for _, pos in renderer.get_frame(i)]
+                write(frame_dir / f"frame_{i:04d}.png", positions)
 
-        if format == "mp4" and _ffmpeg_available():
-            _frames_to_mp4(frame_dir, output, fps=fps)
-        elif format == "frames":
-            out = output.with_suffix("")
-            _frames_to_pngs(frame_dir, out)
-            return out
-        elif format in ("gif", "mp4"):
-            out = output.with_suffix(".gif")
-            _frames_to_gif(frame_dir, out, fps=fps)
-            return out
-
-    return output if output.exists() else None
+        return _encode_frames(frame_dir, output, format, fps)
 
 
 def render_vibration_video(
@@ -249,12 +246,15 @@ def render_vibration_video(
     mode: int = 0,
     n_frames: int = 60,
     fps: float = 15,
-    size=(900, 600),
+    size: tuple[int, int] = (900, 600),
     format: str = "mp4",
+    amplitude: float = 1.0,
 ) -> Path | None:
     """Render a vibrational mode as an MP4/GIF video.
 
     ``mode`` is the 0-based index of the normal mode to animate.
+    ``amplitude`` is the user scale on the shared peak-excursion convention
+    (:mod:`vibeview.vibration_amplitude`).
     Returns output path on success, None if no vibrations section.
     """
     import numpy as np
@@ -271,34 +271,26 @@ def render_vibration_video(
         return None
 
     output = Path(output)
-    freq = data.frequencies[mode]
-    disp = data.displacements[mode]  # [n_atoms, 3]
+    from vibeview.vibration_amplitude import normalized_displacement
+
+    disp = normalized_displacement(data.displacements[mode], amplitude)  # [n_atoms, 3]
     orig_positions = [np.array(a.position, dtype=float) for a in data.atoms]
 
     with tempfile.TemporaryDirectory() as td:
         frame_dir = Path(td)
-        for i in range(n_frames):
-            phase = 2 * np.pi * i / n_frames
-            amplitude = np.sin(phase)
-            frame_pos = [
-                orig_positions[atom_idx] + disp[atom_idx] * amplitude
-                for atom_idx in range(len(orig_positions))
-            ]
-            path = frame_dir / f"frame_{i:04d}.png"
-            _render_structure_frame(reader, path, size=size, positions=frame_pos)
+        with structure_frame_writer(reader, size=size) as write:
+            if write is None:
+                return None
+            for i in range(n_frames):
+                phase = 2 * np.pi * i / n_frames
+                amplitude = np.sin(phase)
+                frame_pos = [
+                    orig_positions[atom_idx] + disp[atom_idx] * amplitude
+                    for atom_idx in range(len(orig_positions))
+                ]
+                write(frame_dir / f"frame_{i:04d}.png", frame_pos)
 
-        if format == "mp4" and _ffmpeg_available():
-            _frames_to_mp4(frame_dir, output, fps=fps)
-        elif format == "frames":
-            out = output.with_suffix("")
-            _frames_to_pngs(frame_dir, out)
-            return out
-        elif format in ("gif", "mp4"):
-            out = output.with_suffix(".gif")
-            _frames_to_gif(frame_dir, out, fps=fps)
-            return out
-
-    return output if output.exists() else None
+        return _encode_frames(frame_dir, output, format, fps)
 
 
 def render_orbital_animation(
@@ -307,7 +299,7 @@ def render_orbital_animation(
     *,
     fps: float = 3,
     isovalue: float = 0.04,
-    size=(900, 600),
+    size: tuple[int, int] = (900, 600),
     format: str = "mp4",
 ) -> Path | None:
     """Render an animated sequence of all molecular orbitals as MP4/GIF.
@@ -315,8 +307,6 @@ def render_orbital_animation(
     Evaluates each MO from ``wavefunction.gto`` and renders its isosurface.
     Returns output path on success, None if no wavefunction section.
     """
-    import numpy as np
-
     from vibeview.renderers.volume import build_isosurface_mesh
     from vibeview.renderers.wavefunction import WavefunctionRenderer
 
@@ -334,84 +324,39 @@ def render_orbital_animation(
 
     with tempfile.TemporaryDirectory() as td:
         frame_dir = Path(td)
-        import pyvista as pv
-
-        from vibeview.renderers.structure import StructureRenderer
-
-        struct_sec = next((s for s in reader.sections if s.kind == "structure"), None)
-
         for mo_idx in range(n_mo):
-            plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
-            try:
-                plotter.set_background("#1a1a2e")
-                if struct_sec:
-                    StructureRenderer(struct_sec, reader).add_to_plotter(plotter)
+            with headless_plotter(size) as plotter:
+                add_structure(plotter, reader)
                 grid, values = wf_renderer.evaluate_mo(mo_idx, n_per_dim=60)
                 if values is not None:
-                    # GridData lives in vibeview.qvf (volume.py only imports
-                    # it under TYPE_CHECKING — the old import crashed every
-                    # invocation). evaluate_mo returns an Å grid while
-                    # build_isosurface_mesh expects bohr and converts, so
-                    # feed it bohr to avoid the double Å conversion.
-                    from vibeview.qvf import GridData
-
-                    ang_to_bohr = 1.0 / 0.529177210903
-                    gd = GridData(
-                        origin=np.asarray(grid.origin) * ang_to_bohr,
-                        voxel_vectors=np.asarray(grid.voxel_vectors) * ang_to_bohr,
-                        shape=grid.shape,
-                    )
+                    # evaluate_mo returns an Å grid and says so; the contour
+                    # helper reads grid.units, so no round trip through bohr.
                     # Two contours: clipping one +isovalue contour at 0
                     # can never yield the negative lobe (all its scalars
                     # are +isovalue) — the old code drew only one phase.
-                    pos = build_isosurface_mesh(values, gd, isovalue)
-                    neg = build_isosurface_mesh(values, gd, -isovalue)
-                    if pos is not None and pos.n_points:
-                        plotter.add_mesh(
-                            pos,
-                            color="#3366cc",
-                            opacity=0.6,
-                            name="mo_pos",
-                            show_scalar_bar=False,
-                        )
-                    if neg is not None and neg.n_points:
-                        plotter.add_mesh(
-                            neg,
-                            color="#cc3333",
-                            opacity=0.6,
-                            name="mo_neg",
-                            show_scalar_bar=False,
-                        )
-                plotter.view_isometric()
-                plotter.reset_camera()
-                plotter.screenshot(str(frame_dir / f"frame_{mo_idx:04d}.png"))
-            finally:
-                plotter.close()
+                    add_signed_isosurfaces(
+                        plotter,
+                        build_isosurface_mesh(values, grid, isovalue),
+                        build_isosurface_mesh(values, grid, -isovalue),
+                        opacity=0.6,
+                        name="mo",
+                    )
+                frame(plotter)
+                snapshot(plotter, frame_dir / f"frame_{mo_idx:04d}.png")
 
-        if format == "mp4" and _ffmpeg_available():
-            _frames_to_mp4(frame_dir, output, fps=fps)
-        elif format == "frames":
-            out = output.with_suffix("")
-            _frames_to_pngs(frame_dir, out)
-            return out
-        elif format in ("gif", "mp4"):
-            out = output.with_suffix(".gif")
-            _frames_to_gif(frame_dir, out, fps=fps)
-            return out
-
-    return output if output.exists() else None
+        return _encode_frames(frame_dir, output, format, fps)
 
 
 def render_turntable(
-    plotter,
-    output_path,
+    plotter: Any,
+    output_path: str | Path,
     *,
-    num_frames=120,
-    duration=4.0,
-    fps=None,
-    resolution=(1920, 1080),
-    format="mp4",
-):
+    num_frames: int = 120,
+    duration: float = 4.0,
+    fps: float | None = None,
+    resolution: tuple[int, int] = (1920, 1080),
+    format: str = "mp4",
+) -> Path:
     """Render a 360-degree rotating view of the molecule.
 
     Yields a video file suitable for embedding in presentations.
@@ -422,38 +367,26 @@ def render_turntable(
     fps : The effective frame rate for the output video. When provided,
         overrides ``num_frames`` (set to ``int(fps * duration)``).
     """
-    from pathlib import Path
-
-    import numpy as np
-
     if fps is not None:
         num_frames = max(1, int(fps * duration))
 
     out = Path(output_path)
-    tmp_dir = out.parent / f".turntable_{out.stem}"
-    tmp_dir.mkdir(exist_ok=True)
+    # The orbit drives the caller's (often the live viewer's) camera; put it
+    # back afterwards instead of leaving it at the last frame's azimuth.
+    start_camera = plotter.camera_position
+    start_azimuth = plotter.camera.azimuth
 
-    try:
-        # Save frames
-        for i in range(num_frames):
-            angle = (360.0 / num_frames) * i
-            plotter.camera_position = plotter.camera_position  # Get current
-            plotter.camera.azimuth = angle
-            plotter.render()
-            frame_path = tmp_dir / f"frame_{i:04d}.png"
-            plotter.screenshot(str(frame_path), window_size=resolution)
-
-        fps = num_frames / duration
-        if format == "mp4" and _ffmpeg_available():
-            _frames_to_mp4(tmp_dir, out, fps=fps)
-        elif format == "frames":
-            _frames_to_pngs(tmp_dir, out.with_suffix(""))
-            out = out.with_suffix("")
-        elif format in ("gif", "mp4"):
-            _frames_to_gif(tmp_dir, out.with_suffix(".gif"), fps=fps)
-            out = out.with_suffix(".gif")
-        return out
-    finally:
-        import shutil as _shutil
-
-        _shutil.rmtree(tmp_dir, ignore_errors=True)
+    # A real temporary directory, not a dot-directory beside the output
+    # that a killed process would leave behind.
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        try:
+            for i in range(num_frames):
+                plotter.camera.azimuth = (360.0 / num_frames) * i
+                plotter.render()
+                plotter.screenshot(str(tmp_dir / f"frame_{i:04d}.png"), window_size=resolution)
+            fps = num_frames / duration
+            return _encode_frames(tmp_dir, out, format, fps)
+        finally:
+            plotter.camera.azimuth = start_azimuth
+            plotter.camera_position = start_camera

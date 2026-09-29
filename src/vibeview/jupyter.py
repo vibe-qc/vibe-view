@@ -121,30 +121,19 @@ def qvf_to_image(
         choices = ", ".join(_SUPPORTED_STRUCTURE_STYLES)
         raise ValueError(f"Unsupported style {style!r}; expected one of: {choices}")
 
-    import pyvista as pv
-
+    from vibeview.headless import render_structure_frame
     from vibeview.qvf import QVFReader
-    from vibeview.renderers.structure import StructureRenderer
 
     with QVFReader(qvf_path) as reader:
-        sec = next((s for s in reader.sections if s.kind == "structure"), None)
-        if sec is None:
+        img = render_structure_frame(reader, size=(width, height), representation=style)
+        if img is False:
             raise ValueError("No structure section in QVF")
 
-        plotter = pv.Plotter(off_screen=True, window_size=[width, height])
-        try:
-            renderer = StructureRenderer(sec, reader)
-            renderer.add_to_plotter(plotter, representation=style)
-            plotter.view_isometric()
-            plotter.render()
-            img = plotter.screenshot(return_img=True)
-        finally:
-            plotter.close()
-
     buf = io.BytesIO()
+    import numpy as np
     from PIL import Image as _Image
 
-    _Image.fromarray(img).save(buf, format="PNG")
+    _Image.fromarray(np.asarray(img)).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -203,7 +192,7 @@ def export_notebook_cell(
 
 def _capture_section(path: Path, section_kind: str) -> bytes | None:
     """Render the first matching volume section into an in-memory PNG."""
-    from vibeview.capture import capture_volume
+    from vibeview.capture import CaptureError, render_volume
     from vibeview.qvf import QVFReader
     from vibeview.viewer_defaults import ViewerState
 
@@ -215,16 +204,21 @@ def _capture_section(path: Path, section_kind: str) -> bytes | None:
         hints = viewer_state.get_volume_hints(section.id, kind=section.kind)
         with tempfile.TemporaryDirectory(prefix="vibeview-jupyter-") as tmpdir:
             output = Path(tmpdir) / "capture.png"
-            if not capture_volume(
-                reader,
-                section.id,
-                output,
-                isovalue=hints.isovalue,
-                colormap=hints.colormap,
-                opacity=hints.opacity,
-                replication=viewer_state.replication,
-            ):
-                raise RuntimeError(f"could not render section {section.id!r}")
+            try:
+                render_volume(
+                    reader,
+                    section.id,
+                    output,
+                    isovalue=hints.isovalue,
+                    colormap=hints.colormap,
+                    opacity=hints.opacity,
+                    replication=viewer_state.replication,
+                )
+            except CaptureError as exc:
+                # Keep the read error ("cannot read zip member …"), not
+                # just the section name (#60).
+                reason = exc.__cause__ or exc
+                raise RuntimeError(f"could not render section {section.id!r}: {reason}") from exc
             return output.read_bytes()
 
 
@@ -477,7 +471,7 @@ def register_ipython_magic(ipython: Any | None = None) -> bool:
 # ── Backward-compatible exports ────────────────────────────────────────
 
 
-def _sniff_qvf(qvf_path):
+def _sniff_qvf(qvf_path: str | Path) -> dict[str, Any]:
     """Return a dict of {program, version, calculation, sections} for a QVF file.
 
     Compat wrapper used by test suite and legacy callers.
@@ -487,7 +481,7 @@ def _sniff_qvf(qvf_path):
     return info(str(qvf_path))
 
 
-def _render_structure(qvf_path):
+def _render_structure(qvf_path: str | Path) -> bytes:
     """Return PNG bytes for the structure in a QVF file.
 
     Compat wrapper used by test suite and legacy callers.

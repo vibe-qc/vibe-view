@@ -240,8 +240,11 @@ def test_the_text_panel_cannot_be_granted_scripts():
     import re
 
     from vibeview import app as app_module
+    from vibeview.app import layout as layout_module
 
-    src = inspect.getsource(app_module)
+    # The iframes are part of the page layout, which moved to its own module
+    # when vibeview.app became a package (#37-R6).
+    src = inspect.getsource(app_module) + inspect.getsource(layout_module)
 
     def _sandbox_after(srcdoc: str) -> str:
         m = re.search(

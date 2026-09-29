@@ -46,7 +46,8 @@ vibe-view serve (directory browser + viewer launcher)
   │                          (⬆ Parent / ⌂ Home links, Open Folder…)
   │  GET /open?file=PATH   → spawns `vibe-view open PATH --no-browser`
   │                          on a free port, loading page polls
-  │                          /open-status, then redirects
+  │                          /open-status, then redirects (or shows
+  │                          the exit status and error if it died)
   ▼
 per-file 3D viewer (Trame/PyVista/VTK) on its own port
 ```
@@ -192,6 +193,9 @@ cd electron
 
 The `build` section of `package.json` carries the electron-builder
 config (appId, icons, `.qvf` file association, and the `publish` feed).
+The app's version is the `version` in `package.json`, which moves with the
+product version at release time; [`PUBLISHING.md`](PUBLISHING.md) says
+which files change together.
 Notes:
 
 - The packaged app still runs the Python server from the environment it
@@ -219,9 +223,9 @@ Notes:
 The packaged app ships electron-updater (bundled in the app.asar) wired to a
 generic update feed at `https://vibe-qc.com/updates/vibe-view/`. The published
 macOS arm64 package's "Check for Updates" menu items (App menu + tray) trigger
-a real check when the feed is reachable. That feed currently advertises the
-older 2.10.0 package, while source installs are at 2.14.1; it is not a way to
-update a source checkout. Local Intel macOS packages are kept off that
+a real check when the feed is reachable. The feed advertises whichever
+package was last published to it, which can lag the source release; it is not
+a way to update a source checkout. Local Intel macOS packages are kept off that
 arm64-only feed. Building + publishing a release, the
 external feed-host configuration, and the macOS Developer-ID signing gate
 (required for self-install; ad-hoc builds can only detect + notify)

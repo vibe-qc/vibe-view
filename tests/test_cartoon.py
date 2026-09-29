@@ -178,9 +178,9 @@ class TestDefaultRepresentation:
                 self.structure_reads += 1
                 return delegate.read_structure()
 
-            def infer_bonds(self, structure):
+            def connectivity(self, structure):
                 self.bond_inferences += 1
-                return delegate.infer_bonds(structure)
+                return delegate.connectivity(structure)
 
         reader = CountingReader()
         renderer = StructureRenderer(delegate.get_section("structure"), reader)
@@ -226,13 +226,13 @@ class TestDefaultRepresentation:
         out.write_bytes(pdb_to_qvf(_pdb(tmp_path, _chain("A", 12))).getvalue())
         reader = QVFReader(out)
         inferred = []
-        original = reader.infer_bonds
+        original = reader.connectivity
 
         def record_inference(structure):
             inferred.append(structure)
             return original(structure)
 
-        monkeypatch.setattr(reader, "infer_bonds", record_inference)
+        monkeypatch.setattr(reader, "connectivity", record_inference)
         create_app(reader)
 
         assert inferred == []
@@ -499,7 +499,7 @@ class TestRibbonColorMode:
         dataset = _actor_dataset(next(iter(plotter.actors.values())))
         assert "cartoon_rgb" not in dataset.point_data
 
-    def test_helix_and_loop_get_different_colours(self, tmp_path):
+    def test_helix_and_terminal_strand_get_different_colours(self, tmp_path):
         import numpy as np
 
         from vibeview.renderers.structure import (
@@ -517,7 +517,7 @@ class TestRibbonColorMode:
         assert rgb is not None
         present = {tuple(c) for c in np.unique(rgb, axis=0)}
         assert _CARTOON_SS_COLOR["H"] in present
-        assert _CARTOON_SS_COLOR["C"] in present
+        assert _CARTOON_SS_COLOR["E"] in present
 
     def test_colours_are_not_smoothed(self, tmp_path):
         """Unlike the radius profile, colour must stay categorical — a
@@ -790,8 +790,8 @@ class TestRibbonPayload:
         mesh = _extrude_ribbon(
             pts, side, normal, np.full(120, 1.10), np.full(120, 0.20)
         )
-        ring = np.asarray(mesh.points).reshape(-1, _CARTOON_SIDES, 3)
-        normals = mesh.point_data["Normals"].reshape(-1, _CARTOON_SIDES, 3)
+        ring = np.asarray(mesh.points)[:-2 * _CARTOON_SIDES].reshape(-1, _CARTOON_SIDES, 3)
+        normals = mesh.point_data["Normals"][:-2 * _CARTOON_SIDES].reshape(-1, _CARTOON_SIDES, 3)
         # Direction from the path to the surface point. On an ellipse the
         # normal is not parallel to this, but it must never oppose it.
         outward = ring - pts[:, None, :]
@@ -1429,11 +1429,8 @@ class TestSelectionHighlight:
         selection's — a blend would imply a half-selected residue."""
         import numpy as np
 
-        from vibeview.renderers.structure import (
-            _CARTOON_SELECTION_COLOR,
-            _CHAIN_COLORS,
-            _hex_to_rgb,
-        )
+        from vibeview.renderers.palette import CHAIN
+        from vibeview.renderers.structure import _CARTOON_SELECTION_COLOR, _hex_to_rgb
 
         reader = self._reader(tmp_path, {"A": (20, 1, 0.0)})
         plotter = self._render(reader, residue_selection="A/8-12")
@@ -1441,7 +1438,7 @@ class TestSelectionHighlight:
         rgb = dataset.point_data["cartoon_rgb"]
         allowed = {
             _CARTOON_SELECTION_COLOR,
-            tuple(int(v) for v in _hex_to_rgb(_CHAIN_COLORS[0])),
+            tuple(int(v) for v in _hex_to_rgb(CHAIN[0])),
         }
         for colour in np.unique(rgb, axis=0):
             assert tuple(colour) in allowed, f"blended colour {tuple(colour)}"
@@ -1587,7 +1584,7 @@ class TestSelectionInAtomRepresentations:
                 return structure
 
             @staticmethod
-            def infer_bonds(_structure):
+            def connectivity(_structure):
                 return []
 
         plotter = pv.Plotter(off_screen=True)
@@ -1866,14 +1863,17 @@ class TestSelectionController:
         assert rendered[0]["residue_selection"] == "A/3-6"
 
     def test_selection_field_is_gated_by_residue_data_not_cartoon_mode(self):
-        import inspect
+        """Checked on the served template: the field's own tag carries the
+        residue-data gate, and neither it nor the summary after it depends
+        on the cartoon representation."""
+        from tests._served import served_viewer
 
-        from vibeview.app import _build_controls
-
-        source = inspect.getsource(_build_controls)
-        start = source.index('label="Select residues"')
-        field_and_summary = source[start : start + 1_200]
-        assert 'v_if=("residue_selection_available",)' in field_and_summary
+        served = served_viewer()
+        label = served.index('label="Select residues"')
+        tag_start = served.rindex("<", 0, label)
+        tag = served[tag_start : served.index(">", label) + 1]
+        assert 'v-if="residue_selection_available"' in tag
+        field_and_summary = served[tag_start : tag_start + 1_200]
         assert "representation_style === 'cartoon'" not in field_and_summary
 
     def test_unnamed_chain_reads_as_unnamed_not_as_a_dangling_word(self, tmp_path):
@@ -1922,12 +1922,69 @@ class TestSelectionController:
         app.controller.set_residue_selection("A/2-4")
         assert "3 residues" in app.state.residue_selection_summary
 
+        # Maintainer decision (#47, audit #37-19): a selection names one
+        # file's residues, so switching to another file clears it rather than
+        # re-applying it to a different structure.
         app.controller.switch_file(1)
         assert app.state.residue_selection_available is False
         assert app.state.residue_selection_chains == []
-        assert "nothing selected" in app.state.residue_selection_summary
+        assert app.state.residue_selection == ""
+        assert app.state.residue_selection_summary == ""
 
         app.controller.switch_file(0)
         assert app.state.residue_selection_available is True
         assert app.state.residue_selection_chains == ["A"]
+        assert app.state.residue_selection == ""
+        assert app.state.residue_selection_summary == ""
+
+        # Selecting again on the protein works as before.
+        app.controller.set_residue_selection("A/2-4")
         assert "3 residues" in app.state.residue_selection_summary
+
+    def test_same_file_hot_reload_keeps_selection(self, tmp_path):
+        """Maintainer decision (#47, audit #37-19), second half: a hot reload
+        of the SAME file keeps the residue selection. The watcher swaps in a
+        fresh reader object for the same archive, so reader identity alone
+        must not count as "another file" (verifier FAIL at 1e77ae8)."""
+        from vibeview.app import create_app
+        from vibeview.converters import pdb_to_qvf, xyz_to_qvf
+        from vibeview.file_watcher import QVFChangeTracker
+        from vibeview.qvf import QVFReader
+
+        live = tmp_path / "protein.qvf"
+
+        def write_protein(shift):
+            records = _chain("A", 12)
+            name, res, chain, seq, x = records[0]
+            records[0] = (name, res, chain, seq, x + shift)
+            data = pdb_to_qvf(_pdb(tmp_path, records)).getvalue()
+            staged = tmp_path / "protein.tmp"
+            staged.write_bytes(data)
+            os.replace(staged, live)
+
+        write_protein(0.0)
+        other = tmp_path / "other.qvf"
+        other.write_bytes(xyz_to_qvf(b"2\nc\nO 0 0 0\nH 0 0 1\n").getvalue())
+        app = create_app([QVFReader(live), QVFReader(other)])
+        app.controller.set_residue_selection("A/2-4")
+        summary = app.state.residue_selection_summary
+        assert "3 residues" in summary
+
+        # Same file rewritten with one CA moved 0.5 A: a structure change,
+        # so the watcher takes the full-reload path, not the panel-only one.
+        tracker = QVFChangeTracker(live, settle_delay=0.0)
+        write_protein(0.5)
+        tracker.poll()  # movement detected
+        event = tracker.poll()  # settled -> diff
+        assert event is not None
+        assert "structure" in event.touched_sections
+        app.controller.apply_watcher_event(event)
+
+        assert "Reloaded from disk" in app.state.status_message
+        assert app.state.residue_selection == "A/2-4"
+        assert app.state.residue_selection_summary == summary
+
+        # A switch to another file still clears it (!75's contract).
+        app.controller.switch_file(1)
+        assert app.state.residue_selection == ""
+        assert app.state.residue_selection_summary == ""

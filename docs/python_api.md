@@ -1,6 +1,7 @@
 # Python SDK
 
-Everything the CLI does is available programmatically. The supported
+The supported SDK covers archive inspection, validation, geometry, tables,
+rendering and launch. The supported
 surface is what the package root re-exports, so `from vibeview import ...`
 is the whole import story:
 
@@ -28,6 +29,19 @@ The core install covers this entire page except `launch_qvf`, which needs
 the `[viewer]` extra. Reading, inspecting, comparing, slicing and headless
 PNG capture need no extra at all.
 
+For a complete script with a bundled input and expected output, follow
+[the worked workflow](workflows.md#4-inspect-the-same-archive-from-python).
+
+## Numerical conversion convention
+
+Length and energy conversions share CODATA 2018 factors: one bohr is
+0.529177210903 Å and one Hartree is 27.211386245988 eV or
+627.509474 thermochemical kcal/mol. CLI, SDK and batch energy comparisons
+use these same factors; printed decimal precision still depends on the output.
+Live optimization uses the reciprocal bohr/Å factor for positions and gradients.
+The source is the [NIST CODATA 2018 table](https://physics.nist.gov/cuu/Constants/ArchiveASCII/allascii_2018.txt).
+This convention does not infer units for archive fields that omit them.
+
 ## One argument type for every function
 
 Every function here takes a `QVFSource` first. It is a union, not a class,
@@ -50,6 +64,8 @@ with open("water.qvf", "rb") as fh:      # any seekable binary file object
 
 An open `QVFReader` is accepted anywhere a source is, which is how you avoid
 reopening the archive; see [Reading a file repeatedly](#reading-a-file-repeatedly).
+Functions close readers they create on return or failure. A reader or binary
+stream supplied by the caller stays open, including when an operation fails.
 An unreadable or corrupt file raises `QVFOpenError`.
 
 ## Inspecting
@@ -66,10 +82,11 @@ validate("analysis.qvf")
 # {'valid': True, 'n_sections': 4, 'n_members': 5}
 ```
 
-`validate` hashes every member and reports `valid: False` rather than
-raising, so it is safe to run over a directory. It is the same check the
-viewer applies before rendering anything: no section is drawn from bytes
-that failed their own digest.
+`validate` hashes every member and reports `valid: False` for integrity
+failures. Opening an unreadable archive can still raise `QVFOpenError`, and
+an invalid manifest is rejected before member validation begins. Handle
+opening errors as well as checking the returned `valid` flag when processing
+a directory. No section is drawn from bytes that failed their own digest.
 
 ## The structure
 
@@ -99,6 +116,10 @@ get_volume("density.qvf", "rho")
 #  'shape': [6, 6, 6], 'data_min': 0.0027, 'data_max': 0.9972}
 ```
 
+The value range is that of the field the viewer draws. A real array, the
+only kind QVF v1 allows, is reported as stored. A complex array is reduced
+by the section's `component` label first, as the browser and terminal do.
+
 For the array itself, go through a reader:
 
 ```python
@@ -106,7 +127,7 @@ from vibeview import QVFReader
 
 with QVFReader("density.qvf") as r:
     grid = r.read_volume_grid("rho")     # origin, voxel_vectors, shape
-    data = r.read_volume_data("rho")     # a float32 ndarray
+    data = r.read_volume_data("rho")     # an ndarray in the stored dtype (float32 or float64)
 ```
 
 ## Tables
@@ -131,14 +152,17 @@ from vibeview import diff
 
 diff("hf.qvf", "pbe.qvf")
 # {'energy_a_eh': ..., 'energy_b_eh': ..., 'delta_e_eh': ..., 'delta_e_kcal_mol': ...,
-#  'delta_e_ev': ..., 'geo_rmsd_a': ..., 'n_sections_a': ..., 'n_sections_b': ...,
+#  'delta_e_ev': ..., 'geo_rmsd_a': ..., 'geo_rmsd_skipped': None,
+#  'n_sections_a': ..., 'n_sections_b': ...,
 #  'kinds_only_a': [], 'kinds_only_b': [], 'kinds_common': ['structure'],
 #  'converged_a': ..., 'converged_b': ...}
 ```
 
 Every numeric field is `None` when the inputs cannot support it. Two
 structure-only files give `delta_e_eh: None` rather than a spurious zero, so
-test for `None` before arithmetic.
+test for `None` before arithmetic. When `geo_rmsd_a` is `None`,
+`geo_rmsd_skipped` says why: a structure that cannot be read (with the
+reader's error) or atom counts that differ.
 
 ## Rendering
 
@@ -171,6 +195,12 @@ from vibeview import slice_qvf
 out = slice_qvf("analysis.qvf", "structure_only.qvf", keep=["structure"])
 slice_qvf("analysis.qvf", "no-volumes.qvf", drop=["volume.density"])
 ```
+
+Slicing preserves scientific metadata and kept member bytes. It prunes viewer
+hints for removed sections and refuses to drop a section still referenced by a
+kept section. The output is validated before it replaces the destination;
+`keep` and `drop` are mutually exclusive.
+
 
 `keep` and `drop` take section ids or kinds, and the function returns the
 output path. This is the cheap way to hand a colleague a 2 MB structure out
@@ -225,7 +255,8 @@ launch_qvf("water.qvf", host="127.0.0.1", port=8080, open_browser=True,
 ```
 
 It boots the server and blocks until it stops. It takes any `QVFSource` or
-an open reader, so an archive built in memory never has to touch disk:
+an open reader, so an archive built in memory never has to touch disk. It closes
+readers it creates when the server stops or fails; supplied readers stay open:
 
 ```python
 import io
@@ -249,7 +280,8 @@ Needs the `[jupyter]` extra in the environment running the **kernel**.
 ```
 
 `%vibeview --help` lists the options. `vibeview.jupyter.qvf_to_image`
-returns a structure PNG as bytes for `IPython.display.Image`,
+returns a structure PNG as bytes for `IPython.display.Image`, rendered
+exactly like `vibe-view capture` output,
 `qvf_to_html` an embeddable snippet, and `export_notebook_cell` generates a
 starter cell for an archive. For the full interactive viewer from a
 notebook, `launch_qvf(..., open_browser=False)` and connect to the port.

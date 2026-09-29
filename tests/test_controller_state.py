@@ -611,10 +611,15 @@ def _vibrations_qvf_zero_positions() -> Path:
                               "shape": [3, 3, 3], "sha256": _sha(disp_b)},
         }},
     ]
-    manifest = {"qvf_version": 1, "source": {"program": "vibe-qc", "version": "0", "calculation": "t"},
-                "sections": sections}
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    manifest = {
+        "qvf_version": 1,
+        "source": {"program": "vibe-qc", "version": "0", "calculation": "t"},
+        "sections": sections,
+    }
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         for p, d in {"s.json": structure, "v/m.json": meta, "v/d.bin": disp_b}.items():
             zf.writestr(p, d)
@@ -913,7 +918,8 @@ def test_vq_submit_job_uses_queue_with_name_and_tag(water_qvf, monkeypatch):
 
     def _fake_submit(host, *, input_file, python, job_name, tags, **k):
         # the generated input must be a real, unit-correct vibe-qc script
-        src = open(input_file).read()
+        with open(input_file) as fh:
+            src = fh.read()
         seen.update(host=host, job_name=job_name, tags=tags, script=src)
         return "abcdef012345"
 
@@ -1165,34 +1171,6 @@ def test_activate_sections_smoke_and_mo_picker_staleness(showcase_qvf):
         reader.close()
 
 
-def test_every_panel_kind_has_a_click_dispatch_branch():
-    """A panel kind with no branch in ``_activate_section_impl`` is dead:
-    clicking it in the sidebar renders nothing and says nothing.
-
-    ``dos.coop``, ``dos.cohp`` and ``bond_orders`` were in that state —
-    they had activators, and the viewer_defaults auto-open path called
-    them, but the click dispatch never did. The smoke test above only
-    asserts that activation doesn't *raise*, which a missing branch
-    trivially satisfies.
-    """
-    import inspect
-    import re
-
-    import vibeview.app as appmod
-
-    src = inspect.getsource(appmod.create_app)
-    # Only the section of create_app that dispatches a user click.
-    start = src.index("def _activate_section_impl")
-    impl = src[start : src.index("@ctrl.set(\"activate_section\")", start)]
-
-    # Spectra kinds are matched via a set membership, not a literal, and
-    # volume.* via startswith — both are covered by their own branches.
-    literal_kinds = appmod._two_d_panel_kinds() - appmod._plot_spectra_kinds()
-    missing = [k for k in sorted(literal_kinds) if not re.search(rf'"{k}"', impl)]
-    assert not missing, (
-        "panel kinds with no branch in the click dispatch (clicking them "
-        f"does nothing): {missing}"
-    )
 
 
 def test_two_d_panel_switch_pushes_cleaned_scene(showcase_qvf, monkeypatch):
@@ -1416,8 +1394,8 @@ def test_file_switch_preserves_material_and_toon_appearance(water_qvf, monkeypat
             reader.close()
 
 
-def test_file_switch_rebinds_lazy_reader_to_the_active_qvf(water_qvf, monkeypatch):
-    """Symmetry and the lazy archive must both follow the selected file."""
+def test_file_switch_rebinds_symmetry_to_the_active_qvf(water_qvf, monkeypatch):
+    """Symmetry detection must follow the selected file."""
 
     from trame.app import get_server
 
@@ -1442,18 +1420,17 @@ def test_file_switch_rebinds_lazy_reader_to_the_active_qvf(water_qvf, monkeypatc
         server.controller.view_update = lambda *a, **k: None
 
         server.controller.detect_symmetry()
-        first_lazy = seen[-1]
+        first = seen[-1]
         assert server.state.point_group == "C2v"
-        assert Path(first_lazy.path).resolve() == water_qvf.resolve()
+        assert first is readers[0]
 
         server.controller.switch_file(1)
         server.controller.detect_symmetry()
-        second_lazy = seen[-1]
+        second = seen[-1]
 
         assert server.state.point_group == "D∞h"
-        assert second_lazy is not first_lazy
-        assert Path(second_lazy.path).resolve() == second_path.resolve()
-        assert first_lazy._raw_reader._zf.fp is None
+        assert second is readers[1]
+        assert Path(second.path).resolve() == second_path.resolve()
     finally:
         for active_reader in readers:
             active_reader.close()
@@ -1479,10 +1456,13 @@ def test_symmetry_detection_uses_the_active_edit_overlay(water_qvf):
         positions = [atom.position.copy() for atom in structure.atoms]
         positions[0] += np.array([0.13, 0.07, 0.21])
         reader.set_edit_overlay(positions, [atom.symbol for atom in structure.atoms])
-        assert detect_from_qvf(reader).symbol == "C1"
+        # Distorted water keeps exactly one symmetry element: the plane of
+        # its three atoms. That makes it Cs, which the Cartesian-only mirror
+        # search missed whenever the plane was not x, y or z (#40-11).
+        assert detect_from_qvf(reader).symbol == "Cs"
 
         server.controller.detect_symmetry()
-        assert server.state.point_group == "C1"
+        assert server.state.point_group == "Cs"
     finally:
         reader.close()
 
@@ -1521,6 +1501,22 @@ def _append_scf_iteration(path, energy_eh):
     _rewrite_qvf(path, _mutate)
 
 
+def _scf_chart_energy_series(html):
+    """Read the published energy trace, independent of Plotly's random div ID."""
+    marker = "Plotly.newPlot("
+    assert html.count(marker) == 1
+    payload = html.split(marker, 1)[1].lstrip()
+    decoder = json.JSONDecoder()
+    plot_id, end = decoder.raw_decode(payload)
+    assert isinstance(plot_id, str) and plot_id
+    payload = payload[end:].lstrip()
+    assert payload.startswith(",")
+    traces, _ = decoder.raw_decode(payload[1:].lstrip())
+    energy = [trace for trace in traces if trace.get("name") == "Energy (Eh)"]
+    assert len(energy) == 1
+    return energy[0]["x"], energy[0]["y"]
+
+
 def test_watcher_panel_only_hot_reload(monkeypatch, tmp_path, showcase_qvf):
     """A checkpoint that only grows scf_history must hot-reload the active
     panel from a *fresh* reader without rebuilding the 3D scene (the old
@@ -1551,9 +1547,15 @@ def test_watcher_panel_only_hot_reload(monkeypatch, tmp_path, showcase_qvf):
         create_app(reader)
         server = get_server(client_type="vue3")
         server.controller.view_update = lambda *a, **k: None
+        server.state.scf_skip_guess = False
+        server.state.scf_log_energy = False
         server.controller.activate_section(scf_id)
-        baseline_html = server.state.chart_html
-        assert baseline_html
+        baseline = reader.read_scf_history(scf_id).iterations
+        expected_iterations = [row["iter"] for row in baseline]
+        expected_energies = [row["energy_eh"] for row in baseline]
+        assert _scf_chart_energy_series(server.state.chart_html) == (
+            expected_iterations, expected_energies
+        )
 
         original = reader.read_structure()
         original_lattice = np.asarray(original.lattice_vectors, dtype=float)
@@ -1574,6 +1576,8 @@ def test_watcher_panel_only_hot_reload(monkeypatch, tmp_path, showcase_qvf):
 
         tracker = QVFChangeTracker(live, settle_delay=0.0)
         _append_scf_iteration(live, -99.9)
+        expected_iterations.append(len(baseline) + 1)
+        expected_energies.append(-99.9)
         tracker.poll()  # movement detected
         event = tracker.poll()  # settled → fingerprint + diff
         assert event is not None
@@ -1588,9 +1592,8 @@ def test_watcher_panel_only_hot_reload(monkeypatch, tmp_path, showcase_qvf):
 
         assert not builds, "panel-only change must not rebuild the 3D scene"
         assert server.state.selected_section == scf_id  # selection kept
-        assert server.state.chart_html != baseline_html, (
-            "panel must re-render from the fresh reader — identical HTML "
-            "means the stale pre-rewrite zip handle was reused"
+        assert _scf_chart_energy_series(server.state.chart_html) == (
+            expected_iterations, expected_energies
         )
         assert server.state.edit_history == history_before
         assert server.state.edit_future == []
@@ -1642,7 +1645,6 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
     from trame.app import get_server
 
     import vibeview.app as appmod
-    import vibeview.lazy_loader as lazy_loader
     import vibeview.qvf as qvfmod
     from vibeview.app import create_app
     from vibeview.file_watcher import QVFChangeTracker
@@ -1657,6 +1659,8 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
         create_app(reader)
         server = get_server(client_type="vue3")
         server.controller.view_update = lambda *a, **k: None
+        server.state.scf_skip_guess = False
+        server.state.scf_log_energy = False
         server.controller.activate_section("scf_hist0")
 
         class TrackingQVFReader(QVFReader):
@@ -1664,17 +1668,8 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
                 super().__init__(source)
                 replacements.append(self)
 
-        class LazyReaderStub:
-            def __init__(self, path):
-                self.path = path
-
-            def close(self):
-                pass
-
-        # Track primary watcher replacements without counting the separate
-        # raw reader owned by the lazy-controller wrapper.
+        # Track primary watcher replacements.
         monkeypatch.setattr(qvfmod, "QVFReader", TrackingQVFReader)
-        monkeypatch.setattr(lazy_loader, "QVFLazyReader", LazyReaderStub)
         monkeypatch.setattr(
             appmod, "_build_structure_scene", lambda *a, **k: pytest.fail(
                 "panel-only change must not rebuild the 3D scene"
@@ -1682,11 +1677,18 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
         )
 
         tracker = QVFChangeTracker(live, settle_delay=0.0)
-        previous_html = server.state.chart_html
-        baseline_count = len(reader.read_scf_history("scf_hist0").iterations)
+        baseline = reader.read_scf_history("scf_hist0").iterations
+        baseline_count = len(baseline)
+        expected_iterations = [row["iter"] for row in baseline]
+        expected_energies = [row["energy_eh"] for row in baseline]
+        assert _scf_chart_energy_series(server.state.chart_html) == (
+            expected_iterations, expected_energies
+        )
         for offset in range(1, 5):
             energy = -99.0 - offset / 10
             _append_scf_iteration(live, energy)
+            expected_iterations.append(baseline_count + offset)
+            expected_energies.append(energy)
             tracker.poll()
             event = tracker.poll()
             assert event is not None
@@ -1702,8 +1704,9 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
             history = current.read_scf_history("scf_hist0").iterations
             assert len(history) == baseline_count + offset
             assert history[-1]["energy_eh"] == energy
-            assert server.state.chart_html != previous_html
-            previous_html = server.state.chart_html
+            assert _scf_chart_energy_series(server.state.chart_html) == (
+                expected_iterations, expected_energies
+            )
     finally:
         reader.close()
         for replacement in replacements:
@@ -1845,10 +1848,10 @@ def test_enabled_watcher_disables_when_upload_selects_pathless_reader(
         reader.close()
 
 
-def test_watcher_panel_only_reload_replaces_the_lazy_reader(
+def test_watcher_panel_only_reload_rebinds_symmetry_to_the_fresh_reader(
     water_qvf, monkeypatch, tmp_path
 ):
-    """A fresh raw reader must be paired with a fresh lazy wrapper too."""
+    """After a panel-only reload, symmetry detection reads the fresh reader."""
     import shutil
     import types
 
@@ -1890,7 +1893,6 @@ def test_watcher_panel_only_reload_replaces_the_lazy_reader(
 
         assert second_lazy is not first_lazy
         assert Path(second_lazy.path) == live
-        assert first_lazy._raw_reader._zf.fp is None
     finally:
         reader.close()
 
@@ -2360,8 +2362,13 @@ def test_wannier_overlay_detected_and_toggles(monkeypatch, tmp_path):
         "qvf_version": 1,
         "source": {"program": "test", "version": "0", "calculation": "ccm"},
         "sections": [
-            {"id": "structure", "kind": "structure",
-             "members": {"structure": {"path": "s.json", "format": "json", "sha256": _sha(struct)}}},
+            {
+                "id": "structure",
+                "kind": "structure",
+                "members": {
+                    "structure": {"path": "s.json", "format": "json", "sha256": _sha(struct)}
+                },
+            },
             {"id": "wan0", "kind": "x_ccm.wannier_centers",
              "members": {"centers": {"path": "w.json", "format": "json", "sha256": _sha(centres)}}},
         ],

@@ -37,8 +37,10 @@ def _make_minimal_qvf() -> Path:
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "test"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("sections/structure.json", structure)
     return Path(tmp.name)
@@ -138,6 +140,8 @@ class TestBookmarkRoundTrip:
         import inspect
 
         closed = inspect.getclosurevars(ctrl.update_isovalue.func).nonlocals
+        # The volume controls delegate to one refresh helper (#37-30).
+        closed = inspect.getclosurevars(closed["_refresh_active_volume"]).nonlocals
         return closed["viewer_state"], closed["plotter"]
 
     @staticmethod
@@ -862,11 +866,9 @@ class TestPresentationMode:
     def test_shortcut_handler_routes_only_the_modes_and_modifiers_it_advertises(
         self,
     ) -> None:
-        import inspect
+        from tests._served import served_viewer
 
-        import vibeview.app as app_module
-
-        source = inspect.getsource(app_module.create_app)
+        source = served_viewer()
         for contract in (
             "var command=e.ctrlKey||e.metaKey;",
             "target.isContentEditable",

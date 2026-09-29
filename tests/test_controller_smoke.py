@@ -24,6 +24,16 @@ from pathlib import Path
 
 import pytest
 
+
+def _scene_hooks(plotter):
+    """vibeview.app's hooks record for ``plotter``, looked up at call time:
+    another test module reloads vibeview.app, and a name imported at
+    collection would then read the old module's registry."""
+    from vibeview.app import _scene_hooks as hooks
+
+    return hooks(plotter)
+
+
 # Zero-argument controllers that are safe to invoke: no network, no long
 # render, no writes outside a temp dir, nothing destructive to user data.
 SAFE_ZERO_ARG = [
@@ -913,7 +923,7 @@ def test_volume_activation_does_not_duplicate_viewport_push(
         app = create_app(reader)
         plotter = created[0]
         updates = []
-        plotter._vibe_view_update = lambda: updates.append("push")
+        _scene_hooks(plotter).update = lambda: updates.append("push")
 
         app.controller.activate_section("vol_dens_0")
 
@@ -1048,7 +1058,7 @@ def test_panel_reload_serializes_reader_swap_with_computed_surface(
         plotter = created[0]
         ctrl.activate_section("wf")
         pushes = []
-        plotter._vibe_view_update = lambda: pushes.append(
+        _scene_hooks(plotter).update = lambda: pushes.append(
             tuple(
                 str(name)
                 for name in plotter.actors

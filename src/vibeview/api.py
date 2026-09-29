@@ -1,6 +1,7 @@
 """High-level Python API for vibe-view — programmatic access to all QVF operations.
 
-Import with ``from vibeview.api import *`` or use individual functions.
+Import with ``from vibeview.api import *`` (``__all__`` lists the public
+functions) or use individual functions.
 
 All functions accept ``QVFReader`` instances or file paths.  They are the
 programmatic equivalents of the ``vibe-view`` CLI commands.
@@ -8,32 +9,51 @@ programmatic equivalents of the ``vibe-view`` CLI commands.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from vibeview.qvf import QVFReader, QVFSource
 
+__all__ = (
+    "capture_structure",
+    "capture_volume",
+    "closing_reader",
+    "diff",
+    "export_xyz",
+    "get_structure",
+    "get_table",
+    "get_volume",
+    "has_section",
+    "info",
+    "render_terminal",
+    "sections",
+    "slice_qvf",
+    "validate",
+)
+from vibeview.units import (
+    HARTREE_TO_EV,
+    HARTREE_TO_KCAL_MOL,
+)
+
 # ── Metadata / inspection ────────────────────────────────────────────────
 
 
-def info(source: QVFSource) -> dict[str, Any]:
+def info(source: QVFSource | QVFReader) -> dict[str, Any]:
     """Return full metadata for a QVF file as a dict.
 
     Equivalent to ``vibe-view info --json``.
     """
-    reader, should_close = _reader(source)
-    try:
+    with closing_reader(source) as reader:
         src = reader.manifest.source
-        prov = _get_prov(reader)
+        prov = reader.provenance
         sections_out = []
         total_size = 0
         for sec in reader.sections:
             sec_size = 0
             for m in sec.members.values():
-                try:
-                    sec_size += reader._zf.getinfo(m.path).file_size
-                except Exception:
-                    pass
+                sec_size += reader.stored_size(m) or 0
             total_size += sec_size
             sections_out.append(
                 {
@@ -43,9 +63,6 @@ def info(source: QVFSource) -> dict[str, Any]:
                     "size_bytes": sec_size,
                 }
             )
-        energy = prov.get("scf_energy", {})
-        if isinstance(energy, dict):
-            energy = energy.get("value")
         return {
             "program": src.program,
             "version": src.version,
@@ -59,47 +76,35 @@ def info(source: QVFSource) -> dict[str, Any]:
             "n_electrons": prov.get("n_electrons"),
             "scf_converged": prov.get("scf_converged"),
             "n_scf_iterations": prov.get("n_scf_iterations"),
-            "scf_energy_eh": energy,
+            "scf_energy_eh": reader.scf_energy_eh(),
             "wall_seconds": prov.get("wall_seconds"),
             "hostname": prov.get("hostname"),
             "dimensionality": prov.get("dimensionality"),
             "n_sections": len(reader.sections),
             "sections": sections_out,
         }
-    finally:
-        if should_close:
-            reader.close()
 
 
-def sections(source: QVFSource) -> list[dict[str, str]]:
+def sections(source: QVFSource | QVFReader) -> list[dict[str, str]]:
     """Return a list of ``{id, kind}`` dicts for all sections."""
-    reader, should_close = _reader(source)
-    try:
+    with closing_reader(source) as reader:
         return [{"id": s.id, "kind": s.kind} for s in reader.sections]
-    finally:
-        if should_close:
-            reader.close()
 
 
-def has_section(source: QVFSource, section_id: str) -> bool:
+def has_section(source: QVFSource | QVFReader, section_id: str) -> bool:
     """Check if a section exists in the QVF."""
-    reader, should_close = _reader(source)
-    try:
+    with closing_reader(source) as reader:
         return reader.has_section(section_id)
-    finally:
-        if should_close:
-            reader.close()
 
 
 # ── Geometry ─────────────────────────────────────────────────────────────
 
 
-def get_structure(source: QVFSource) -> dict[str, Any]:
+def get_structure(source: QVFSource | QVFReader) -> dict[str, Any]:
     """Return structure data as a dict with atoms, pbc, and lattice_vectors."""
     import numpy as np
 
-    reader, should_close = _reader(source)
-    try:
+    with closing_reader(source) as reader:
         sdata = reader.read_structure()
         atoms = [
             {
@@ -113,56 +118,64 @@ def get_structure(source: QVFSource) -> dict[str, Any]:
         if sdata.lattice_vectors is not None:
             result["lattice_vectors"] = np.asarray(sdata.lattice_vectors).tolist()
         return result
-    finally:
-        if should_close:
-            reader.close()
 
 
-def export_xyz(source: QVFSource) -> str:
+def export_xyz(source: QVFSource | QVFReader) -> str:
     """Return the structure as an XYZ string."""
-    reader, should_close = _reader(source)
-    try:
+    with closing_reader(source) as reader:
         sdata = reader.read_structure()
         lines = [str(len(sdata.atoms)), "vibe-view export"]
         for a in sdata.atoms:
             x, y, z = a.position
             lines.append(f"{a.symbol:<2} {x:12.6f} {y:12.6f} {z:12.6f}")
         return "\n".join(lines) + "\n"
-    finally:
-        if should_close:
-            reader.close()
 
 
 # ── Comparison ───────────────────────────────────────────────────────────
 
 
-def diff(source_a: QVFSource, source_b: QVFSource) -> dict[str, Any]:
-    """Compare two QVFs: return energy delta, section overlap, geometry RMSD."""
+def diff(source_a: QVFSource | QVFReader, source_b: QVFSource | QVFReader) -> dict[str, Any]:
+    """Compare two QVFs: return energy delta, section overlap, geometry RMSD.
+
+    ``geo_rmsd_a`` is ``None`` when the RMSD cannot be taken, and
+    ``geo_rmsd_skipped`` then says why: a structure that cannot be read, a
+    structure with no atoms, or atom counts that differ (#60). It is ``None``
+    when the RMSD was taken.
+    """
     import numpy as np
 
     from vibeview.align import rmsd
 
-    ra, ca = _reader(source_a)
-    rb, cb = _reader(source_b)
-    try:
-        pa = _get_prov(ra)
-        pb = _get_prov(rb)
-        ea = _energy_eh(pa)
-        eb = _energy_eh(pb)
+    with closing_reader(source_a) as ra, closing_reader(source_b) as rb:
+        pa = ra.provenance
+        pb = rb.provenance
+        ea = ra.scf_energy_eh()
+        eb = rb.scf_energy_eh()
 
         kinds_a = {s.kind for s in ra.sections}
         kinds_b = {s.kind for s in rb.sections}
 
-        geo_rmsd = None
-        try:
-            sa = ra.read_structure()
-            sb = rb.read_structure()
-            pos_a = np.array([a.position for a in sa.atoms])
-            pos_b = np.array([a.position for a in sb.atoms])
-            if pos_a.shape == pos_b.shape:
+        geo_rmsd: float | None = None
+        rmsd_skipped: str | None = None
+        structures = []
+        for label, reader in (("A", ra), ("B", rb)):
+            try:
+                structures.append(reader.read_structure())
+            except Exception as exc:  # noqa: BLE001 — reported, the rest of the diff stands
+                rmsd_skipped = f"structure {label}: {exc}"
+                break
+        if rmsd_skipped is None:
+            n_a, n_b = len(structures[0].atoms), len(structures[1].atoms)
+            if n_a == 0 or n_b == 0:
+                # np.array([]) has shape (0,), not (0, 3): rmsd() would raise
+                # AxisError, and there is nothing to compare anyway.
+                rmsd_skipped = f"no atoms (A: {n_a}, B: {n_b})"
+            elif n_a != n_b:
+                rmsd_skipped = f"atom counts differ ({n_a} vs {n_b})"
+            else:
+                pos_a = np.array([a.position for a in structures[0].atoms]).reshape(-1, 3)
+                pos_b = np.array([a.position for a in structures[1].atoms]).reshape(-1, 3)
                 geo_rmsd = float(rmsd(pos_a, pos_b))
-        except Exception:
-            pass
 
         return {
             "energy_a_eh": ea,
@@ -171,10 +184,13 @@ def diff(source_a: QVFSource, source_b: QVFSource) -> dict[str, Any]:
             # `is not None`, not truthiness: 0.0 is a valid energy and must
             # still produce converted deltas.
             "delta_e_kcal_mol": (
-                (ea - eb) * 627.509 if ea is not None and eb is not None else None
+                (ea - eb) * HARTREE_TO_KCAL_MOL if ea is not None and eb is not None else None
             ),
-            "delta_e_ev": ((ea - eb) * 27.2114 if ea is not None and eb is not None else None),
+            "delta_e_ev": (
+                (ea - eb) * HARTREE_TO_EV if ea is not None and eb is not None else None
+            ),
             "geo_rmsd_a": geo_rmsd,
+            "geo_rmsd_skipped": rmsd_skipped,
             "n_sections_a": len(ra.sections),
             "n_sections_b": len(rb.sections),
             "kinds_only_a": sorted(kinds_a - kinds_b),
@@ -183,17 +199,12 @@ def diff(source_a: QVFSource, source_b: QVFSource) -> dict[str, Any]:
             "converged_a": pa.get("scf_converged"),
             "converged_b": pb.get("scf_converged"),
         }
-    finally:
-        if ca:
-            ra.close()
-        if cb:
-            rb.close()
 
 
 # ── Volume data ──────────────────────────────────────────────────────────
 
 
-def get_volume(source: QVFSource, section_id: str) -> dict[str, Any] | None:
+def get_volume(source: QVFSource | QVFReader, section_id: str) -> dict[str, Any] | None:
     """Return a JSON-serializable summary of a volume section's grid.
 
     Gives the grid geometry (``origin``, ``voxel_vectors``, ``shape``) plus
@@ -201,19 +212,26 @@ def get_volume(source: QVFSource, section_id: str) -> dict[str, Any] | None:
     the voxels themselves, so the result stays serializable. For the
     ``ndarray`` use :meth:`vibeview.QVFReader.read_volume_data`.
 
+    The range is that of the field the viewer draws: the array goes through
+    :func:`vibeview.renderers.volume.stored_volume_field`, as in the browser
+    and the terminal. A real array is summarised as stored. A complex one,
+    which is not valid QVF v1, is reduced by the section's ``component``
+    label first (#61).
+
     Returns ``None`` if the section is absent or is not a volume.
     """
     import numpy as np
 
-    reader, should_close = _reader(source)
-    try:
+    with closing_reader(source) as reader:
         if not reader.has_section(section_id):
             return None
         sec = reader.get_section(section_id)
         if not sec.kind.startswith("volume.") and sec.kind != "basis.ao":
             return None
+        from vibeview.renderers.volume import stored_volume_field
+
         grid = reader.read_volume_grid(section_id)
-        data = reader.read_volume_data(section_id)
+        data = stored_volume_field(reader.read_volume_data(section_id), sec.component)
         return {
             "kind": sec.kind,
             "origin": np.asarray(grid.origin).tolist(),
@@ -223,91 +241,119 @@ def get_volume(source: QVFSource, section_id: str) -> dict[str, Any] | None:
             "data_min": float(data.min()),
             "data_max": float(data.max()),
         }
-    finally:
-        if should_close:
-            reader.close()
 
 
 # ── Tabular data ─────────────────────────────────────────────────────────
 
 
-def get_table(source: QVFSource, kind: str) -> tuple[list[str], list[list]]:
+def get_table(source: QVFSource | QVFReader, kind: str) -> tuple[list[str], list[list[Any]]]:
     """Extract tabular data (same as ``vibe-view table --kind``)."""
     from vibeview.tables import extract_table
 
-    reader, should_close = _reader(source)
-    try:
+    with closing_reader(source) as reader:
         return extract_table(reader, kind)
-    finally:
-        if should_close:
-            reader.close()
 
 
 # ── Validation ───────────────────────────────────────────────────────────
 
 
-def validate(source: QVFSource) -> dict[str, Any]:
+def validate(source: QVFSource | QVFReader) -> dict[str, Any]:
     """Validate QVF integrity: schema + all SHA-256 hashes.
 
     Returns ``{"valid": True, "n_sections": N, "n_members": M}`` on success,
-    or ``{"valid": False, "error": "..."}`` on failure.
+    or ``{"valid": False, "error": "..."}`` when a member fails (a SHA-256
+    mismatch adds ``"section"`` and ``"member"``). An archive that cannot be
+    opened at all raises instead: ``QVFOpenError`` for an unreadable
+    container or manifest, ``ManifestValidationError`` or
+    ``CriticalSectionUnsupportedError`` for a manifest the reader refuses —
+    every one a ``QVFError``.
     """
     from vibeview.qvf import QVFError, SHA256MismatchError
 
-    reader, should_close = _reader(source)
+    with closing_reader(source) as reader:
+        try:
+            n_checked = 0
+            for sec in reader.sections:
+                for name, member in sec.members.items():
+                    try:
+                        data = reader._verify_and_read(member)
+                        n_checked += 1
+                    except SHA256MismatchError as e:
+                        return {"valid": False, "error": str(e), "section": sec.id, "member": name}
+                    problem = _binary_layout_problem(member, len(data))
+                    if problem is not None:
+                        # A hash only proves the bytes are the ones written;
+                        # a declared shape of [10**12] over 3 values passed
+                        # as OK (#63).
+                        return {
+                            "valid": False,
+                            "error": f"member {member.path!r} in section {sec.id!r}: {problem}",
+                            "section": sec.id,
+                            "member": name,
+                        }
+            return {"valid": True, "n_sections": len(reader.sections), "n_members": n_checked}
+        except QVFError as e:
+            return {"valid": False, "error": str(e)}
+
+
+def _binary_layout_problem(member: Any, n_bytes: int) -> str | None:
+    """Why a binary member's bytes do not fill its declared dtype and shape, or None."""
+    import numpy as np
+
+    if getattr(member, "format", None) != "binary":
+        return None
+    if member.dtype is None and member.shape is None:
+        return None  # opaque bytes: a run log, a citation file
+    # The reader's default when only a shape is declared.
+    dtype_name = member.dtype or "float32"
     try:
-        n_checked = 0
-        for sec in reader.sections:
-            for name, member in sec.members.items():
-                try:
-                    reader._verify_and_read(member)
-                    n_checked += 1
-                except SHA256MismatchError as e:
-                    return {"valid": False, "error": str(e), "section": sec.id, "member": name}
-        return {"valid": True, "n_sections": len(reader.sections), "n_members": n_checked}
-    except QVFError as e:
-        return {"valid": False, "error": str(e)}
-    finally:
-        if should_close:
-            reader.close()
+        itemsize = np.dtype(dtype_name).itemsize
+    except TypeError:
+        return f"dtype {dtype_name!r} is not a numpy dtype"
+    if member.shape is None:
+        if itemsize and n_bytes % itemsize:
+            return f"{n_bytes} bytes is not a whole number of {dtype_name} values"
+        return None
+    # Python integers: a declared shape can multiply past 64 bits.
+    expected = itemsize
+    for extent in member.shape:
+        expected *= int(extent)
+    if expected != n_bytes:
+        return (
+            f"declared dtype={dtype_name!r}, shape={list(member.shape)} needs "
+            f"{expected:,} bytes; the member holds {n_bytes:,}"
+        )
+    return None
 
 
 # ── Capture ──────────────────────────────────────────────────────────────
 
 
-def capture_structure(source: QVFSource, path: str | Path, **kwargs) -> bool:
+def capture_structure(source: QVFSource | QVFReader, path: str | Path, **kwargs: Any) -> bool:
     """Render the structure to a PNG file."""
-    reader, should_close = _reader(source)
-    from vibeview.capture import capture_structure as _cap
+    with closing_reader(source) as reader:
+        from vibeview.capture import capture_structure as _cap
 
-    # Close readers we opened ourselves (path sources) — like every other
-    # api function — or the zip handle leaks.
-    try:
         return _cap(reader, Path(path), **kwargs)
-    finally:
-        if should_close:
-            reader.close()
 
 
-def capture_volume(source: QVFSource, section_id: str, path: str | Path, **kwargs) -> bool:
+def capture_volume(
+    source: QVFSource | QVFReader, section_id: str, path: str | Path, **kwargs: Any
+) -> bool:
     """Render a volume section to a PNG file."""
-    reader, should_close = _reader(source)
-    from vibeview.capture import capture_volume as _cap
+    with closing_reader(source) as reader:
+        from vibeview.capture import capture_volume as _cap
 
-    try:
         return _cap(reader, section_id, Path(path), **kwargs)
-    finally:
-        if should_close:
-            reader.close()
 
 
 def render_terminal(
-    source: QVFSource,
+    source: QVFSource | QVFReader,
     section_id: str | None = None,
     *,
     size: tuple[int, int] = (100, 30),
     plain: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """Render a section as terminal text and return it.
 
@@ -326,10 +372,9 @@ def render_terminal(
     has no graphical form (a citations block, say), so a caller sweeping every
     section never has to pre-filter by kind.
     """
-    reader, should_close = _reader(source)
-    from vibeview.tui.show import default_section, render_section
+    with closing_reader(source) as reader:
+        from vibeview.tui.show import default_section, render_section
 
-    try:
         target = section_id or default_section(reader)
         if target is None:
             return "archive contains no sections"
@@ -338,115 +383,100 @@ def render_terminal(
             kind = reader.get_section(target).kind
             return f"section {target!r} ({kind}) has no graphical form"
         return grid.to_plain() if plain else grid.to_ansi()
-    finally:
-        if should_close:
-            reader.close()
 
 
 # ── Slicing / merging ────────────────────────────────────────────────────
 
 
 def slice_qvf(
-    source: QVFSource,
+    source: QVFSource | QVFReader,
     output: str | Path,
     *,
     keep: list[str] | None = None,
     drop: list[str] | None = None,
 ) -> Path:
-    """Extract a subset of sections into a new QVF file.  Returns output path."""
-    import json as _json
-    import zipfile
+    """Extract sections without discarding metadata. Refuse dangling references.
 
-    reader, should_close = _reader(source)
-    out_path = Path(output)
-    if out_path.suffix != ".qvf":
-        out_path = out_path.with_suffix(".qvf")
+    Viewer hints for removed sections are pruned. All other source fields and
+    kept member bytes are preserved; the output is validated before replacement.
+    """
 
-    keep_ids = set(keep or [])
-    drop_ids = set(drop or [])
+    from vibeview.archive import write_archive
 
-    try:
+    if keep and drop:
+        raise ValueError("keep and drop are mutually exclusive")
+    with closing_reader(source) as reader:
+        out_path = Path(output)
+        if out_path.suffix != ".qvf":
+            out_path = out_path.with_suffix(".qvf")
+
+        keep_ids = set(keep or [])
+        drop_ids = set(drop or [])
+
         to_keep = []
         for sec in reader.sections:
             if drop_ids:
                 if sec.id in drop_ids or sec.kind in drop_ids:
                     continue
-            elif keep_ids:
-                if sec.id not in keep_ids and sec.kind not in keep_ids:
-                    continue
+            elif keep_ids and sec.id not in keep_ids and sec.kind not in keep_ids:
+                continue
             to_keep.append(sec)
 
-        kept_paths: set[str] = set()
-        new_sections = []
-        for sec in to_keep:
-            new_members = {}
-            for name, member in sec.members.items():
-                m = {"path": member.path, "format": member.format, "sha256": member.sha256}
-                if member.dtype:
-                    m["dtype"] = member.dtype
-                if member.shape:
-                    m["shape"] = member.shape
-                new_members[name] = m
-                kept_paths.add(member.path)
-            sec_dict: dict = {"id": sec.id, "kind": sec.kind, "members": new_members}
-            if getattr(sec, "label", None):
-                sec_dict["label"] = sec.label
-            new_sections.append(sec_dict)
+        if not to_keep:
+            raise ValueError("No sections to keep")
+        # Read the original JSON: model round-tripping loses unknown source
+        # and member fields even though they are allowed by the QVF schema.
+        manifest = reader.manifest_json()
+        kept_ids = {sec.id for sec in to_keep}
+        removed_ids = {sec.id for sec in reader.sections} - kept_ids
+        manifest["sections"] = [s for s in manifest["sections"] if s["id"] in kept_ids]
+        for section in manifest["sections"]:
+            for key, value in section.items():
+                if (
+                    (key.endswith("_ref") or key in ("operand_a", "operand_b"))
+                    and isinstance(value, str) and value in removed_ids
+                ):
+                    raise ValueError(f"Section {section['id']!r} still references {value!r}")
+        hints = manifest.get("viewer_defaults", {})
+        if "auto_open" in hints:
+            hints["auto_open"] = [sid for sid in hints["auto_open"] if sid not in removed_ids]
+        for sid in removed_ids:
+            hints.pop(sid, None)
+        kept_paths = {m.path for sec in to_keep for m in sec.members.values()}
+        from vibeview.qvf import QVFError
 
-        src = reader.manifest.source
-        manifest = {
-            "qvf_version": reader.manifest.qvf_version,
-            "source": {
-                "program": src.program,
-                "version": src.version,
-                "calculation": src.calculation,
-            },
-            "sections": new_sections,
-        }
-        # Preserve provenance + viewer_defaults — dropping them would strip
-        # method/energy metadata and producer hints from the sliced file.
-        prov = (reader.manifest.model_extra or {}).get("provenance")
-        if prov is not None:
-            manifest["provenance"] = prov
-        if reader.manifest.viewer_defaults is not None:
-            manifest["viewer_defaults"] = reader.manifest.viewer_defaults.model_dump()
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf_out:
-            zf_out.writestr("manifest.json", _json.dumps(manifest))
-            # Copy members from the reader's own open zip handle so
-            # in-memory sources (reader._path is None) are sliced too —
-            # reopening by path silently skipped them entirely.
-            for mp in sorted(kept_paths):
-                zf_out.writestr(mp, reader._zf.read(mp))
-        return out_path
-    finally:
-        if should_close:
-            reader.close()
+        unreadable: list[QVFError] = []
+
+        def members() -> Iterator[tuple[str, bytes]]:
+            for member_path in sorted(kept_paths):
+                try:
+                    yield member_path, reader.read_member_bytes(member_path)
+                except QVFError as exc:
+                    unreadable.append(exc)
+                    raise
+
+        try:
+            return write_archive(out_path, manifest, members())
+        except QVFError as exc:
+            # A source member that cannot be read is the source's error, not
+            # an invalid slice: report it as the QVFError it is (#39-35).
+            if unreadable:
+                raise unreadable[0] from None
+            raise ValueError(f"Invalid slice: {exc}") from exc
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _reader(source: QVFSource) -> tuple[QVFReader, bool]:
-    """Coerce a source into a QVFReader. Returns (reader, should_close)."""
+@contextlib.contextmanager
+def closing_reader(source: QVFSource | QVFReader) -> Iterator[QVFReader]:
+    """Borrow an existing reader, or close a reader opened from a source.
+
+    Only readers created by this context are closed, on both normal return
+    and exceptions. Caller-owned readers and binary streams remain open.
+    """
     if isinstance(source, QVFReader):
-        return source, False
-    return QVFReader(source), True
-
-
-def _close(reader: QVFReader, should_close: bool) -> None:
-    if should_close:
-        reader.close()
-
-
-def _get_prov(reader: QVFReader) -> dict:
-    prov = getattr(reader.manifest, "provenance", None) or {}
-    if hasattr(prov, "model_dump"):
-        prov = prov.model_dump()
-    return prov if isinstance(prov, dict) else {}
-
-
-def _energy_eh(prov: dict) -> float | None:
-    e = prov.get("scf_energy", {})
-    if isinstance(e, dict):
-        e = e.get("value")
-    return float(e) if e is not None else None
+        yield source
+    else:
+        with QVFReader(source) as reader:
+            yield reader

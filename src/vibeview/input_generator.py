@@ -9,10 +9,11 @@ from typing import Any
 
 import numpy as np
 
+from vibeview.units import ANGSTROM_TO_BOHR as _ANGSTROM_TO_BOHR
+
 # QVF structures store positions in Angstrom; vibe-qc Atom()/PeriodicSystem
 # take bohr (CODATA 2018, same constant vibe-qc uses internally). Emitting
 # Å values verbatim shrinks every generated geometry by 0.529x.
-_ANGSTROM_TO_BOHR = 1.0 / 0.529177210903
 
 _TEMPLATES = {
     "single_point": """# {title}
@@ -156,6 +157,7 @@ def _structure_calculation_params(
 
     params: dict[str, Any] = {"atoms": list(atoms)}
     raw_pbc = getattr(sdata, "pbc", None)
+    pbc: tuple[bool, ...]
     if raw_pbc is None:
         pbc = (False, False, False)
     else:

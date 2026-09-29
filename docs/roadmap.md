@@ -2,15 +2,15 @@
 
 What has shipped, in which release, and what is proposed next.
 
-> **Last reviewed 2026-09-15** after v2.17.1 at `de0a040` was released and its
-> documentation deployment verified. Update this page when a listed issue closes,
-> and move a release's items into [Shipped](#shipped) as part of
-> [the post-release step](release_process.md).
+> **Last reviewed 2026-09-22** against the released tags through v2.18.1.
+> Update shipped scope when a release is cut, following the
+> [release process](release_process.md). The tracker carries live defect status;
+> this page records release history and proposals.
 
-**Issue numbers.** A bare `#N` on this page is a
-[vibe-view issue](https://github.com/vibe-qc/vibe-view/issues)
-(project 35). The pre-split monorepo tracker, project 19, numbered its issues
-independently; its numbers appear only as "project 19 #N".
+**Issue numbers.** Bare `#N` references below identify the canonical development
+tracker. The [public issue tracker](https://github.com/vibe-qc/vibe-view/issues)
+uses a separate numbering namespace. Historical monorepo issue numbers are
+identified explicitly.
 
 **Future releases are proposed, not scheduled.** Each unreleased minor below
 carries its registered codename, and its proposed scope follows that theme. A registered name
@@ -22,10 +22,10 @@ decides it at cut time.
 
 | | |
 |---|---|
-| Latest release | **v2.17.1** *Lorensen's Loon*, 2026-09-15, tag and `release` on `de0a040` |
-| Documentation site | serves 2.17.1; index and three guide pages match the tagged commit's CI artifacts (checked 2026-09-15) |
-| Desktop update feed | serves **2.10.0** (checked 2026-09-13), see [Desktop distribution](#desktop-distribution) |
-| Open issues | 14: four correctness defects, one enhancement, three infrastructure, five cross-repository asks, and #20, which is delivered but still open |
+| Latest release | **v2.18.1** *Richardson's Robin*, 2026-09-22 |
+| Next release | Scope and timing remain the maintainer's decision; registered codenames below are proposals |
+| Current defects | Consult the canonical development tracker; [public reports](https://github.com/vibe-qc/vibe-view/issues) are tracked separately |
+| Published installers and documentation | Verify availability separately from source tags; see [Desktop distribution](#desktop-distribution) |
 
 ## Shipped
 
@@ -50,8 +50,8 @@ the first public commit. Its full evidence and reasoning is in the frozen
 
 The first post-split releases made vibe-view a standalone product through
 repairs, a documentation site, release machinery and artwork. v2.17.0 adds
-TREXIO geometry and molecular-orbital interoperability. The product and
-split-audit workstreams preserved in private operations record the earlier work.
+TREXIO geometry and molecular-orbital interoperability. The detailed
+release notes are in the [changelog](changelog.md).
 
 | Release | Date | Codename | What shipped | Issues |
 |---|---|---|---|---|
@@ -61,30 +61,19 @@ split-audit workstreams preserved in private operations record the earlier work.
 | v2.16.2 | 2026-09-12 | inherits | Missing-RDKit tests run in every environment; patch checklist; contributor guidance | #20 |
 | v2.17.0 | 2026-09-13 | *Lorensen's Loon* | TREXIO geometry and molecular Gaussian orbitals; packaging-metadata checks; standalone agent guides | #23 |
 | v2.17.1 | 2026-09-15 | inherits | Complex coefficients and Gamma-point lattice tails for MOs; scene replacement that avoids stale viewports; command-palette Escape handling during presentation | — |
+| v2.18.0 | 2026-09-17 | *Richardson's Robin* | Biomolecule polish; metadata-preserving slice; Fermi-relative DOS; background and export fixes; energy windows; docs extra; Bash 3.2 compatibility and candidate-only product gate | #19, #21, #22, #24, #25, #26, #27, #29 |
+| v2.18.1 | 2026-09-22 | inherits | Full-tree lint and strict source typing; general Miller slab orientations; tutorial and documentation updates; stable real-UHF gradient fixture | #8, #20, #30, #33, #41 |
 
-## Correctness follow-ups (not included in v2.17.1)
+### Correctness fixes shipped in v2.18.0
 
-Three correctness defects, found against 2.16.1 while the manuscript figures
-were regenerated, and one warning from vibe-qc's contract run.
+These corrections are included in the v2.18.0 tag.
 
-| Issue | Defect | Effect |
+| Issue | Defect | Released behaviour |
 |---|---|---|
-| [#24](https://github.com/vibe-qc/vibe-view/issues) | `slice` rebuilds the manifest and drops section fields and root metadata | Data loss; any slice that keeps a `run.record` fails `validate` |
-| [#25](https://github.com/vibe-qc/vibe-view/issues) | The combined band structure and DOS panel applies one Fermi shift to both panels | One of the two panels is empty for spec-compliant archives |
-| [#27](https://github.com/vibe-qc/vibe-view/issues) | Every scene rebuild repaints the dark background | The user's light-background choice is discarded |
-| [#21](https://github.com/vibe-qc/vibe-view/issues) | `create_app` schedules `_reset_export_flag` and never awaits it | A `RuntimeWarning`; not yet diagnosed |
-
-All four touch `src/`, so the `VIBE_VIEW_TAG` check in
-[release step 3](release_process.md) applies when these follow-ups land.
-
-Housekeeping: #20 is still open although everything it asked for shipped in
-v2.16.0 and v2.16.2.
-
-## Minor releases and remaining proposals
-
-The "not yet" items below come from the parity roadmap, which stopped being
-updated on 2026-08-25. Check each one against the code before scoping a
-release around it.
+| #24 | `slice` drops section fields and root metadata | Preserve original metadata and kept bytes; prune removed viewer hints and validate before replacing output |
+| #25 | Combined bands/DOS uses one Fermi shift for both panels | Shift bands by their own reference; preserve the DOS grid; separate axes when the bands' reference is absent |
+| #27 | Scene rebuilds discard the light-background choice | Keep the explicit background through rebuilds and reloads |
+| #21 | Headless export creates an unawaited reset coroutine | Schedule a callback only when an event loop is running |
 
 ### v2.17.0: *Lorensen's Loon*, TREXIO orbitals
 
@@ -94,37 +83,29 @@ orbitals to the existing isosurface workflow. The importer preserves units,
 normalization, AO ordering and available spin/energy/occupation metadata;
 the [format guide](formats.md#trexio-wavefunctions) describes its limits.
 
-The earlier volume-rendering proposal below remains future work; it is not
-part of the TREXIO release.
-
-**Today:** marching-cubes isosurfaces for densities, orbitals and ESP;
-additional isosurfaces per volume; clip planes; volume cross-fade.
-
-**Proposed:**
-
-- Translucent isosurfaces that do not stall the browser client. The hang was
-  traced to vtk.js depth peeling, and orbitals default to opaque as a
-  workaround ([design refresh](design_refresh_2026.md), Robustness).
-
-**Future work:** the transparency change still needs scoping.
-
 ### v2.18.0: *Richardson's Robin*, biomolecules
 
-**Today:** all of M5. The theme's headline work shipped in v2.15.2, so this
-release is polish unless new scope is added.
+**Shipped scope:** polish of M5, whose initial biomolecule support shipped in
+v2.15.2, plus the correctness fixes above.
 
-**Proposed:**
+- Isolate or hide selected residues without connecting hidden ribbon spans.
+- Select residues by clicking the viewport.
+- Share chain, secondary-structure, residue and B-factor palettes across ribbons,
+  atoms and bonds.
+- Retain PDB HELIX/SHEET ranges and distinguish supplied alpha, pi and 3₁₀
+  helices and beta bridges. The CA-only geometric assignment stays H/E/C.
+- Draw crisp strand edges and independently shaded end caps; include the final
+  residue in a chain-terminal strand assignment.
+- Show dashed geometric hydrogen-bond contacts using explicit H and N/O
+  candidates in the supplied coordinates.
 
-- Isolate or hide everything outside a residue selection.
-- Select residues by clicking in the viewport.
-- Offer the ribbon-colour modes outside the cartoon representation.
-- Distinguish alpha, pi and 3₁₀ helices, and bridges from sheets, with a
-  separate ribbon profile for each. The geometric assignment cannot tell them
-  apart, so producer-supplied ranges remain the source for that detail.
-- Give strands crisp edges instead of an elliptical cross-section, and correct
-  the end-cap normals.
-- Stop reading a chain-terminal strand's last residue as coil.
-- Draw hydrogen bonds in their own dashed style.
+The [biomolecule guide](biomolecules.md) documents the display controls and
+scientific limits. No new core dependency or QVF schema change is needed.
+
+## Minor releases and remaining proposals
+
+The proposals below are not a release commitment. Recheck their current code
+and tracker evidence before selecting a release scope.
 
 ### v2.19.0: *Phong's Pheasant*, materials and lighting
 
@@ -176,11 +157,9 @@ server:
 
 No registered codename covers these:
 
-- An energy-window control for the band, DOS and combined panels, honouring a
-  `viewer_defaults` hint:
-  [#26](https://github.com/vibe-qc/vibe-view/issues).
-- A general surface cell for Miller slabs, spanned by two in-plane lattice
-  vectors. Orientations that are not c-normal currently raise an error.
+- Translucent isosurfaces without vtk.js depth-peeling stalls; orbitals
+  currently default to opaque as a workaround
+  ([design refresh](design_refresh_2026.md)).
 - Metal-metal bonds in clusters and organometallics, which the bonding
   heuristic cannot see.
 - More fragments and templates; thumbnails in the structure library.
@@ -201,31 +180,29 @@ announced.
 
 ### Release and CI infrastructure
 
-| Issue | What |
-|---|---|
-| [#22](https://github.com/vibe-qc/vibe-view/issues) | The `release` push reruns the full candidate gate, and the CI rules contradict the documented policy |
-| [#8](https://github.com/vibe-qc/vibe-view/issues) | ruff and mypy are configured but not enforced. Re-measure rather than quote a count, and choose the lint job's scope first |
-| [#19](https://github.com/vibe-qc/vibe-view/issues) | The Sphinx toolchain is pinned inline in CI and re-pins four core dependencies |
-| none | Lift `trame<4` once trame-vtk and trame-vuetify accept `trame-client>=4` |
-| none | The lifecycle scripts' `--help` text still describes the monorepo layout |
+The candidate-only product gate and declared documentation extra shipped in
+v2.18.0 (#22, #19). v2.18.1 completed the full-tree `ruff check .` gate and
+strict source-module inventory (#8, #33); `tests/test_type_ramp.py` prevents
+new source modules from escaping that inventory. The browser module retains
+one documented exception for trame's untyped decorators.
+
+Continuing work includes optional-dependency coverage, supported Python
+versions, and evaluating trame 4 once the viewer dependencies support it.
+Use the tracker and current CI configuration for evidence and status.
 
 ### Desktop distribution
 
-Maintainer-gated. The update feed serves 2.10.0 while the source is at
-2.16.2. Publishing it needs the maintainer's SSH deploy key
-(`electron/PUBLISHING.md`). Linux and Windows artifacts need build hosts,
-because electron-builder cannot cross-build them from macOS. Code signing
-stays deferred: there is no Apple Developer ID.
+Source tags and installer publication are separate steps. Availability of a
+source release does not imply that every platform's installer or update feed
+has been published. Distribution, signing and publication remain maintainer
+operations; see `electron/PUBLISHING.md` for the portable product contract.
 
-### Cross-repository asks
+### Cross-repository coordination
 
-| Issue | Owner | Ask |
-|---|---|---|
-| [#4](https://github.com/vibe-qc/vibe-view/issues) | vibe-qc | 17 producer/consumer tests in five files run in neither repository |
-| [#15](https://github.com/vibe-qc/vibe-view/issues) | vibe-qc | `.deploy_ssh` guard messages run as shell commands |
-| [#16](https://github.com/vibe-qc/vibe-view/issues) | qvf | Publish the frozen v2 schema, and fix the v1 schema's symlink description |
-| [#17](https://github.com/vibe-qc/vibe-view/issues) | vibe-queue | Settle the distribution name, `vq` or `vibe-queue` |
-| [#10](https://github.com/vibe-qc/vibe-view/issues) | vibe-qc-agentic-loop | `bugctl` still hardcodes project 19 |
+Producer-dependent contract coverage belongs with vibe-qc, QVF schema and
+format decisions with qvf, and queue packaging with vibe-queue. Confirm the
+owning repository's current issue status before planning a dependency here.
+Changes to another repository require its maintainer's coordination.
 
 ## Decisions carried forward
 

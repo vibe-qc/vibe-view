@@ -47,9 +47,9 @@ surfacing separately.
 | 2.15.0 | *Roothaan's Roadrunner* | The name v2.15.2 shipped with |
 | 2.16.0 | *Sayle's Starling* | vibe-view becomes a product you can adopt on its own |
 | 2.17.0 | *Lorensen's Loon* | TREXIO molecular orbitals in the isosurface workflow |
-| 2.18.0 | *Richardson's Robin* | Biomolecules, secondary structure, cartoons — **approved, not yet released** |
-| 2.19.0 | *Phong's Pheasant* | Materials and lighting — **approved, not yet released** |
-| 2.20.0 | *Levoy's Lemur* | Transfer functions and direct volume rendering — **approved, not yet released** |
+| 2.18.0 | *Richardson's Robin* | Biomolecules, secondary structure, cartoons — released 2026-09-17; v2.18.1 inherits the name |
+| 2.19.0 | *Phong's Pheasant* | Materials and lighting — released 2026-09-25 |
+| 2.20.0 | *Levoy's Lemur* | Transfer functions and direct volume rendering — released 2026-09-29 |
 | 3.0.0 | *Levinthal's Lynx* | Held for a major version about the interactive viewer itself — **approved, not yet released** |
 
 :::{note}
@@ -265,15 +265,9 @@ Two consequences for the pool above:
 
 ## Adding a name at release time
 
-In the same commit that bumps the version:
-
-1. Add the `X.Y.0` entry to `RELEASE_CODENAMES` in
-   `src/vibeview/codenames.py`, with a comment saying who the person is and
-   why the release earned the name.
-2. Update the trailing comment on `__version__` in `src/vibeview/__init__.py`.
-3. Promote `## [Unreleased]` in `CHANGELOG.md` to
-   `## [X.Y.Z] - YYYY-MM-DD - *Person's Animal*`.
-4. Add the row to the catalogue table on this page.
+The codename lands in the same commit as the version bump. Step 2 of the
+[release checklist](release_process.md) lists every file it touches, next to
+the version sites that change with it.
 
 `tests/test_release_codenames.py` checks that every surface agrees with the
 catalogue — the CLI, the browser About box, the Electron fallback string and

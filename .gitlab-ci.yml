@@ -6,9 +6,15 @@ include:
     file: '$VIBE_VIEW_CI_FILE'
     rules:
       - if: '$VIBE_VIEW_CI_PROJECT || $VIBE_VIEW_CI_REF || $VIBE_VIEW_CI_FILE'
+  # Merge after the operator include: this product owns deployment admission,
+  # while the external job continues to own its script and environment.
+  - local: '/.gitlab/ci/deploy-rules.yml'
+    rules:
+      - if: '$VIBE_VIEW_CI_PROJECT || $VIBE_VIEW_CI_REF || $VIBE_VIEW_CI_FILE'
 
 # Portable build and validation rules.
 stages:
+  - lint
   - test
   - build
   - deploy
@@ -19,6 +25,12 @@ variables:
   QVF_TAG: "v0.1.0"
 
 
+# Product validation runs on MRs, candidates and explicit web/scheduled runs.
+# Routine MRs run lint and a fixed core Python 3.13 smoke sample.
+# Candidates, manual web and scheduled runs add full suites on both Python
+# versions, mypy, release artifacts and installed-wheel validation.
+# tests/test_ci_rules.py guards this admission matrix.
+
 workflow:
   auto_cancel:
     on_new_commit: conservative
@@ -26,14 +38,110 @@ workflow:
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_BRANCH == "release"'
     - if: '$CI_COMMIT_BRANCH =~ /^release-candidate\//'
+      auto_cancel:
+        on_new_commit: none
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - when: never
 
 
-test:
-  stage: test
+# The per-change product gate. `main` and `release` are absent on purpose;
+# every job that uses this must agree on the refs it gates, so they share
+# one list rather than several that can drift apart.
+.rules_product_gate:
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release-candidate\//'
+      variables:
+        VIBEVIEW_TEST_SCOPE: full
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      variables:
+        VIBEVIEW_TEST_SCOPE: full
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      variables:
+        VIBEVIEW_TEST_SCOPE: full
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      variables:
+        VIBEVIEW_TEST_SCOPE: auto
+
+.rules_full_gate:
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release-candidate\//'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+
+
+# --------------------------------------------------------------------
+# Shared static-analysis environment (#8).
+#
+# `lint` and `types` need no display, no GL stack and no qvf clone -- just
+# the package and its tools -- so they share one image and run in the
+# stage ahead of `test`. Ruff overrides the install with only dev dependencies. The extras are named rather than
+# pinned here, for the same reason `.docs_deps` installs `.[docs]`: the
+# requirement belongs in the package metadata, where a local run picks up
+# the same set.
+#
+# `[viewer,tui]` and not `[test]`: the modules the type gate checks import
+# trame, uvicorn and textual, and mypy reports a missing import as an error
+# in a file it is checking. The heavy half of `[test]` -- ase, trexio,
+# jupyter, scipy, pytest -- buys nothing here.
+# --------------------------------------------------------------------
+
+.lint_env:
+  interruptible: true
+  stage: lint
   image: python:3.13-slim-bookworm
+  tags:
+    - docker
+  variables:
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/.cache/pip
+  cache:
+    - key: pip-vibeview-lint
+      paths:
+        - .cache/pip/
+  before_script:
+    - pip install --quiet -e '.[viewer,tui,dev]'
+
+
+# ruff, with the configuration in pyproject.toml, over the whole checkout:
+# `.` rather than a path list, because the `docs/*.py` capture scripts and
+# the `.githooks/` helper ship in the repository too, and a narrower scope
+# left them unlinted (#8, both issue comments). ruff skips ignored paths on its own, so a local `.venv` or a
+# worktree under `.claude/` is not in the run. The tree was clean at the
+# commit that added this job; a new finding fails the pipeline, which is the
+# whole point.
+#
+# `rules:` is spelled out here rather than inherited from `.lint_env`,
+# because every product job states its own refs -- tests/test_ci_rules.py
+# requires it, and that requirement is what stopped `release` re-running the
+# candidate gate (#22).
+lint:
+  extends: .lint_env
+  # Ruff parses source; it does not import the rendering/type-checking stack.
+  before_script:
+    - pip install --quiet -e '.[dev]'
+  script:
+    - ruff check .
+  rules:
+    - !reference [.rules_product_gate, rules]
+
+
+# Bare mypy checks every source module under full strict. The explicit
+# inventory in pyproject.toml is guarded by tests/test_type_ramp.py; new
+# source modules must join it. A type finding fails the pipeline (#8).
+types:
+  extends: .lint_env
+  script:
+    - mypy
+  rules:
+    - !reference [.rules_full_gate, rules]
+
+
+# Shared by `test` and `test-py311`: everything but the image and the
+# artifact build.
+.test_env:
+  interruptible: true
+  stage: test
   tags:
     - docker
   variables:
@@ -44,33 +152,40 @@ test:
       paths:
         - .cache/pip/
   before_script:
-    # PyVista/VTK need a GL + X stack even for offscreen rendering; xvfb
-    # provides a virtual display. xauth is required by xvfb-run itself.
-    - apt-get -qq update && apt-get -qq install -y --no-install-recommends
-      git libgl1 libglx-mesa0 libxrender1 libxext6 libsm6 libglib2.0-0
-      xvfb xauth
+    - apt-get -qq update && apt-get -qq install -y --no-install-recommends git
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
-    # A few tests read real archives from the QVF conformance corpus, which
-    # lives in the qvf repository. It covers the 2-D slab paths against a
-    # genuine producer artifact, and this lane requires it (see the script
-    # step): a missing corpus fails here rather than skipping.
+    - if [ "${VIBEVIEW_TEST_SCOPE:-full}" = full ]; then
+    - apt-get -qq install -y --no-install-recommends
+      libgl1 libglx-mesa0 libxrender1 libxext6 libsm6 libglib2.0-0 xvfb xauth
     - git clone --depth 1 --branch "$QVF_TAG"
-      "${QVF_REPOSITORY_URL:-https://github.com/vibe-qc/qvf.git}"
-      /tmp/qvf
+      "${QVF_REPOSITORY_URL:-https://github.com/vibe-qc/qvf.git}" /tmp/qvf
     - pip install -e '.[test,release]'
+    - else
+    - pip install -e . 'pytest>=8'
+    - fi
+
+
+test:
+  extends: .test_env
+  image: python:3.13-slim-bookworm
   script:
-    # VIBEVIEW_REQUIRE_QVF_CORPUS turns "corpus missing" from a skip into a
-    # hard error. This lane clones qvf on purpose, so a corpus that is not
-    # there is a broken lane -- without this, a rename in the clone step
-    # above would retire that coverage silently in a green pipeline.
-    - QVF_CORPUS=/tmp/qvf/conformance/corpus
-      VIBEVIEW_REQUIRE_QVF_CORPUS=1
-      xvfb-run -a python -m pytest tests -q -p no:cacheprovider
-    - python scripts/build_release_artifacts.py --output-dir dist
+    - |
+      if [ "$VIBEVIEW_TEST_SCOPE" = full ]; then
+        python scripts/check_qvf_conformance.py --qvf-root /tmp/qvf
+        QVF_CORPUS=/tmp/qvf/conformance/corpus VIBEVIEW_REQUIRE_QVF_CORPUS=1 \
+          xvfb-run -a python scripts/run_ci_tests.py --scope full --junitxml=test-results/pytest.xml
+      else
+        python scripts/run_ci_tests.py --scope fast --junitxml=test-results/pytest.xml
+      fi
+    - >-
+      if [ "$VIBEVIEW_TEST_SCOPE" = full ]; then
+      python scripts/build_release_artifacts.py --output-dir dist;
+      fi
     # A wheel built from a clean venv must import and run with no checkout
     # present -- this is what proves the schema files ship as real data
     # files rather than symlinks into a sibling directory.
-    - SMOKE_ROOT="$(mktemp -d)";
+    - if [ "$VIBEVIEW_TEST_SCOPE" = full ]; then
+      SMOKE_ROOT="$(mktemp -d)";
       python -m venv "$SMOKE_ROOT/venv";
       WHEEL="$(find "$CI_PROJECT_DIR/dist" -type f
       -name 'vibeview-*-py3-none-any.whl' -print -quit)";
@@ -80,42 +195,45 @@ test:
       "$SMOKE_ROOT/venv/bin/pip" check;
       (cd /tmp && PYTHONNOUSERSITE=1 "$SMOKE_ROOT/venv/bin/python"
       "$CI_PROJECT_DIR/scripts/smoke_installed_wheel.py"
-      --source-root "$CI_PROJECT_DIR/src")
+      --source-root "$CI_PROJECT_DIR/src");
+      fi
   artifacts:
     name: vibeview-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
     expire_in: 2 weeks
+    when: always
+    reports:
+      junit: test-results/pytest.xml
     paths:
+      - test-results/pytest.xml
       - dist/*.whl
       - dist/*.tar.gz
       - dist/SHA256SUMS
+  rules:
+    - !reference [.rules_product_gate, rules]
 
-# The consumer half of the QVF contract.
-#
-# vibe-view carries its own copy of the manifest schema, and vibe-qc carries
-# another. In the monorepo the viewer's copy was a symlink into the producer's
-# tree, so they could not diverge; the guards that checked them skipped
-# silently when a sibling was missing, which after the split would mean they
-# never fail again. This job replaces that: the normative schema lives in the
-# qvf repository, and this asserts the vendored copy still matches it, then
-# proves the viewer can actually read every archive in the corpus.
-#
-# This is a BUILD-TIME check only. Nothing here is imported at runtime and
-# nothing is added to [project.dependencies]: qvf is a reference, not a
-# library vibe-view depends on. QVF_TAG is bumped by hand.
-
-qvf-conformance:
-  stage: test
-  image: python:3.13-slim-bookworm
-  tags:
-    - docker
-  before_script:
-    - apt-get -qq update && apt-get -qq install -y --no-install-recommends git
-    - git clone --depth 1 --branch "$QVF_TAG"
-      "${QVF_REPOSITORY_URL:-https://github.com/vibe-qc/qvf.git}"
-      /tmp/qvf
-    - pip install -e '.[ase]' jsonschema
+# The same suite on the oldest supported interpreter (maintainer decision
+# on #56: keep `requires-python >=3.11` and test it). It runs only pytest:
+# the wheel, sdist and installed-wheel smoke test stay with `test`, so a
+# release still has one canonical set of artifacts.
+test-py311:
+  extends: .test_env
+  image: python:3.11-slim-bookworm
+  cache:
+    - key: pip-vibeview-py311
+      paths:
+        - .cache/pip/
   script:
-    - python scripts/check_qvf_conformance.py --qvf-root /tmp/qvf
+    - QVF_CORPUS=/tmp/qvf/conformance/corpus
+      VIBEVIEW_REQUIRE_QVF_CORPUS=1
+      xvfb-run -a python -m pytest tests -q -p no:cacheprovider
+      --durations=30 --junitxml=test-results/pytest.xml
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    reports:
+      junit: test-results/pytest.xml
+  rules:
+    - !reference [.rules_full_gate, rules]
 
 # --------------------------------------------------------------------
 # Shared docs environment + dependency install.
@@ -156,17 +274,13 @@ qvf-conformance:
     # invocation fail with 'detected dubious ownership'.
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
     - python -V
-    - pip install --quiet
-      'sphinx>=7.4'
-      'myst-parser>=4.0'
-      'linkify-it-py>=2'
-      'furo>=2024.5'
-      'sphinx-copybutton>=0.5'
-      'sphinx-design>=0.6'
-      'numpy>=1.26'
-      'click>=8.0'
-      'pydantic>=2.0'
-      'jsonschema>=4.20'
+    # The toolchain is declared in pyproject.toml's [docs] extra, not here:
+    # pinning it inline left the requirement in no package metadata, so the
+    # only way to render the site locally was to retype this list. The extra
+    # installs the package too, which is where numpy/click/pydantic/jsonschema
+    # come from -- they used to be repeated here and could keep an old floor
+    # after [project.dependencies] moved.
+    - pip install --quiet -e '.[docs]'
 
 # --------------------------------------------------------------------
 # docs-build -- render the Sphinx site into public/. Publishes nothing;
@@ -174,15 +288,19 @@ qvf-conformance:
 # --------------------------------------------------------------------
 
 docs-build:
+  interruptible: true
   stage: build
   extends: .docs_env
   before_script:
     - !reference [.docs_deps, before_script]
   script:
     - bash scripts/build_site.sh
-    # The published build deliberately does not use -W: a warning must not
-    # block a release. So assert the site actually rendered, rather than
-    # trusting a zero exit from a build that emitted nothing.
+    # The published build (main, release, web) deliberately does not use
+    # -W: a warning must not block a release. Merge requests and release
+    # candidates set SPHINX_STRICT in their rule below, so a broken
+    # cross-reference fails the change that introduced it (#56). Either way,
+    # assert the site actually rendered, rather than trusting a zero exit
+    # from a build that emitted nothing.
     - test -f public/index.html
     - test -f public/sitemap.xml
     - test -f public/_static/custom.css
@@ -192,19 +310,39 @@ docs-build:
     expire_in: 2 weeks
     paths:
       - public/
+  # Not .rules_product_gate: this is the one job that also runs on `main`
+  # (the downloadable site artifact) and on `release` (the deployment jobs
+  # in the external include publish the `public/` built here), and the one
+  # that narrows merge requests to changes the site actually renders.
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_BRANCH == "release"'
     - if: '$CI_COMMIT_BRANCH =~ /^release-candidate\//'
+      variables:
+        SPHINX_STRICT: "1"
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      variables:
+        SPHINX_STRICT: "1"
       changes:
         - ".gitlab-ci.yml"
+        - ".gitlab/ci/**/*"
+        # Package metadata owns the docs toolchain and installed version.
+        - "pyproject.toml"
         - "CHANGELOG.md"
         - "CONTRIBUTING.md"
         - "README.md"
         - "docs/**/*"
         - "scripts/build_site.sh"
+        # Autodoc imports these modules (including package re-exports), and
+        # qvf loads its two schemas at import time. Keep ordinary UI-only
+        # changes filtered without missing the sources the site consumes.
+        - "src/vibeview/__init__.py"
+        - "src/vibeview/api.py"
         - "src/vibeview/codenames.py"
+        - "src/vibeview/kinds.py"
+        - "src/vibeview/launcher.py"
+        - "src/vibeview/qvf.py"
+        - "src/vibeview/schema*.json"
 
-# Deployment jobs, when configured, come from the external include above.
+# Deployment commands, when configured, come from the external include above.
