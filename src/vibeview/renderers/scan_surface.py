@@ -10,19 +10,16 @@ panel without PyVista.
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._mpl import agg_pyplot, figure_to_png
+from vibeview.renderers.palette import ACCENT_BLUE
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader, ScanSurfaceData, Section
-
-matplotlib.use("Agg")
 
 
 class ScanSurfaceRenderer(BaseRenderer):
@@ -73,7 +70,7 @@ class ScanSurfaceRenderer(BaseRenderer):
         # plot we put coordinate A on x and B on y, so transpose.
         rel = e - float(np.min(e))
 
-        fig, ax = plt.subplots(figsize=(5.2, 4.2))
+        fig, ax = agg_pyplot().subplots(figsize=(5.2, 4.2))
         cf = ax.contourf(
             a, b, rel.T, levels=24, cmap="viridis"
         )
@@ -107,11 +104,7 @@ class ScanSurfaceRenderer(BaseRenderer):
         )
         fig.tight_layout()
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=100)
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
+        return figure_to_png(fig)
 
     def _render_line(self, data: ScanSurfaceData, e: np.ndarray) -> bytes:
         """1-D fallback when one scan axis has a single node (``contourf``
@@ -131,15 +124,11 @@ class ScanSurfaceRenderer(BaseRenderer):
             )
         rel = np.asarray(e_line, dtype=np.float64) - float(np.min(e))
 
-        fig, ax = plt.subplots(figsize=(5.2, 4.2))
-        ax.plot(x, rel, marker="o", color="#3366CC")
+        fig, ax = agg_pyplot().subplots(figsize=(5.2, 4.2))
+        ax.plot(x, rel, marker="o", color=ACCENT_BLUE)
         ax.set_xlabel(xlabel)
         ax.set_ylabel("E − E_min (a.u.)")
         ax.set_title("1-D scan (single node on the other axis)")
         fig.tight_layout()
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=100)
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
+        return figure_to_png(fig)

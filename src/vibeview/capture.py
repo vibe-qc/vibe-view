@@ -9,97 +9,124 @@ server (headless / CI / scripted).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from vibeview.headless import (
+    add_signed_isosurfaces,
+    add_structure,
+    frame,
+    headless_plotter,
+    render_structure_frame,
+    snapshot,
+)
+from vibeview.kinds import SIGNED_VOLUME_KINDS
+from vibeview.plotter_compat import cmap_argument
 from vibeview.qvf import clamp_replication
 
 if TYPE_CHECKING:
-    from vibeview.qvf import QVFReader
-
-
-def _default_plotter(size=(900, 600), background="#1a1a2e"):
-    """Create a headless PyVista plotter with the vibe-view dark theme."""
+    import numpy as np
     import pyvista as pv
 
-    p = pv.Plotter(off_screen=True, window_size=[size[0], size[1]])
-    p.set_background(background)
-    return p
+    from vibeview.qvf import QVFReader
+    from vibeview.renderers.volume import VolumeRenderer
 
 
 def capture_structure(
     reader: QVFReader,
     path: str | Path,
-    size=(900, 600),
-    representation="ball_and_stick",
-    show_labels=False,
-    replication=(1, 1, 1),
+    size: tuple[int, int] = (900, 600),
+    representation: str = "ball_and_stick",
+    show_labels: bool = False,
+    replication: tuple[int, int, int] = (1, 1, 1),
 ) -> bool:
     """Render the structure section to a PNG file.
 
     Returns True on success, False if no structure section exists.
     """
-    import pyvista as pv
-
-    from vibeview.renderers.structure import StructureRenderer
-
-    section = next((s for s in reader.sections if s.kind == "structure"), None)
-    if section is None:
-        return False
-
-    plotter = _default_plotter(size)
-    try:
-        StructureRenderer(section, reader).add_to_plotter(
-            plotter,
-            replication=replication,
-            show_labels=show_labels,
+    return bool(
+        render_structure_frame(
+            reader,
+            path,
+            size=size,
             representation=representation,
+            show_labels=show_labels,
+            replication=replication,
         )
-        plotter.view_isometric()
-        plotter.reset_camera()
-        plotter.screenshot(str(path))
-    finally:
-        plotter.close()
-    return True
+    )
+
+
+class CaptureError(Exception):
+    """A section could not be captured; the message says why."""
 
 
 def capture_volume(
     reader: QVFReader,
     section_id: str,
     path: str | Path,
-    isovalue=0.05,
-    colormap="viridis",
-    opacity=0.6,
-    size=(900, 600),
-    replication=(1, 1, 1),
+    isovalue: float = 0.05,
+    colormap: str = "viridis",
+    opacity: float = 0.6,
+    size: tuple[int, int] = (900, 600),
+    replication: tuple[int, int, int] = (1, 1, 1),
 ) -> bool:
     """Render a volume isosurface to a PNG file.
 
     ``section_id`` must refer to a ``volume.*`` or ``basis.ao`` section.
+    Returns False when the section cannot be read;
+    :func:`render_volume` raises with the reason instead.
+    """
+    try:
+        render_volume(
+            reader,
+            section_id,
+            path,
+            isovalue=isovalue,
+            colormap=colormap,
+            opacity=opacity,
+            size=size,
+            replication=replication,
+        )
+    except CaptureError:
+        return False
+    return True
+
+
+def render_volume(
+    reader: QVFReader,
+    section_id: str,
+    path: str | Path,
+    isovalue: float = 0.05,
+    colormap: str = "viridis",
+    opacity: float = 0.6,
+    size: tuple[int, int] = (900, 600),
+    replication: tuple[int, int, int] = (1, 1, 1),
+) -> None:
+    """:func:`capture_volume`, raising :class:`CaptureError` with the reason.
+
+    A section that is missing or whose grid or data cannot be read raises
+    ``CaptureError`` naming the section and the underlying error, which
+    is chained as its cause (#60).
     """
     import numpy as np
-    import pyvista as pv
 
     from vibeview.renderers.volume import (
-        _BOHR_TO_ANGSTROM,
         VolumeRenderer,
-        _replicate_mesh,
-        build_isosurface_mesh,
     )
     from vibeview.viewer_defaults import VolumeHints
 
     try:
         section = reader.get_section(section_id)
-    except Exception:
-        return False
+    except Exception as exc:
+        raise CaptureError(f"section {section_id!r}: {exc}") from exc
     if section is None:
-        return False
+        raise CaptureError(f"section {section_id!r} not found")
 
     renderer = VolumeRenderer(section, reader)
     try:
-        grid = renderer.load_grid()
+        renderer.load_grid()  # availability probe; the grid is re-read below
         data = renderer.load_data()
-    except Exception:
-        return False
+    except Exception as exc:
+        raise CaptureError(f"cannot read section {section_id!r}: {exc}") from exc
 
     hints = VolumeHints(isovalue=isovalue, colormap=colormap, opacity=opacity)
     lattice = None
@@ -114,113 +141,72 @@ def capture_volume(
     except Exception:
         pass
 
-    _is_signed = section.kind in (
-        "volume.difference",
-        "volume.spin",
-        "volume.orbital",
-        "volume.potential",
-        "basis.ao",
-    )
+    # ``data`` is the stored array as-is: a section's ``component`` is a
+    # label, never a transform (stored_volume_field; #49, #38-19).
+    _is_signed = section.kind in SIGNED_VOLUME_KINDS
 
-    plotter = _default_plotter(size)
-    try:
+    with headless_plotter(size) as plotter:
         # Also draw the structure for context.
-        from vibeview.renderers.structure import StructureRenderer
-
-        struct_sec = next((s for s in reader.sections if s.kind == "structure"), None)
-        if struct_sec is not None:
-            StructureRenderer(struct_sec, reader).add_to_plotter(plotter, replication=replication)
+        add_structure(plotter, reader, replication=replication)
 
         if _is_signed:
-            pos_data = np.clip(data, 0, None)
-            neg_data = np.clip(-data, 0, None)
-            for d, color, suffix in [
-                (pos_data, "#3366cc", "_pos"),
-                (neg_data, "#cc3333", "_neg"),
-            ]:
-                mesh = _build_contour(renderer, d, isovalue, replication, lattice)
-                if mesh is not None and mesh.n_points:
-                    plotter.add_mesh(
-                        mesh,
-                        color=color,
-                        opacity=opacity,
-                        name=f"capture{suffix}",
-                        show_scalar_bar=False,
-                    )
+            add_signed_isosurfaces(
+                plotter,
+                _build_contour(renderer, np.clip(data, 0, None), isovalue, replication, lattice),
+                _build_contour(renderer, np.clip(-data, 0, None), isovalue, replication, lattice),
+                opacity=opacity,
+                name="capture",
+            )
         else:
             mesh = renderer.make_mesh(hints, replication=replication, lattice_vectors=lattice)
             if mesh is not None and mesh.n_points:
                 plotter.add_mesh(
                     mesh,
                     scalars="values",
-                    cmap=colormap,
+                    cmap=cmap_argument(colormap),
                     opacity=opacity,
                     name="capture_vol",
                     show_scalar_bar=False,
                 )
-        plotter.view_isometric()
-        plotter.reset_camera()
-        plotter.screenshot(str(path))
-    finally:
-        plotter.close()
-    return True
+        frame(plotter)
+        snapshot(plotter, path)
 
 
-def _build_contour(renderer, data, isovalue, replication, lattice):
-    """Build a signed contour mesh, replicating for periodic systems."""
-    import numpy as np
-    import pyvista as pv
+def _build_contour(
+    renderer: VolumeRenderer,
+    data: np.ndarray,
+    isovalue: float,
+    replication: tuple[int, int, int],
+    lattice: np.ndarray | None,
+) -> pv.PolyData | None:
+    """Build a signed surface using the shared QVF grid geometry."""
+    from vibeview.renderers.volume import build_isosurface_mesh
 
-    from vibeview.renderers.volume import _BOHR_TO_ANGSTROM, _replicate_mesh
-
-    grid = renderer.load_grid()
-    shape = grid.shape
-    voxel_vecs = grid.voxel_vectors * _BOHR_TO_ANGSTROM
-    origin_ang = grid.origin * _BOHR_TO_ANGSTROM
-
-    is_orthogonal = all(abs(voxel_vecs[i, j]) < 1e-10 for i in range(3) for j in range(3) if i != j)
-    if is_orthogonal:
-        spacing = tuple(float(voxel_vecs[i, i]) for i in range(3))
-        mesh = pv.ImageData(
-            dimensions=shape,
-            spacing=spacing,
-            origin=tuple(float(origin_ang[i]) for i in range(3)),
-        )
-        mesh.point_data["values"] = data.ravel(order="F")
-        contour = mesh.contour(isosurfaces=[isovalue], scalars="values")
-    else:
-        ii, jj, kk = np.meshgrid(
-            np.arange(shape[0], dtype=np.float64),
-            np.arange(shape[1], dtype=np.float64),
-            np.arange(shape[2], dtype=np.float64),
-            indexing="ij",
-        )
-        pts_x = (
-            origin_ang[0] + ii * voxel_vecs[0, 0] + jj * voxel_vecs[1, 0] + kk * voxel_vecs[2, 0]
-        )
-        pts_y = (
-            origin_ang[1] + ii * voxel_vecs[0, 1] + jj * voxel_vecs[1, 1] + kk * voxel_vecs[2, 1]
-        )
-        pts_z = (
-            origin_ang[2] + ii * voxel_vecs[0, 2] + jj * voxel_vecs[1, 2] + kk * voxel_vecs[2, 2]
-        )
-        sgrid = pv.StructuredGrid(pts_x, pts_y, pts_z)
-        sgrid.point_data["values"] = data.ravel(order="F")
-        contour = sgrid.contour(isosurfaces=[isovalue], scalars="values")
-
-    if contour.n_points == 0:
-        return None
-    if lattice is not None and any(r > 1 for r in replication):
-        contour = _replicate_mesh(contour, lattice, replication)
-    return contour
+    contour = build_isosurface_mesh(
+        data,
+        renderer.load_grid(),
+        isovalue,
+        replication=replication,
+        lattice_vectors=lattice,
+    )
+    return contour if contour is not None and contour.n_points else None
 
 
 def capture_bands(
     reader: QVFReader,
     path: str | Path,
     section_id: str | None = None,
+    *,
+    energy_window: tuple[float, float] | None = None,
+    auto_window: bool = True,
 ) -> bool:
-    """Render a band structure chart to a PNG file."""
+    """Render a band structure chart to a PNG file.
+
+    ``energy_window`` limits the energy axis to ``(min, max)`` in eV
+    relative to E_F; unset, the figure opens on the same valence window
+    the viewer uses, and ``auto_window=False`` restores the full
+    autoscale (#26).
+    """
     from vibeview.renderers.bands import BandsRenderer
 
     sid = section_id
@@ -237,7 +223,7 @@ def capture_bands(
         return False
 
     renderer = BandsRenderer(section, reader)
-    png = renderer.render_to_bytes()
+    png = renderer.render_to_bytes(energy_window=energy_window, auto_window=auto_window)
     Path(path).write_bytes(png)
     return True
 
@@ -273,8 +259,15 @@ def capture_dos(
     reader: QVFReader,
     path: str | Path,
     section_id: str | None = None,
+    *,
+    energy_window: tuple[float, float] | None = None,
+    auto_window: bool = True,
 ) -> bool:
-    """Render a DOS chart to an HTML file."""
+    """Render a DOS chart to an HTML file.
+
+    Takes the same ``energy_window`` / ``auto_window`` arguments as
+    :func:`capture_bands` (#26).
+    """
     from vibeview.renderers.dos import DOSRenderer
 
     sid = section_id
@@ -291,7 +284,7 @@ def capture_dos(
         return False
 
     renderer = DOSRenderer(section, reader)
-    html = renderer.render_to_html()
+    html = renderer.render_to_html(energy_window=energy_window, auto_window=auto_window)
     Path(path).write_text(html)
     return True
 
@@ -380,7 +373,9 @@ def capture_energy_diagram(
     return True
 
 
-def capture_selftest(output: "str | Path | None" = None, *, size=(400, 300)) -> dict:
+def capture_selftest(
+    output: str | Path | None = None, *, size: tuple[int, int] = (400, 300)
+) -> dict[str, Any]:
     """Validate the headless screenshot-capture stack on this host.
 
     Builds a tiny water QVF in memory (no external files), renders its
@@ -404,7 +399,11 @@ def capture_selftest(output: "str | Path | None" = None, *, size=(400, 300)) -> 
         "H  0.000  0.757 -0.467\n"
         "H  0.000 -0.757 -0.467\n"
     )
-    out = Path(output) if output else Path(tempfile.mkdtemp(prefix="vibeview-selftest-")) / "selftest.png"
+    out = (
+        Path(output)
+        if output
+        else Path(tempfile.mkdtemp(prefix="vibeview-selftest-")) / "selftest.png"
+    )
     reader = QVFReader(xyz_to_qvf(xyz.encode()))
     try:
         ok = capture_structure(reader, str(out), size=size)

@@ -22,8 +22,11 @@ Used by ``vibe-view open input.py`` (v1.1 import) and the parameter panel.
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+from vibeview.elements import symbol_to_z, z_to_symbol
 
 
 class InputParseResult:
@@ -79,11 +82,14 @@ def _scale_seq(seq: Any, scalar: float) -> Any:
 
 def _matmul(left: Any, right: Any) -> Any:
     """NumPy semantics for ``(n,) @ (n, n)``: a row vector times a matrix."""
-    return [sum(a * row[i] for a, row in zip(left, right)) for i in range(len(right[0]))]
+    return [
+        sum(a * row[i] for a, row in zip(left, right, strict=True))
+        for i in range(len(right[0]))
+    ]
 
 
 def _transpose(matrix: Any) -> Any:
-    return [list(row) for row in zip(*matrix)]
+    return [list(row) for row in zip(*matrix, strict=True)]
 
 
 def _evaluate(node: ast.expr | None, env: dict[str, Any]) -> Any:
@@ -142,20 +148,22 @@ def _evaluate(node: ast.expr | None, env: dict[str, Any]) -> Any:
             value = _evaluate(node.args[0], env)
             return int(value) if _is_num(value) else _UNRESOLVED
         if func_name in ("tolist", "copy") and not node.args:
+            if not isinstance(node.func, ast.Attribute):
+                return _UNRESOLVED
             return _evaluate(node.func.value, env)
         if func_name == "Atom":
             z_value = _evaluate(node.args[0] if node.args else None, env)
             if _is_num(z_value):
                 z = int(z_value)
             elif isinstance(z_value, str):
-                z = _symbol_to_z(z_value)
+                z = symbol_to_z(z_value.capitalize())
             else:
                 return _UNRESOLVED
             position = _evaluate(node.args[1] if len(node.args) > 1 else None, env)
             if not _is_seq(position):
                 return _UNRESOLVED
             return {
-                "symbol": _z_to_symbol(z),
+                "symbol": z_to_symbol(z, default=f"Z{z}"),
                 "atomic_number": z,
                 "position": [float(coord) for coord in position[:3]],
             }
@@ -168,8 +176,10 @@ def _evaluate(node: ast.expr | None, env: dict[str, Any]) -> Any:
         target = generator.target
         if isinstance(target, ast.Name):
             names = [target.id]
-        elif isinstance(target, ast.Tuple):
-            names = [elt.id for elt in target.elts]
+        elif isinstance(target, ast.Tuple) and all(
+            isinstance(elt, ast.Name) for elt in target.elts
+        ):
+            names = [elt.id for elt in target.elts if isinstance(elt, ast.Name)]
         else:
             return _UNRESOLVED
         out = []
@@ -177,7 +187,7 @@ def _evaluate(node: ast.expr | None, env: dict[str, Any]) -> Any:
             if len(names) == 1:
                 env[names[0]] = item
             elif _is_seq(item) and len(item) == len(names):
-                for name, value in zip(names, item):
+                for name, value in zip(names, item, strict=True):
                     env[name] = value
             else:
                 return _UNRESOLVED
@@ -207,9 +217,7 @@ def parse_input_source(source: str) -> InputParseResult:
                     value = _evaluate(stmt.value, env)
                     if value is not _UNRESOLVED:
                         env[target.id] = value
-            elif isinstance(stmt, ast.FunctionDef):
-                run_stmts(stmt.body)
-            elif (
+            elif isinstance(stmt, ast.FunctionDef) or (
                 isinstance(stmt, ast.If)
                 and isinstance(stmt.test, ast.Compare)
                 and isinstance(stmt.test.left, ast.Name)
@@ -298,7 +306,7 @@ def _parse_molecule_call(
 def _parse_molecule_atoms(node: ast.Call) -> list[dict[str, Any]]:
     """Extract atoms from a literal ``Molecule([Atom(...), ...])`` list —
     positional or the ``atoms=[...]`` keyword form used in the docs."""
-    atoms = []
+    atoms: list[dict[str, Any]] = []
     first_arg = _arg_or_kwarg(node, 0, "atoms")
     if first_arg is None or not isinstance(first_arg, ast.List):
         return atoms
@@ -309,9 +317,9 @@ def _parse_molecule_atoms(node: ast.Call) -> list[dict[str, Any]]:
                 try:
                     z = int(_eval_literal(elt.args[0]))
                 except (ValueError, TypeError):
-                    z = _symbol_to_z(str(_eval_literal(elt.args[0])))
+                    z = symbol_to_z(str(_eval_literal(elt.args[0])).capitalize())
                 pos = _eval_list(elt.args[1])
-                symbol = _z_to_symbol(z)
+                symbol = z_to_symbol(z, default=f"Z{z}")
                 atoms.append({"symbol": symbol, "atomic_number": z, "position": pos})
     return atoms
 
@@ -335,9 +343,9 @@ def _parse_periodic_system(
             [float(coord) for coord in row] for row in lattice_value
         ]
     else:
-        # Unresolvable lattice (unknown input style): keep the legacy
-        # identity fallback so a periodic QVF still renders a cell.
-        result.lattice_vectors = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        # Preserve a partial parse without inventing physical geometry.
+        # Archive conversion requires a statically resolved periodic cell.
+        result.lattice_vectors = None
 
     atoms_arg = _arg_or_kwarg(node, 2, "unit_cell")
     atoms = _atom_dicts(resolve(atoms_arg))
@@ -362,6 +370,8 @@ def _parse_runner_call(
     any ``run_*`` entry point (the input library uses several)."""
     for kw in node.keywords:
         key = kw.arg
+        if key is None:  # a ``**kwargs`` splat carries no name to record
+            continue
         if key == "basis":
             if (
                 isinstance(kw.value, ast.Call)
@@ -414,9 +424,14 @@ def _eval_literal(node: ast.expr) -> Any:
     """Safely evaluate a Python literal (numbers, strings, None, True/False)."""
     if isinstance(node, ast.Constant):
         return node.value
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        if isinstance(node.operand, ast.Constant):
-            return -node.operand.value
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+        and isinstance(node.operand.value, int | float | complex)
+        and not isinstance(node.operand.value, bool)
+    ):
+        return -node.operand.value
     if isinstance(node, ast.List):
         return [_eval_literal(e) for e in node.elts]
     if isinstance(node, ast.Tuple):
@@ -433,79 +448,3 @@ def _eval_list(node: ast.expr) -> list[float]:
     if isinstance(vals, (list, tuple)):
         return [float(v) for v in vals[:3]]
     return [0.0, 0.0, 0.0]
-
-
-# ── Element symbol ↔ atomic number ─────────────────────────────────────
-
-_SYMBOLS = [
-    "",
-    "H",
-    "He",
-    "Li",
-    "Be",
-    "B",
-    "C",
-    "N",
-    "O",
-    "F",
-    "Ne",
-    "Na",
-    "Mg",
-    "Al",
-    "Si",
-    "P",
-    "S",
-    "Cl",
-    "Ar",
-    "K",
-    "Ca",
-    "Sc",
-    "Ti",
-    "V",
-    "Cr",
-    "Mn",
-    "Fe",
-    "Co",
-    "Ni",
-    "Cu",
-    "Zn",
-    "Ga",
-    "Ge",
-    "As",
-    "Se",
-    "Br",
-    "Kr",
-    "Rb",
-    "Sr",
-    "Y",
-    "Zr",
-    "Nb",
-    "Mo",
-    "Tc",
-    "Ru",
-    "Rh",
-    "Pd",
-    "Ag",
-    "Cd",
-    "In",
-    "Sn",
-    "Sb",
-    "Te",
-    "I",
-    "Xe",
-    "Cs",
-    "Ba",
-]
-
-
-def _z_to_symbol(z: int) -> str:
-    if 0 < z < len(_SYMBOLS):
-        return _SYMBOLS[z]
-    return f"Z{z}"
-
-
-def _symbol_to_z(symbol: str) -> int:
-    try:
-        return _SYMBOLS.index(symbol.capitalize())
-    except ValueError:
-        return 0

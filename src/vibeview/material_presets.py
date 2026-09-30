@@ -30,6 +30,7 @@ reached the viewport anyway.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -37,25 +38,22 @@ class MaterialPreset:
     """One named material preset."""
 
     name: str
-    # Atom properties
+    # Atom properties. Roughness above 0.5 flattens the highlight; the
+    # client renders in vtk.js, which has no PBR metallic channel, so a
+    # preset describes its look through specular terms only.
     atom_roughness: float = 0.3
-    atom_metallic: float = 0.0
     atom_specular: float = 0.5
     atom_specular_power: float = 60.0
     # Bond properties
     bond_color: tuple[float, float, float] = (0.4, 0.4, 0.4)
-    bond_roughness: float = 0.4
-    # Isosurface properties
+    # Isosurface lighting. Opacity stays with the isosurface sliders.
     iso_ambient: float = 0.2
     iso_diffuse: float = 0.6
     iso_specular: float = 0.3
     iso_specular_power: float = 40.0
-    iso_opacity: float = 0.65
     # Background
     background_color: tuple[float, float, float] = (0.1, 0.1, 0.18)
-    # Toon shading
-    toon_mode: bool = False
-    toon_levels: int = 4
+    # Toon outlines. Flat shading itself is the viewer's toon switch.
     toon_outline: bool = False
     outline_width: float = 1.0
 
@@ -66,86 +64,69 @@ MATERIAL_PRESETS: dict[str, MaterialPreset] = {
     "cpk_glossy": MaterialPreset(
         name="CPK Glossy (default)",
         atom_roughness=0.25,
-        atom_metallic=0.05,
         atom_specular=0.6,
         atom_specular_power=80.0,
         iso_ambient=0.15,
         iso_diffuse=0.7,
         iso_specular=0.4,
         iso_specular_power=50.0,
-        iso_opacity=0.65,
         background_color=(0.10, 0.10, 0.18),
     ),
     "matte": MaterialPreset(
         name="Matte",
         atom_roughness=0.8,
-        atom_metallic=0.0,
         atom_specular=0.1,
         atom_specular_power=20.0,
         bond_color=(0.5, 0.5, 0.5),
-        bond_roughness=0.8,
         iso_ambient=0.3,
         iso_diffuse=0.5,
         iso_specular=0.05,
-        iso_opacity=0.7,
         background_color=(0.95, 0.95, 1.0),
     ),
     "glass": MaterialPreset(
         name="Glass / Translucent",
         atom_roughness=0.05,
-        atom_metallic=0.0,
         atom_specular=1.0,
         atom_specular_power=200.0,
         iso_ambient=0.1,
         iso_diffuse=0.3,
         iso_specular=0.8,
         iso_specular_power=120.0,
-        iso_opacity=0.35,
         background_color=(0.05, 0.05, 0.10),
     ),
     "metallic": MaterialPreset(
         name="Metallic",
         atom_roughness=0.15,
-        atom_metallic=0.9,
         atom_specular=1.0,
         atom_specular_power=100.0,
         bond_color=(0.7, 0.7, 0.75),
-        bond_roughness=0.2,
         iso_ambient=0.1,
         iso_diffuse=0.4,
         iso_specular=0.7,
         iso_specular_power=80.0,
-        iso_opacity=0.6,
         background_color=(0.08, 0.08, 0.15),
     ),
     "toon": MaterialPreset(
         name="Toon / NPR",
         atom_roughness=0.5,
-        atom_metallic=0.0,
         atom_specular=0.2,
         atom_specular_power=30.0,
-        toon_mode=True,
-        toon_levels=4,
         toon_outline=True,
         outline_width=1.5,
         iso_ambient=0.1,
         iso_diffuse=0.6,
         iso_specular=0.1,
-        iso_opacity=0.7,
         background_color=(1.0, 1.0, 1.0),
     ),
     "scientific": MaterialPreset(
         name="Scientific / Publication",
         atom_roughness=0.2,
-        atom_metallic=0.0,
         atom_specular=0.3,
         atom_specular_power=40.0,
         bond_color=(0.3, 0.3, 0.3),
-        bond_roughness=0.3,
         iso_ambient=0.2,
         iso_diffuse=0.7,
         iso_specular=0.2,
-        iso_opacity=0.6,
         background_color=(0.98, 0.98, 1.0),
     ),
 }
@@ -156,7 +137,7 @@ def get_preset(name: str) -> MaterialPreset:
     return MATERIAL_PRESETS.get(name, MATERIAL_PRESETS["cpk_glossy"])
 
 
-def list_presets() -> list[dict]:
+def list_presets() -> list[dict[str, str]]:
     """Return all available presets as a list of {value, title} dicts."""
     return [{"value": k, "title": v.name} for k, v in MATERIAL_PRESETS.items()]
 
@@ -165,15 +146,18 @@ def list_presets() -> list[dict]:
 
 
 def apply_material_to_actor(
-    actor,
+    actor: Any,
     preset: MaterialPreset,
     base_color: tuple[float, float, float] | None = None,
     is_bond: bool = False,
+    is_isosurface: bool = False,
 ) -> None:
     """Apply a material preset to a PyVista/VTK actor.
 
-    Uses VTK's property system to set roughness, metallic, specular.
-    OSPRay materials require additional VTK calls.
+    Atoms take the preset's atom terms, bonds its bond colour with fixed
+    specular terms, and isosurfaces (``is_isosurface``) its ``iso_*``
+    lighting. Uses VTK's classic lighting model, which is what reaches the
+    vtk.js client.
     """
     prop = actor.GetProperty() if hasattr(actor, "GetProperty") else None
     if prop is None:
@@ -198,15 +182,20 @@ def apply_material_to_actor(
         color = (0.5, 0.5, 0.5)
 
     prop.SetColor(*color)
-    prop.SetSpecular(preset.atom_specular if not is_bond else 0.3)
-    prop.SetSpecularPower(preset.atom_specular_power if not is_bond else 30.0)
-    prop.SetAmbient(0.2)
-    prop.SetDiffuse(0.7)
-
-    # Roughness is approximated through specular power
-    if preset.atom_roughness > 0.5:
-        prop.SetSpecular(0.1)
-        prop.SetSpecularPower(10)
+    if is_isosurface:
+        prop.SetAmbient(preset.iso_ambient)
+        prop.SetDiffuse(preset.iso_diffuse)
+        prop.SetSpecular(preset.iso_specular)
+        prop.SetSpecularPower(preset.iso_specular_power)
+    else:
+        prop.SetAmbient(0.2)
+        prop.SetDiffuse(0.7)
+        prop.SetSpecular(preset.atom_specular if not is_bond else 0.3)
+        prop.SetSpecularPower(preset.atom_specular_power if not is_bond else 30.0)
+        # Roughness is approximated through specular power
+        if not is_bond and preset.atom_roughness > 0.5:
+            prop.SetSpecular(0.1)
+            prop.SetSpecularPower(10)
 
     # Toon outline
     if preset.toon_outline:
@@ -218,7 +207,7 @@ def apply_material_to_actor(
 
 
 def ambient_occlusion_pass(
-    plotter,
+    plotter: Any,
     radius: float = 2.0,
     samples: int = 32,
 ) -> bool:

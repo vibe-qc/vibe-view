@@ -25,7 +25,16 @@ from vibeview.trexio_import import trexio_to_qvf
 
 @pytest.fixture
 def trexio():
-    return pytest.importorskip("trexio")
+    """The trexio module, for the tests that write a real dataset.
+
+    A fixture rather than a module-level gate: the detection, planning and
+    error-message tests in this file need no trexio and keep running without
+    it. The skip is a genuine environment gate, because trexio publishes no
+    wheel for the newest interpreters; [test] installs it wherever one exists,
+    CI included."""
+    return pytest.importorskip(
+        "trexio", reason="trexio is not installable for this interpreter"
+    )
 
 
 @pytest.fixture(params=["text", "hdf5"])
@@ -362,7 +371,7 @@ def test_cli_open_converts_dataset_before_launching_viewer(dataset, tmp_path, mo
 
     monkeypatch.setattr(cli, "_load_app", lambda: (create_app, lambda *args, **kwargs: None))
     monkeypatch.setattr(cli, "_abort_if_port_in_use", lambda *args: None)
-    monkeypatch.setattr(cli, "_wait_until_bound_and_announce", lambda **kwargs: None)
+    monkeypatch.setattr(cli, "_announce_when_bound", lambda *args, **kwargs: None)
     try:
         result = CliRunner().invoke(
             main, ["open", str(path), "--no-browser", "--log-file", str(tmp_path / "viewer.log")]

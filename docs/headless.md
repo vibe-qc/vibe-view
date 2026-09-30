@@ -2,8 +2,9 @@
 
 Everything on this page is the **core install**: no `[viewer]` extra, no
 browser, and no display server. It is what a CI job, a batch pipeline or a
-figure script for a paper runs, and every renderer is the one the browser
-uses, so a figure captured on a compute node matches what the viewer shows.
+figure script for a paper runs. The data and geometry conventions are
+shared with the browser; the offscreen and browser rendering backends differ,
+so a PNG is not a pixel-identical capture of your browser session.
 
 One caveat separates the two halves of the page. PNG capture, video and the
 scene exporters render through VTK, which needs an offscreen OpenGL context
@@ -41,16 +42,43 @@ never touch one.
 vibe-view capture job.qvf -o structure.png                     # the structure
 vibe-view capture job.qvf -s vol_dens_0 -o density.png         # a volume section
 vibe-view capture job.qvf -s vol_mo_0 --isovalue 0.03 --colormap RdBu -o homo.png
-vibe-view capture job.qvf -s bands -o bands.png --size 1600x1000
+vibe-view capture job.qvf -s bands -o bands.png
 ```
 
-`-s` picks any section; volumes take `--isovalue` and `--colormap`, and
-`--size WxH` sets the image size. The default is `900x600`, and can be
-changed in the [configuration file](cli.md#configuration).
+`-s` selects a section **ID** from `vibe-view info FILE.qvf`. The CLI
+supports structures, stored volumes / `basis.ao`, and bands; other kinds
+need the [capture API](#the-capture-api) or the browser export controls.
+Volumes take `--isovalue` and `--colormap`. `--size WxH` sets structure and
+volume image dimensions; the default is `900x600`. Bands use their chart
+renderer rather than the 3-D image-size setting.
+Without `-o`, the PNG is written beside the archive as `<stem>_<section>.png`
+(`<stem>_structure.png` for the structure); `animate` and `export` follow the
+same rule with their own suffixes.
 
-`capture` renders **stored** sections. It has no flag for evaluating an
+Signed volumes retain both lobe colours and the grid's full voxel-vector
+geometry, including skewed grids and reversed axes, as in the browser viewer.
+
+`capture` renders the supported **stored** sections. It has no flag for evaluating an
 orbital from a `wavefunction.gto` section on demand; the
 [Python API](#the-capture-api) can do that.
+
+## Keep a figure reproducible
+
+Record the archive, section ID, viewer version, contour and output size
+alongside the image. For example, after selecting a stored density section
+whose ID is `density`:
+
+```sh
+vibe-view --version > figure-version.txt
+vibe-view info calculation.qvf --json > figure-input.json
+vibe-view validate calculation.qvf
+vibe-view capture calculation.qvf -s density --isovalue 0.05 --size 1600x1000 -o density.png
+```
+
+Replace `density` with your actual section ID. Report the units supplied by
+the producer and retain the original QVF; a PNG cannot recover the numerical
+field. To compare two surfaces, keep their contour and view settings fixed.
+For a runnable structure-only example, use [the worked workflow](workflows.md).
 
 ## `vibe-view batch`
 
@@ -64,6 +92,10 @@ Renders a gallery from many archives with the same view defaults, one PNG
 per section, into `./vibe-view-gallery` unless `-o` says otherwise. No
 server is started. `vibe-view dashboard PATTERNS...` builds a grid preview
 of many files instead, as one image or, with `--html`, one page.
+
+Every headless image, from `capture`, `batch`, `dashboard`, the `animate`
+frames and the Jupyter helper, is rendered the same way: the dark vibe-view
+background and an isometric camera fitted to the scene.
 
 ## `vibe-view animate`
 
@@ -93,16 +125,27 @@ Twelve formats, none of which needs a display:
 
 | `-f` | Writes | Notes |
 |---|---|---|
-| `xyz`, `cif`, `cml`, `json` | The structure | CIF carries fractional coordinates and the cell; a molecule is wrapped in a padded box. |
+| `xyz`, `cif`, `cml`, `json` | The structure | CIF carries fractional coordinates with a periodic cell, or Cartesian Å coordinates for a molecule; no box is invented. |
 | `py` | A vibe-qc input script | Reuses the archive's own provenance (method, basis, functional) so the script reproduces the calculation, and carries the lattice so a periodic file exports a periodic system. |
 | `obj`, `gltf` | A mesh of atoms and bonds | glTF 2.0 with PBR materials, for any 3-D tool. |
 | `pov` | A POV-Ray scene | CPK spheres and bond cylinders with finish blocks, three-point studio lighting, the cell wireframe for a crystal. Render with `povray +W3840 +H2160 +A +Q11 scene.pov`. |
 | `blend` | A Blender Python script | Builds the scene when run with `blender --python scene.py`: Cycles, principled materials, three area lights, an auto-framed camera, a transparent film. `blender --background --python scene.py -o //out.png -f 1` renders it headlessly. |
-| `html` | A standalone page | A self-contained 3-D viewer of the structure, rendered with Three.js from a CDN. No server, no Python: open it in any browser, or attach it to an email. |
+| `html` | A shareable structure page | Opens without a Python server, but fetches Three.js from a CDN and therefore needs network access. It carries the geometry, not the full QVF analysis panels. |
 | `svg` | Vector graphics | CPK circles and bond lines, for journals that want line art. |
 | `pdf` | A vector PDF | For `\includegraphics`. |
 
-The browser's *Export geometry / scene* menu offers the same formats. The
+Every export carries the connectivity the viewer shows: the archive's
+explicit bonds when it has them, with their orders, otherwise the same
+covalent-radius inference. POV-Ray scenes draw a bond through a periodic
+cell face to the image it reaches; CML, the Blender script, the standalone
+HTML page and the flat SVG and PDF figures address atoms by index and leave
+such bonds out.
+
+The browser's *Export geometry / scene* menu offers the same formats.
+Both CIF export paths use the same coordinate convention and write unique
+atom-site labels separately from element symbols. A stored cell with
+all QVF periodic flags disabled is treated as molecular. CIF cell parameters
+do not preserve individual QVF periodic-axis flags. The
 interactive **High-Quality Raytrace Render** is browser-only; from a script,
 `vibeview.raytrace.RaytraceEngine` drives the same OSPRay path tracer when
 the installed VTK ships it.
@@ -142,8 +185,8 @@ open `QVFReader` and auto-detect the section when none is named:
 |---|---|
 | `capture_structure(reader, path, ...)` | PNG |
 | `capture_volume(reader, section_id, path, ...)` | PNG |
-| `capture_bands(reader, path)` | PNG |
-| `capture_dos(reader, path)` | HTML |
+| `capture_bands(reader, path, ...)` | PNG |
+| `capture_dos(reader, path, ...)` | HTML |
 | `capture_spectra(reader, path)` | HTML |
 | `capture_scf_history(reader, path)` | HTML |
 | `capture_bond_orders(reader, path)` | HTML |
@@ -158,6 +201,17 @@ with QVFReader("crystal.qvf") as r:
     capture_bands(r, "bands.png")
     capture_dos(r, "dos.html")
     capture_scf_history(r, "scf.html")
+```
+
+`capture_bands` and `capture_dos` frame the energy axis the way the viewer
+does: an all-electron archive opens on its valence states rather than
+autoscaling over core levels thousands of eV below E_F. Pass
+`energy_window=(min, max)` in eV relative to E_F for a specific window, or
+`auto_window=False` for the full range. See
+{ref}`the bands and DOS panels <bands-dos-panel>`.
+
+```python
+capture_bands(r, "bands.png", energy_window=(-15.0, 10.0))
 ```
 
 The chart kinds other than bands write interactive HTML through Plotly; for
