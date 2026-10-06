@@ -14,8 +14,6 @@ import importlib.util
 import tomllib
 from pathlib import Path
 
-import pytest
-
 _ROOT = Path(__file__).resolve().parent.parent
 _PYPROJECT = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 _EXTRAS = _PYPROJECT["project"]["optional-dependencies"]
@@ -40,9 +38,12 @@ def test_the_queue_extra_stays_out_of_all():
 
 def test_every_vq_import_site_is_lazy():
     """A module-scope `import vq` would make the whole viewer need the extra."""
+    from tests._sources import source_files
+
     offenders = []
-    for name in ("app.py", "cli.py"):
-        tree = ast.parse((_ROOT / "src" / "vibeview" / name).read_text(encoding="utf-8"))
+    for path in [p for name in ("app.py", "cli.py") for p in source_files(name)]:
+        name = path.name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom) or node.module is None:
                 continue
@@ -73,12 +74,15 @@ def test_a_missing_queue_never_makes_the_install_unhealthy():
     assert report["healthy"] is True, "an optional extra must not gate health"
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("vq") is not None,
-    reason="vq is installed; the missing-extra path cannot run",
-)
-def test_doctor_tells_the_user_how_to_get_the_queue():
+def test_doctor_tells_the_user_how_to_get_the_queue(monkeypatch):
+    """Runs whether or not vq is installed: masking the module forces the
+    missing-extra branch (CONTRIBUTING.md, "Tests for optional dependencies
+    must run in every environment")."""
+    import sys
+
     from vibeview.onboarding import doctor_report
+
+    monkeypatch.setitem(sys.modules, "vq", None)
 
     row = doctor_report()["capabilities"]["queue"]
     assert row["missing"] == ["vq"]
@@ -110,8 +114,11 @@ def _vq_import_guards():
     queue overview imports ``vq.config`` and ``vq.overview`` together under a
     single guard, so eight import statements form seven sites.
     """
-    for name in ("app.py", "cli.py"):
-        tree = ast.parse((_ROOT / "src" / "vibeview" / name).read_text(encoding="utf-8"))
+    from tests._sources import source_files
+
+    for path in [p for name in ("app.py", "cli.py") for p in source_files(name)]:
+        name = path.name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         parents: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):
@@ -163,10 +170,9 @@ def test_all_seven_vq_sites_survive_a_missing_queue():
 def test_every_vq_import_site_has_a_remediation_path():
     """Every other extra surfaces install_hint() when it is missing. The
     queue sites said only "vq is not installed"."""
-    sources = {
-        name: (_ROOT / "src" / "vibeview" / name).read_text(encoding="utf-8")
-        for name in ("app.py", "cli.py")
-    }
+    from tests._sources import read_source
+
+    sources = {name: read_source(name) for name in ("app.py", "cli.py")}
     mentions = sum(src.count("queue_missing_message(") for src in sources.values())
     assert mentions >= 7, (
         f"only {mentions} queue_missing_message call sites; every ImportError "

@@ -2,30 +2,32 @@
 
 What has shipped, in which release, and what is proposed next.
 
-> **Last reviewed 2026-09-15** after v2.17.1 at `de0a040` was released and its
-> documentation deployment verified. Update this page when a listed issue closes,
-> and move a release's items into [Shipped](#shipped) as part of
-> [the post-release step](release_process.md).
+> **Last reviewed 2026-10-02** against the released tags through v2.20.1.
+> Update shipped scope when a release is cut, following the
+> [release process](release_process.md). The tracker carries live defect status;
+> this page records release history and proposals.
 
-**Issue numbers.** A bare `#N` on this page is a
-[vibe-view issue](https://github.com/vibe-qc/vibe-view/issues)
-(project 35). The pre-split monorepo tracker, project 19, numbered its issues
-independently; its numbers appear only as "project 19 #N".
+**Issue numbers.** Bare `#N` references below identify the canonical development
+tracker. The [public issue tracker](https://github.com/vibe-qc/vibe-view/issues)
+uses a separate numbering namespace. Historical monorepo issue numbers are
+identified explicitly.
 
-**Future releases are proposed, not scheduled.** Each unreleased minor below
-carries its registered codename, and its proposed scope follows that theme. A registered name
-[commits to nothing](codenames.md) about when, or whether, that release is
-cut. The scope under each future version is a proposal for the maintainer, who
-decides it at cut time.
+**Future releases are proposed, not scheduled.** Registered codenames
+[commit to nothing](codenames.md) about when, or whether, a release is cut,
+and a name does not bind the scope. v2.19.0 and v2.20.0 carried the names
+*Phong's Pheasant* and *Levoy's Lemur* but shipped the #34 audit follow-ups, so
+the lighting and volume-rendering proposals under those names are still open
+and now sit under [Proposals](#minor-releases-and-remaining-proposals) without
+a version. The maintainer decides the scope of the next release at cut time.
 
 ## Where things stand
 
 | | |
 |---|---|
-| Latest release | **v2.17.1** *Lorensen's Loon*, 2026-09-15, tag and `release` on `de0a040` |
-| Documentation site | serves 2.17.1; index and three guide pages match the tagged commit's CI artifacts (checked 2026-09-15) |
-| Desktop update feed | serves **2.10.0** (checked 2026-09-13), see [Desktop distribution](#desktop-distribution) |
-| Open issues | 14: four correctness defects, one enhancement, three infrastructure, five cross-repository asks, and #20, which is delivered but still open |
+| Latest release | **v2.20.1** *Levoy's Lemur*, 2026-09-30 |
+| Next release | Scope and timing remain the maintainer's decision; no codename is registered for it, and the only unspent registered name is *Levinthal's Lynx* (v3.0.0) |
+| Current defects | Consult the canonical development tracker; [public reports](https://github.com/vibe-qc/vibe-view/issues) are tracked separately |
+| Published installers and documentation | Verify availability separately from source tags; see [Desktop distribution](#desktop-distribution) |
 
 ## Shipped
 
@@ -50,8 +52,9 @@ the first public commit. Its full evidence and reasoning is in the frozen
 
 The first post-split releases made vibe-view a standalone product through
 repairs, a documentation site, release machinery and artwork. v2.17.0 adds
-TREXIO geometry and molecular-orbital interoperability. The product and
-split-audit workstreams preserved in private operations record the earlier work.
+TREXIO geometry and molecular-orbital interoperability, and v2.19.0 and
+v2.20.0 work through the #34 viewer audit. The detailed
+release notes are in the [changelog](changelog.md).
 
 | Release | Date | Codename | What shipped | Issues |
 |---|---|---|---|---|
@@ -61,30 +64,22 @@ split-audit workstreams preserved in private operations record the earlier work.
 | v2.16.2 | 2026-09-12 | inherits | Missing-RDKit tests run in every environment; patch checklist; contributor guidance | #20 |
 | v2.17.0 | 2026-09-13 | *Lorensen's Loon* | TREXIO geometry and molecular Gaussian orbitals; packaging-metadata checks; standalone agent guides | #23 |
 | v2.17.1 | 2026-09-15 | inherits | Complex coefficients and Gamma-point lattice tails for MOs; scene replacement that avoids stale viewports; command-palette Escape handling during presentation | — |
+| v2.18.0 | 2026-09-17 | *Richardson's Robin* | Biomolecule polish; metadata-preserving slice; Fermi-relative DOS; background and export fixes; energy windows; docs extra; Bash 3.2 compatibility and candidate-only product gate | #19, #21, #22, #24, #25, #26, #27, #29 |
+| v2.18.1 | 2026-09-22 | inherits | Full-tree lint and strict source typing; general Miller slab orientations; tutorial and documentation updates; stable real-UHF gradient fixture | #8, #20, #30, #33, #41 |
+| v2.19.0 | 2026-09-25 | *Phong's Pheasant* | #34 audit consolidation: one QVF writer, one bond rule, one unit-cell module, shared CLI options and headless scene setup; hardened readers and importers; periodic-surface, terminal-chart and archive-merge fixes | #34–#40 |
+| v2.20.0 | 2026-09-29 | *Levoy's Lemur* | #34 audit follow-ups: reader, renderer, browser, terminal, CLI and converter correctness fixes; display units for orbital energies, band/DOS axes and lengths in browser and terminal; signed volumes keep both lobes along reaction paths | #43–#63 |
+| v2.20.1 | 2026-09-30 | inherits | Open-time errors clipped (#64); `validate` separates layout errors from hash mismatches (#65); malformed spectrum, GTO and MO payloads refused by the reader (#66); `batch-compare` reports reasons (#67); GRO and PDB first-frame and cell validation (#40); typed browser composition root (#48) | #40, #48, #64–#67 |
 
-## Correctness follow-ups (not included in v2.17.1)
+### Correctness fixes shipped in v2.18.0
 
-Three correctness defects, found against 2.16.1 while the manuscript figures
-were regenerated, and one warning from vibe-qc's contract run.
+These corrections are included in the v2.18.0 tag.
 
-| Issue | Defect | Effect |
+| Issue | Defect | Released behaviour |
 |---|---|---|
-| [#24](https://github.com/vibe-qc/vibe-view/issues) | `slice` rebuilds the manifest and drops section fields and root metadata | Data loss; any slice that keeps a `run.record` fails `validate` |
-| [#25](https://github.com/vibe-qc/vibe-view/issues) | The combined band structure and DOS panel applies one Fermi shift to both panels | One of the two panels is empty for spec-compliant archives |
-| [#27](https://github.com/vibe-qc/vibe-view/issues) | Every scene rebuild repaints the dark background | The user's light-background choice is discarded |
-| [#21](https://github.com/vibe-qc/vibe-view/issues) | `create_app` schedules `_reset_export_flag` and never awaits it | A `RuntimeWarning`; not yet diagnosed |
-
-All four touch `src/`, so the `VIBE_VIEW_TAG` check in
-[release step 3](release_process.md) applies when these follow-ups land.
-
-Housekeeping: #20 is still open although everything it asked for shipped in
-v2.16.0 and v2.16.2.
-
-## Minor releases and remaining proposals
-
-The "not yet" items below come from the parity roadmap, which stopped being
-updated on 2026-08-25. Check each one against the code before scoping a
-release around it.
+| #24 | `slice` drops section fields and root metadata | Preserve original metadata and kept bytes; prune removed viewer hints and validate before replacing output |
+| #25 | Combined bands/DOS uses one Fermi shift for both panels | Shift bands by their own reference; preserve the DOS grid; separate axes when the bands' reference is absent |
+| #27 | Scene rebuilds discard the light-background choice | Keep the explicit background through rebuilds and reloads |
+| #21 | Headless export creates an unawaited reset coroutine | Schedule a callback only when an event loop is running |
 
 ### v2.17.0: *Lorensen's Loon*, TREXIO orbitals
 
@@ -94,39 +89,33 @@ orbitals to the existing isosurface workflow. The importer preserves units,
 normalization, AO ordering and available spin/energy/occupation metadata;
 the [format guide](formats.md#trexio-wavefunctions) describes its limits.
 
-The earlier volume-rendering proposal below remains future work; it is not
-part of the TREXIO release.
-
-**Today:** marching-cubes isosurfaces for densities, orbitals and ESP;
-additional isosurfaces per volume; clip planes; volume cross-fade.
-
-**Proposed:**
-
-- Translucent isosurfaces that do not stall the browser client. The hang was
-  traced to vtk.js depth peeling, and orbitals default to opaque as a
-  workaround ([design refresh](design_refresh_2026.md), Robustness).
-
-**Future work:** the transparency change still needs scoping.
-
 ### v2.18.0: *Richardson's Robin*, biomolecules
 
-**Today:** all of M5. The theme's headline work shipped in v2.15.2, so this
-release is polish unless new scope is added.
+**Shipped scope:** polish of M5, whose initial biomolecule support shipped in
+v2.15.2, plus the correctness fixes above.
 
-**Proposed:**
+- Isolate or hide selected residues without connecting hidden ribbon spans.
+- Select residues by clicking the viewport.
+- Share chain, secondary-structure, residue and B-factor palettes across ribbons,
+  atoms and bonds.
+- Retain PDB HELIX/SHEET ranges and distinguish supplied alpha, pi and 3₁₀
+  helices and beta bridges. The CA-only geometric assignment stays H/E/C.
+- Draw crisp strand edges and independently shaded end caps; include the final
+  residue in a chain-terminal strand assignment.
+- Show dashed geometric hydrogen-bond contacts using explicit H and N/O
+  candidates in the supplied coordinates.
 
-- Isolate or hide everything outside a residue selection.
-- Select residues by clicking in the viewport.
-- Offer the ribbon-colour modes outside the cartoon representation.
-- Distinguish alpha, pi and 3₁₀ helices, and bridges from sheets, with a
-  separate ribbon profile for each. The geometric assignment cannot tell them
-  apart, so producer-supplied ranges remain the source for that detail.
-- Give strands crisp edges instead of an elliptical cross-section, and correct
-  the end-cap normals.
-- Stop reading a chain-terminal strand's last residue as coil.
-- Draw hydrogen bonds in their own dashed style.
+The [biomolecule guide](biomolecules.md) documents the display controls and
+scientific limits. No new core dependency or QVF schema change is needed.
 
-### v2.19.0: *Phong's Pheasant*, materials and lighting
+## Minor releases and remaining proposals
+
+The proposals below are not a release commitment. Recheck their current code
+and tracker evidence before selecting a release scope.
+
+### Materials and lighting
+
+Originally proposed for v2.19.0, *Phong's Pheasant*; not shipped there.
 
 **Today:** material presets, Publication, Presentation and Analysis
 representation presets, toon shading, OSPRay ray tracing, and light and dark
@@ -135,15 +124,26 @@ themes.
 **Proposed:**
 
 - Publication mode: white background, thick outlines, no gizmos, one click.
-- A theme and accent pass.
+  **On `main` since 2026-10-05, unreleased (#68).** The Publication preset
+  outlines every atom and bond with an inverted hull, hides the viewport
+  chrome, remembers the look it replaced so clearing the picker restores it,
+  and `vibe-view capture --publication` renders the same look headlessly.
+- A theme and accent pass. **Partly on `main` (#68):** the dark theme's
+  accent now meets WCAG AA as text. A wider pass over contrast and focus
+  stays open under [Accessibility](#accessibility).
 
 **Constraint:** ambient occlusion and fog are VTK render passes, and render
 passes never reach the vtk.js client
 (`test_ambient_occlusion_is_server_side_only`). Silhouette outlines depend on
 the view, so an outline computed on the server goes stale when the client
-rotates. Any of these effects therefore needs client-side work.
+rotates. The shipped outline avoids this by being geometry: a slightly
+larger, front-culled black copy of each actor (Raskar and Cohen, 1999),
+correct from any camera. A true silhouette pass still needs client-side
+work and sits with the v3.0.0 proposals.
 
-### v2.20.0: *Levoy's Lemur*, transfer functions and volume rendering
+### Transfer functions and volume rendering
+
+Originally proposed for v2.20.0, *Levoy's Lemur*; not shipped there.
 
 **Today:** nothing. vibe-view extracts isosurfaces and has no direct volume
 rendering or transfer-function code.
@@ -153,10 +153,40 @@ rendering or transfer-function code.
 - Direct volume rendering of QVF volume sections, with an editable colour and
   opacity transfer function.
 
-**Measure first.** Rendering stays on Trame and PyVista
-([decision 6](ROADMAP_AVOGADRO_PARITY.md)). Cartoon rendering got a payload
-and interaction benchmark before it was built, and volume rendering on a
-vtk.js client needs the same.
+**Measured 2026-10-02.** Rendering stays on Trame and PyVista
+([decision 6](ROADMAP_AVOGADRO_PARITY.md)), so volume rendering needed the same
+payload and interaction check cartoon rendering got. Both scripts are in
+`docs/`.
+
+- **Payload** (`bench_volume_payload.py`). A volume sends the whole grid, so it
+  grows with N³ where an isosurface grows with N². On the 19 volume sections in
+  ten example archives (largest 75×75×30, most under 0.3 MB) a float32 volume
+  sends 0.26 MB or less and uint8 0.06 MB or less, below the 0.60 MB cartoon
+  ribbon. Synthetic grids show the risk: a float32 volume is about 8 MB at
+  128³ and 67 MB at 256³, against 1.0 and 4.0 MB for the isosurface. Quantising
+  to uint8 and capping the grid at about 128³ keeps it near 2 MB.
+- **Frame rate** (`bench_volume_fps.py`). In Chrome on an Apple M4 Pro, a
+  volume cost about 1 ms more per frame than today's surface (2.7 to 3.1 ms
+  against 1.8 to 2.0 ms) from 64³ to 256³, far above 60 fps.
+
+**Conclusion.** Neither measurement blocks a first version. Send a capped,
+quantised grid by default.
+
+**Design note, 2026-10-06.** The
+[direct volume rendering design](volume_rendering_design.md) proposes the
+first version: a per-section *Render as* choice with the isosurface as the
+default, a uint8 grid capped at 128³, a transfer function with per-kind
+presets that sessions, bookmarks and `viewer_defaults` carry, and skewed
+grids falling back to the isosurface. It lists what trame-vtk does and does
+not serialise for a volume, the tests, a five-step rollout, and the six
+decisions taken on 2026-10-06. Step 1, the payload module
+`renderers/volume_render.py`, is on `main`; the viewer does not change
+before step 2.
+
+**Not yet measured.** Production-sized cubes, since the example archives are
+small test systems; weaker or software-rendered GPUs, because the frame-rate
+run used one fast machine; and the full viewer, since the benchmark used a bare
+view with a simple opacity ramp and camera steps rather than mouse drags.
 
 ### v3.0.0: *Levinthal's Lynx*, the interactive viewer
 
@@ -169,6 +199,8 @@ server:
 - Continuous label billboarding with client-side followers. Today labels
   re-face the camera only when an interaction ends.
 - A client-side frame-rate measurement, taken inside the page.
+- A client-side silhouette pass, for outlines on isosurfaces and ribbons,
+  which the inverted hull of #68 does not cover.
 - A plugin API. The Python SDK is documented, but there is no plugin surface
   ([Python API](python_api.md)).
 
@@ -176,15 +208,16 @@ server:
 
 No registered codename covers these:
 
-- An energy-window control for the band, DOS and combined panels, honouring a
-  `viewer_defaults` hint:
-  [#26](https://github.com/vibe-qc/vibe-view/issues).
-- A general surface cell for Miller slabs, spanned by two in-plane lattice
-  vectors. Orientations that are not c-normal currently raise an error.
+- Translucent isosurfaces without vtk.js depth-peeling stalls; orbitals
+  currently default to opaque as a workaround
+  ([design refresh](design_refresh_2026.md)).
 - Metal-metal bonds in clusters and organometallics, which the bonding
   heuristic cannot see.
 - More fragments and templates; thumbnails in the structure library.
-- Unit toggles everywhere (Ha/eV, Å/bohr).
+- Further unit-preference coverage: COOP/COHP, static captures and exports,
+  symmetrize shifts and compare RMSD. Browser orbital energies, measurements,
+  band/DOS axes and terminal geometry/orbital/band/DOS views share persisted
+  preferences (shipped in v2.20.0, #58); spectra retain their own picker.
 - A trajectory and vibration scrubber with thumbnails.
 - A vq job handle in QVF provenance (`provenance.vq`), which needs the
   producer's agreement.
@@ -201,31 +234,30 @@ announced.
 
 ### Release and CI infrastructure
 
-| Issue | What |
-|---|---|
-| [#22](https://github.com/vibe-qc/vibe-view/issues) | The `release` push reruns the full candidate gate, and the CI rules contradict the documented policy |
-| [#8](https://github.com/vibe-qc/vibe-view/issues) | ruff and mypy are configured but not enforced. Re-measure rather than quote a count, and choose the lint job's scope first |
-| [#19](https://github.com/vibe-qc/vibe-view/issues) | The Sphinx toolchain is pinned inline in CI and re-pins four core dependencies |
-| none | Lift `trame<4` once trame-vtk and trame-vuetify accept `trame-client>=4` |
-| none | The lifecycle scripts' `--help` text still describes the monorepo layout |
+The candidate-only product gate and declared documentation extra shipped in
+v2.18.0 (#22, #19). v2.18.1 completed the full-tree `ruff check .` gate and
+strict source-module inventory (#8, #33); `tests/test_type_ramp.py` prevents
+new source modules from escaping that inventory. The browser composition
+refactor (#48) registers callback methods after construction and removes the
+former untyped-decorator exemption.
+
+Continuing work includes optional-dependency coverage, supported Python
+versions (a Python 3.14 CI lane is in progress), and evaluating trame 4 once the viewer dependencies support it.
+Use the tracker and current CI configuration for evidence and status.
 
 ### Desktop distribution
 
-Maintainer-gated. The update feed serves 2.10.0 while the source is at
-2.16.2. Publishing it needs the maintainer's SSH deploy key
-(`electron/PUBLISHING.md`). Linux and Windows artifacts need build hosts,
-because electron-builder cannot cross-build them from macOS. Code signing
-stays deferred: there is no Apple Developer ID.
+Source tags and installer publication are separate steps. Availability of a
+source release does not imply that every platform's installer or update feed
+has been published. Distribution, signing and publication remain maintainer
+operations; see `electron/PUBLISHING.md` for the portable product contract.
 
-### Cross-repository asks
+### Cross-repository coordination
 
-| Issue | Owner | Ask |
-|---|---|---|
-| [#4](https://github.com/vibe-qc/vibe-view/issues) | vibe-qc | 17 producer/consumer tests in five files run in neither repository |
-| [#15](https://github.com/vibe-qc/vibe-view/issues) | vibe-qc | `.deploy_ssh` guard messages run as shell commands |
-| [#16](https://github.com/vibe-qc/vibe-view/issues) | qvf | Publish the frozen v2 schema, and fix the v1 schema's symlink description |
-| [#17](https://github.com/vibe-qc/vibe-view/issues) | vibe-queue | Settle the distribution name, `vq` or `vibe-queue` |
-| [#10](https://github.com/vibe-qc/vibe-view/issues) | vibe-qc-agentic-loop | `bugctl` still hardcodes project 19 |
+Producer-dependent contract coverage belongs with vibe-qc, QVF schema and
+format decisions with qvf, and queue packaging with vibe-queue. Confirm the
+owning repository's current issue status before planning a dependency here.
+Changes to another repository require its maintainer's coordination.
 
 ## Decisions carried forward
 

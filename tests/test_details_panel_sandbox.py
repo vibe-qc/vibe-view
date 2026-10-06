@@ -236,12 +236,12 @@ def test_the_text_panel_cannot_be_granted_scripts():
     removed (a grant that every activator must remember to drop, and
     that the chart activators forgot to request).
     """
-    import inspect
     import re
 
-    from vibeview import app as app_module
+    from tests._sources import app_source
 
-    src = inspect.getsource(app_module)
+    # Cover the layout and every controller/helper that can publish panel state.
+    src = app_source()
 
     def _sandbox_after(srcdoc: str) -> str:
         m = re.search(

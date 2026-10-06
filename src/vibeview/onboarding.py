@@ -233,15 +233,6 @@ def copy_examples(destination: Path, *, force: bool = False) -> list[Path]:
     return written
 
 
-def _desktop_source_path() -> Path:
-    from vibeview.install_hints import source_project_dir
-
-    project = source_project_dir()
-    if project is not None:
-        return project / "electron"
-    return Path(__file__).resolve().parent.parent.parent / "electron"
-
-
 def doctor_report() -> dict[str, Any]:
     """Collect JSON-serializable installation diagnostics.
 
@@ -259,7 +250,7 @@ def doctor_report() -> dict[str, Any]:
     core_available = python_supported and all(row["available"] for row in core_packages)
     core_available = core_available and all(resources_report.values())
 
-    from vibeview.install_hints import install_hint
+    from vibeview.install_hints import electron_dir, install_hint
 
     capabilities: dict[str, dict[str, Any]] = {
         "core": {
@@ -282,7 +273,7 @@ def doctor_report() -> dict[str, Any]:
             "note": _CAPABILITY_NOTES.get(name),
         }
 
-    electron_source = _desktop_source_path().is_dir()
+    electron_source = electron_dir().is_dir()
     desktop_missing: list[str] = []
     if not electron_source:
         desktop_missing.append("source-checkout electron directory")

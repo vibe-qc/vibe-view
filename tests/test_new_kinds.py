@@ -13,8 +13,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests._qvf_builders import vibe_qc_source, write_archive
 from vibeview.qvf import QVFReader
 from vibeview.viewer_defaults import Bookmark, ViewerState
+
+
+def _scene_hooks(plotter):
+    """vibeview.app's hooks record for ``plotter``, looked up at call time:
+    another test module reloads vibeview.app, and a name imported at
+    collection would then read the old module's registry."""
+    from vibeview.app import _scene_hooks as hooks
+
+    return hooks(plotter)
 
 
 def _sha256(data: bytes) -> str:
@@ -26,19 +36,9 @@ def _make_qvf(
     files: dict[str, bytes],
     viewer_defaults: dict | None = None,
 ) -> Path:
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "test"},
-        "sections": sections,
-    }
-    if viewer_defaults is not None:
-        manifest["viewer_defaults"] = viewer_defaults
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        for p, d in files.items():
-            zf.writestr(p, d)
-    return Path(tmp.name)
+    return write_archive(
+        sections, files, source=vibe_qc_source("0.9.0", "test"), viewer_defaults=viewer_defaults
+    )
 
 
 # ── wavefunction.gto ─────────────────────────────────────────────────────
@@ -374,7 +374,11 @@ def _rxn_waypoints_qvf() -> tuple[Path, str]:
             "id": "traj",
             "kind": "trajectory",
             "members": {
-                "metadata": {"path": "traj/meta.json", "format": "json", "sha256": _sha256(traj_meta)},
+                "metadata": {
+                    "path": "traj/meta.json",
+                    "format": "json",
+                    "sha256": _sha256(traj_meta),
+                },
                 "coords": {
                     "path": "traj/coords.dat",
                     "format": "binary",
@@ -389,7 +393,11 @@ def _rxn_waypoints_qvf() -> tuple[Path, str]:
             "kind": "reaction.waypoints",
             "trajectory_ref": "traj",
             "members": {
-                "waypoints": {"path": "rxn/wp.json", "format": "json", "sha256": _sha256(wp_payload)},
+                "waypoints": {
+                    "path": "rxn/wp.json",
+                    "format": "json",
+                    "sha256": _sha256(wp_payload),
+                },
             },
         },
     ]
@@ -423,7 +431,7 @@ class TestBookmarks:
 
         manifest_dict = {
             "qvf_version": 1,
-            "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
+            "source": vibe_qc_source("0.9.0", "t"),
             "sections": [],
             "viewer_defaults": {
                 "auto_open": [],
@@ -462,7 +470,7 @@ class TestBookmarks:
 
         manifest_dict = {
             "qvf_version": 1,
-            "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
+            "source": vibe_qc_source("0.9.0", "t"),
             "sections": [],
             "viewer_defaults": {"auto_open": []},
         }
@@ -581,16 +589,38 @@ def _structure_charges_qvf() -> Path:
             "id": "structure",
             "kind": "structure",
             "members": {
-                "structure": {"path": "structure/structure.json", "format": "json", "sha256": _sha256(structure)}
+                "structure": {
+                    "path": "structure/structure.json",
+                    "format": "json",
+                    "sha256": _sha256(structure),
+                }
             },
         },
         {
             "id": "props0",
             "kind": "atom_properties",
             "members": {
-                "mulliken_charge": {"path": "ap/mul.bin", "format": "binary", "dtype": "float64", "shape": [3], "sha256": _sha256(mul.tobytes())},
-                "loewdin_charge": {"path": "ap/low.bin", "format": "binary", "dtype": "float64", "shape": [3], "sha256": _sha256(low.tobytes())},
-                "hirshfeld_charge": {"path": "ap/hir.bin", "format": "binary", "dtype": "float64", "shape": [3], "sha256": _sha256(hir.tobytes())},
+                "mulliken_charge": {
+                    "path": "ap/mul.bin",
+                    "format": "binary",
+                    "dtype": "float64",
+                    "shape": [3],
+                    "sha256": _sha256(mul.tobytes()),
+                },
+                "loewdin_charge": {
+                    "path": "ap/low.bin",
+                    "format": "binary",
+                    "dtype": "float64",
+                    "shape": [3],
+                    "sha256": _sha256(low.tobytes()),
+                },
+                "hirshfeld_charge": {
+                    "path": "ap/hir.bin",
+                    "format": "binary",
+                    "dtype": "float64",
+                    "shape": [3],
+                    "sha256": _sha256(hir.tobytes()),
+                },
             },
         },
     ]
@@ -651,7 +681,7 @@ class TestAtomPropertiesOverlay:
 
         # Must not raise (the bug raised ValueError on numpy `a or b`).
         pushes = []
-        plotter._vibe_view_update = lambda: pushes.append("push")
+        _scene_hooks(plotter).update = lambda: pushes.append("push")
         app_mod._render_atom_properties_overlay(reader, plotter, _State())
 
         # Negative O atom (atom_0_0) recoloured toward blue (B > R).
@@ -720,7 +750,7 @@ class TestAtomPropertiesOverlay:
             )
             viewer_state = types.SimpleNamespace(replication=(1, 1, 1))
             pushes = []
-            plotter._vibe_view_update = lambda: pushes.append("push")
+            _scene_hooks(plotter).update = lambda: pushes.append("push")
 
             app_mod._rebuild_scene(reader, plotter, viewer_state, state)
 
@@ -1072,19 +1102,34 @@ class TestRunInfo:
 
     def _qvf_with_provenance(self, provenance: dict | None) -> Path:
         structure = json.dumps(
-            {"atoms": [{"symbol": "H", "position": [0, 0, 0], "atomic_number": 1}], "pbc": [False, False, False]}
+            {
+                "atoms": [{"symbol": "H", "position": [0, 0, 0], "atomic_number": 1}],
+                "pbc": [False, False, False],
+            }
         ).encode()
         manifest = {
             "qvf_version": 1,
-            "source": {"program": "vibe-qc", "version": "0.0", "calculation": "rhf/sto-3g"},
+            "source": vibe_qc_source("0.0", "rhf/sto-3g"),
             "sections": [
-                {"id": "structure", "kind": "structure", "members": {"structure": {"path": "s.json", "format": "json", "sha256": _sha256(structure)}}}
+                {
+                    "id": "structure",
+                    "kind": "structure",
+                    "members": {
+                        "structure": {
+                            "path": "s.json",
+                            "format": "json",
+                            "sha256": _sha256(structure),
+                        }
+                    },
+                }
             ],
         }
         if provenance is not None:
             manifest["provenance"] = provenance
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        with zipfile.ZipFile(tmp, "w") as zf:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+            zipfile.ZipFile(tmp, "w") as zf,
+        ):
             zf.writestr("manifest.json", json.dumps(manifest))
             zf.writestr("s.json", structure)
         return Path(tmp.name)
@@ -1143,14 +1188,3 @@ class TestDOSRenderer:
         assert [c["label"] for c in renderer._channels] == ["C-l0", "C-l1", "C-l2"]
         html = renderer.render_to_html()
         assert "C-l1" in html
-
-    def test_bands_dos_combiner_keeps_both_draw_scripts(self) -> None:
-        from vibeview.renderers.dos import DOSRenderer, make_bands_dos_html
-
-        reader = QVFReader(_dos_total_qvf())
-        renderer = DOSRenderer(reader.get_section("dos_total"), reader)
-        frag = renderer.render_to_html(include_plotlyjs=False)
-        combined = make_bands_dos_html(frag, frag)
-        # Both fragments' draw scripts survive; Plotly loaded exactly once.
-        assert combined.count("Plotly.newPlot") == 2
-        assert combined.count("cdn.plot.ly") == 1

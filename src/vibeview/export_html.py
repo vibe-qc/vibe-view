@@ -9,6 +9,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from vibeview.bonds import bond_endpoints, structure_bonds
+from vibeview.elements import COVALENT_RADII, CPK_HEX, cpk_hex
+
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
 
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -84,33 +93,18 @@ const dir2 = new THREE.DirectionalLight(0x8080ff, 0.5);
 dir2.position.set(-3, -1, -5);
 scene.add(dir2);
 
-// CPK colours (Jmol)
-const cpk = {{
-  1: 0xffffff, 2: 0xd9ffff, 3: 0xcc80ff, 4: 0xc2ff00, 5: 0xffb5b5,
-  6: 0x909090, 7: 0x3050f8, 8: 0xff0d0d, 9: 0x90e050, 10: 0xb3e3f5,
-  11: 0xab5cf2, 12: 0x8aff00, 13: 0xbfa6a6, 14: 0xf0c8a0, 15: 0xff8000,
-  16: 0xffff30, 17: 0x1ff01f, 18: 0x80d1e3, 19: 0x8f40d4, 20: 0x3dff00,
-  21: 0xe6e6e6, 22: 0xbfc2c7, 23: 0xa6a6ab, 24: 0x8a99c7, 25: 0x9c7ac7,
-  26: 0xe06633, 27: 0xf090a0, 28: 0x50d050, 29: 0xc88033, 30: 0x7d80b0,
-  31: 0xc28f8f, 32: 0x668f8f, 33: 0xbd80e3, 34: 0xffa100, 35: 0xa62929,
-  36: 0x5cb8d1, 53: 0x940094, 79: 0xffd123,
-}};
+// CPK colours: vibe-view's table, for the elements present
+const cpk = {cpk_json};
 
-// Covalent radii for bond detection (Angstrom) — extended set
-const radii = {{
-  1: 0.31, 2: 0.28, 3: 1.28, 4: 0.96, 5: 0.84, 6: 0.76, 7: 0.71, 8: 0.66,
-  9: 0.57, 10: 0.58, 11: 1.66, 12: 1.41, 13: 1.21, 14: 1.11, 15: 1.07,
-  16: 1.05, 17: 1.02, 18: 1.06, 19: 2.03, 20: 1.76, 21: 1.70, 22: 1.60,
-  23: 1.53, 24: 1.39, 25: 1.39, 26: 1.32, 27: 1.26, 28: 1.24, 29: 1.32,
-  30: 1.22, 31: 1.22, 32: 1.20, 33: 1.19, 34: 1.20, 35: 1.20, 36: 1.16,
-  46: 1.39, 47: 1.45, 48: 1.44, 53: 1.39, 78: 1.36, 79: 1.36, 80: 1.32,
-  82: 1.46,
-}};
-
-const bondCutoff = 1.2; // tolerance factor
+// Covalent radii for atom display sizes (Angstrom); connectivity comes
+// Covalent radii for atom display sizes (Angstrom), vibe-view's table;
+// connectivity comes precomputed in data.bonds from the same rule the viewer
+// draws with.
+const radii = {radii_json};
 
 // Atom spheres
 const sphereGeo = new THREE.SphereGeometry(1, 24, 24);
+const atomMats = {{}};
 const atomPositions = [];
 // Atom display radius from the same per-element covalent radii used for
 // bond detection (ball-and-stick fraction), instead of a flat H/other split.
@@ -120,7 +114,11 @@ data.atoms.forEach((a, i) => {{
   const z = a.atomic_number || 0;
   const r = (radii[z] || 0.7) * atomScale;
   const color = cpk[z] || 0x888888;
-  const mat = new THREE.MeshPhongMaterial({{ color, specular: 0x222222, shininess: 30 }});
+  // One material per element rather than one per atom.
+  if (!atomMats[z]) {{
+    atomMats[z] = new THREE.MeshPhongMaterial({{ color, specular: 0x222222, shininess: 30 }});
+  }}
+  const mat = atomMats[z];
   const mesh = new THREE.Mesh(sphereGeo, mat);
   mesh.position.set(pos[0], pos[1], pos[2]);
   mesh.scale.setScalar(r);
@@ -128,30 +126,28 @@ data.atoms.forEach((a, i) => {{
   atomPositions.push({{ x: pos[0], y: pos[1], z: pos[2], zNum: z, symbol: a.symbol, idx: i }});
 }});
 
-// Bonds
+// Bonds: [i, j] pairs computed by vibe-view (explicit bonds from the
+// archive when present, otherwise the viewer's covalent-radius inference);
+// a bond through a periodic cell face adds the [x, y, z] end it reaches.
 const bondMat = new THREE.MeshPhongMaterial({{ color: 0x666666, specular: 0x111111 }});
 const cylGeo = new THREE.CylinderGeometry(0.08, 0.08, 1, 8);
-for (let i = 0; i < atomPositions.length; i++) {{
-  for (let j = i + 1; j < atomPositions.length; j++) {{
-    const a = atomPositions[i], b = atomPositions[j];
-    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-    const ra = radii[a.zNum] || 0.7, rb = radii[b.zNum] || 0.7;
-    const cut = (ra + rb) * bondCutoff;
-    if (dist < cut && dist > 1e-6) {{
-      const mid = new THREE.Vector3((a.x+b.x)/2, (a.y+b.y)/2, (a.z+b.z)/2);
-      const dir = new THREE.Vector3(dx, dy, dz).normalize();
-      const cyl = new THREE.Mesh(cylGeo, bondMat);
-      cyl.position.copy(mid);
-      cyl.scale.set(1, dist, 1);
-      // Align cylinder with bond direction
-      const quat = new THREE.Quaternion();
-      quat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      cyl.setRotationFromQuaternion(quat);
-      scene.add(cyl);
-    }}
-  }}
-}}
+data.bonds.forEach(([i, j, end]) => {{
+  const a = atomPositions[i];
+  const b = end ? {{ x: end[0], y: end[1], z: end[2] }} : atomPositions[j];
+  const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+  const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  if (dist < 1e-6) return;
+  const mid = new THREE.Vector3((a.x+b.x)/2, (a.y+b.y)/2, (a.z+b.z)/2);
+  const dir = new THREE.Vector3(dx, dy, dz).normalize();
+  const cyl = new THREE.Mesh(cylGeo, bondMat);
+  cyl.position.copy(mid);
+  cyl.scale.set(1, dist, 1);
+  // Align cylinder with bond direction
+  const quat = new THREE.Quaternion();
+  quat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  cyl.setRotationFromQuaternion(quat);
+  scene.add(cyl);
+}});
 
 function animate() {{
   requestAnimationFrame(animate);
@@ -170,7 +166,7 @@ window.addEventListener('resize', () => {{
 </html>"""
 
 
-def export_html(reader, path: Path, *, title: str | None = None) -> Path:
+def export_html(reader: QVFReader, path: Path, *, title: str | None = None) -> Path:
     """Export a QVF to a standalone HTML file with embedded Three.js viewer.
 
     Parameters
@@ -203,15 +199,35 @@ def export_html(reader, path: Path, *, title: str | None = None) -> Path:
             }
         )
 
+    # The viewer's connectivity, precomputed here so the page does not run an
+    # O(N^2) loop in the browser. An in-cell bond is ``[i, j]``; a bond through
+    # a periodic cell face carries the Cartesian end it reaches, ``[i, j,
+    # [x, y, z]]``, and is drawn to that image as the viewer draws it (#40-19).
+    positions = np.asarray([a.position for a in sdata.atoms], dtype=float).reshape(-1, 3)
+    bonds_out: list[list[object]] = []
+    for bond in structure_bonds(sdata):
+        i, j, _order, image = bond
+        if any(image):
+            _start, end = bond_endpoints(positions, bond, sdata.lattice_vectors)
+            bonds_out.append([i, j, [float(v) for v in end]])
+        else:
+            bonds_out.append([i, j])
     src = reader.manifest.source
     page_title = title or f"{src.calculation}"
+    present = sorted({int(a.atomic_number or 0) for a in sdata.atoms})
     html = _HTML_TEMPLATE.format(
         title=page_title,
         program=src.program,
         version=src.version,
         calculation=src.calculation,
         n_atoms=len(atoms_out),
-        data_json=json.dumps({"atoms": atoms_out}),
+        data_json=json.dumps({"atoms": atoms_out, "bonds": bonds_out}),
+        # The page carries only the rows for the elements present, from the
+        # viewer's own tables.
+        cpk_json=json.dumps(
+            {z: int(cpk_hex(z).lstrip("#"), 16) for z in present if z in CPK_HEX}
+        ),
+        radii_json=json.dumps({z: COVALENT_RADII[z] for z in present if z in COVALENT_RADII}),
     )
     path.write_text(html)
     return path

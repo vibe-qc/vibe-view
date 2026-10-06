@@ -24,12 +24,23 @@ from pathlib import Path
 
 import pytest
 
+
+def _scene_hooks(plotter):
+    """vibeview.app's hooks record for ``plotter``, looked up at call time:
+    another test module reloads vibeview.app, and a name imported at
+    collection would then read the old module's registry."""
+    from vibeview.app import _scene_hooks as hooks
+
+    return hooks(plotter)
+
+
 # Zero-argument controllers that are safe to invoke: no network, no long
 # render, no writes outside a temp dir, nothing destructive to user data.
 SAFE_ZERO_ARG = [
     "compute_bonds", "detect_symmetry", "clear_picks", "show_energy_diagram",
     "show_memory", "show_profile", "reset_element_colors", "toggle_atom_labels",
     "toggle_background", "toggle_dark_ui", "toggle_orthographic",
+    "toggle_figure_outlines", "toggle_chrome",
     "toggle_ssao", "toggle_reduce_detail", "toggle_scf_skip_guess",
     "toggle_scf_log_energy", "toggle_spectra_compare",
     "toggle_compare_mode", "toggle_compare_align", "toggle_color_by_esp",
@@ -66,6 +77,8 @@ WITH_ARGS = [
     ("toggle_mo_visibility", (True,)),
     ("toggle_color_by_charge", (False,)),
     ("toggle_toon", (True,)),
+    ("toggle_figure_outlines", (True,)),
+    ("toggle_chrome", (True,)),
     ("open_element_picker", ("new",)),
     ("pick_element", ("N",)),
     # Arg counts here match each binding exactly; a mismatch is a real defect.
@@ -708,31 +721,31 @@ def test_wavefunction_controllers_record_and_replay_surface_recipe(
         ctrl.activate_section("wf")
 
         monkeypatch.setattr(
-            appmod,
+            appmod._helpers,
             "_render_mo_volume",
             lambda _r, _p, _v, _s, _section, index, spin, **_kwargs: calls.append(
                 ("mo", index, spin)
             ),
         )
         monkeypatch.setattr(
-            appmod,
+            appmod._helpers,
             "_render_wf_density",
             lambda _r, _p, _v, current, _section, **_kwargs: calls.append(
                 ("density", current.wf_density_spin)
             ),
         )
         monkeypatch.setattr(
-            appmod,
+            appmod._helpers,
             "_render_wf_elf",
             lambda *_args, **_kwargs: calls.append(("elf",)),
         )
         monkeypatch.setattr(
-            appmod,
+            appmod._helpers,
             "_render_wf_nci",
             lambda *_args, **_kwargs: calls.append(("nci",)),
         )
         monkeypatch.setattr(
-            appmod,
+            appmod._helpers,
             "_render_wf_laplacian",
             lambda *_args, **_kwargs: calls.append(("laplacian",)),
         )
@@ -765,7 +778,7 @@ def test_wavefunction_controllers_record_and_replay_surface_recipe(
             plotter.add_mesh(pv.Sphere(), name="mo_iso_partial")
             raise RuntimeError("render failed")
 
-        monkeypatch.setattr(appmod, "_render_mo_volume", fail_mo)
+        monkeypatch.setattr(appmod._helpers, "_render_mo_volume", fail_mo)
         ctrl.render_mo("restricted:0")
         assert state.wf_surface_kind == "elf"
         assert state.mo_visible is False
@@ -777,7 +790,7 @@ def test_wavefunction_controllers_record_and_replay_surface_recipe(
             plotter.add_mesh(pv.Sphere(), name="mo_iso_partial")
             raise RuntimeError("density failed")
 
-        monkeypatch.setattr(appmod, "_render_wf_density", fail_density)
+        monkeypatch.setattr(appmod._helpers, "_render_wf_density", fail_density)
         ctrl.compute_wf_density(True)
         assert state.wf_surface_kind == "elf"
         assert state.wf_density_spin is False
@@ -789,7 +802,7 @@ def test_wavefunction_controllers_record_and_replay_surface_recipe(
         state.mo_last_index = None
         state.mo_visible = False
         monkeypatch.setattr(
-            appmod,
+            appmod._helpers,
             "_replay_wavefunction_surface",
             lambda *_args: replayed.append("nci") or True,
             raising=False,
@@ -803,7 +816,7 @@ def test_wavefunction_controllers_record_and_replay_surface_recipe(
             raise RuntimeError("replay failed")
 
         monkeypatch.setattr(
-            appmod, "_replay_wavefunction_surface", fail_rebuild_replay
+            appmod._helpers, "_replay_wavefunction_surface", fail_rebuild_replay
         )
         ctrl.update_replication(1, 1, 1)
         assert state.status_message == (
@@ -879,7 +892,7 @@ def test_real_mo_surface_survives_scene_rebuild(tables_qvf, monkeypatch):
 
         pushed_surface_state = []
         monkeypatch.setattr(
-            appmod,
+            appmod._helpers,
             "_push_view",
             lambda current: pushed_surface_state.append(
                 any(str(name).startswith("mo_iso_") for name in current.actors)
@@ -913,7 +926,7 @@ def test_volume_activation_does_not_duplicate_viewport_push(
         app = create_app(reader)
         plotter = created[0]
         updates = []
-        plotter._vibe_view_update = lambda: updates.append("push")
+        _scene_hooks(plotter).update = lambda: updates.append("push")
 
         app.controller.activate_section("vol_dens_0")
 
@@ -967,7 +980,7 @@ def test_section_switch_invalidates_inflight_computed_surface(
             plotter.add_mesh(pv.Sphere(), name="mo_iso_stale")
             return "stale animation frame"
 
-        monkeypatch.setattr(appmod, renderer_name, blocking_render)
+        monkeypatch.setattr(appmod._helpers, renderer_name, blocking_render)
 
         def run_surface() -> None:
             try:
@@ -1048,7 +1061,7 @@ def test_panel_reload_serializes_reader_swap_with_computed_surface(
         plotter = created[0]
         ctrl.activate_section("wf")
         pushes = []
-        plotter._vibe_view_update = lambda: pushes.append(
+        _scene_hooks(plotter).update = lambda: pushes.append(
             tuple(
                 str(name)
                 for name in plotter.actors
@@ -1063,7 +1076,7 @@ def test_panel_reload_serializes_reader_swap_with_computed_surface(
             plotter.add_mesh(pv.Sphere(), name="mo_iso_current")
             return "render completed"
 
-        monkeypatch.setattr(appmod, "_render_mo_volume", blocking_render)
+        monkeypatch.setattr(appmod._helpers, "_render_mo_volume", blocking_render)
 
         def render_surface() -> None:
             try:
@@ -1165,7 +1178,7 @@ def test_stopping_inflight_animation_restores_committed_surface(
             plotter.add_mesh(pv.Sphere(), name="mo_iso_restored")
             return "restored committed surface"
 
-        monkeypatch.setattr(appmod, "_render_mo_volume", blocking_then_restore)
+        monkeypatch.setattr(appmod._helpers, "_render_mo_volume", blocking_then_restore)
 
         def start_animation() -> None:
             try:
@@ -1251,9 +1264,9 @@ def test_animation_step_cannot_advance_new_wavefunction_picker(
                 raise RuntimeError("test picker step was not released")
             return real_step(current_state, direction)
 
-        monkeypatch.setattr(appmod, "_step_mo_selection", blocking_step)
+        monkeypatch.setattr(appmod._helpers, "_step_mo_selection", blocking_step)
         monkeypatch.setattr(
-            appmod,
+            appmod._helpers,
             "_render_mo_volume",
             lambda *_args, **_kwargs: "animation frame",
         )
@@ -1343,7 +1356,7 @@ def test_panel_reload_preserves_in_memory_wavefunction_overlay(
             current_plotter.add_mesh(pv.Sphere(), name="mo_iso_transferred")
             return "rendered transferred overlay"
 
-        monkeypatch.setattr(appmod, "_render_mo_volume", render_transferred)
+        monkeypatch.setattr(appmod._helpers, "_render_mo_volume", render_transferred)
         ctrl.render_mo("restricted:0")
 
         assert len(calls) == 1

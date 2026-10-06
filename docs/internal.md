@@ -20,6 +20,7 @@ still relevant it is cited from the code or the maintained developer guides.
 audit_2026_07_02
 design_refresh_2026
 desktop_packaging_design
+volume_rendering_design
 parity_cross_repo_asks
 ROADMAP_AVOGADRO_PARITY
 ```
@@ -31,6 +32,7 @@ ROADMAP_AVOGADRO_PARITY
 | [Audit, 2026-07-02](audit_2026_07_02.md) | A correctness pass over the viewer, with the live-UI QA evidence behind it |
 | [Design refresh 2026](design_refresh_2026.md) | The visual and interaction refresh: materials, lighting, ambient occlusion |
 | [Desktop packaging design](desktop_packaging_design.md) | How the Electron app is built, owned and updated, and why source and packaged builds differ |
+| [Direct volume rendering design](volume_rendering_design.md) | The proposed first version of direct volume rendering: what the client can draw, the capped and quantised payload, the transfer function, and the questions for the maintainer |
 | [Cross-repository parity asks](parity_cross_repo_asks.md) | Things the viewer needs from producers, filed before the repositories were split |
 | [Avogadro parity roadmap](ROADMAP_AVOGADRO_PARITY.md) | The feature-parity plan through v2.15.2, frozen at the split. The maintained plan is the [Roadmap](roadmap.md) |
 
@@ -49,7 +51,7 @@ original scripts.
 
 | Script | What it does |
 |---|---|
-| `bench_cartoon_payload.py`, `bench_label_orientation.py`, `bench_representation_build.py` | Micro-benchmarks for the renderers they name |
+| `bench_cartoon_payload.py`, `bench_label_orientation.py`, `bench_representation_build.py`, `bench_volume_payload.py`, `bench_volume_fps.py` | Micro-benchmarks for the renderers they name |
 | `capture_screenshots.py`, `capture_tui_screenshots.py` | Regenerate the browser and terminal screenshots under `docs/images/` |
 | `interact_controls.py` | Trusted-event Playwright driver for the live UI — catches handlers that a headless `eval` harness never fires |
 | `qa_*.py` | Live GPU/trame QA harnesses: job containers, live optimisation, live reload, streaming, panel injection, the details sandbox |

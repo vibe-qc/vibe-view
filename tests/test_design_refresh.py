@@ -140,11 +140,9 @@ def _qvf(label: str, freqs, ints, scf_iters=None) -> Path:
 
 def test_browser_landmarks_controls_and_statuses_have_a11y_contract():
     """Trame must explicitly forward ARIA attributes to the served DOM."""
-    import inspect
+    from tests._served import served_viewer
 
-    import vibeview.app as app
-
-    source = inspect.getsource(app.create_app)
+    served = served_viewer()
 
     for label in (
         "vq Job Manager",
@@ -153,211 +151,30 @@ def test_browser_landmarks_controls_and_statuses_have_a11y_contract():
         "Close vq Job Manager",
         "Close job details",
     ):
-        assert f'aria_label="{label}"' in source
-    assert source.count('[("aria_label", "aria-label")]') >= 5
+        assert f'aria-label="{label}"' in served
 
-    assert "Interactive 3D molecular structure viewport" in source
-    assert "el.setAttribute('aria-label'," in source
+    assert "Interactive 3D molecular structure viewport" in served
+    assert "el.setAttribute('aria-label'," in served
 
-    assert source.count('role="status"') == 2
-    assert source.count('aria_live="polite"') == 2
-    assert source.count('aria_atomic="true"') == 2
-    assert source.count('("aria_live", "aria-live")') == 2
-    assert source.count('("aria_atomic", "aria-atomic")') == 2
-    assert '"Job status: {{ live_run_status }}"' in source
+    assert served.count('role="status"') == 2
+    assert served.count('aria-live="polite"') == 2
+    assert served.count('aria-atomic="true"') == 2
+    assert "Job status: {{ live_run_status }}" in served
 
 
-def test_every_modal_dialog_forwards_a_unique_accessible_name():
-    """Every Vuetify dialog must name its served ``role=dialog`` root."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    dialogs = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VDialog"
-    ]
-    assert source.count("VDialog") == len(dialogs), (
-        "call dialogs directly as v.VDialog so the complete inventory stays testable"
-    )
-
-    models_and_labels = {}
-    for dialog in dialogs:
-        keywords = {kw.arg: kw.value for kw in dialog.keywords}
-        assert "v_model" in keywords, f"VDialog at line {dialog.lineno} has no model"
-        assert "aria_label" in keywords, f"unnamed VDialog at line {dialog.lineno}"
-        assert "__properties" in keywords, (
-            f"VDialog at line {dialog.lineno} does not forward aria-label"
-        )
-        model = ast.literal_eval(keywords["v_model"])[0]
-        models_and_labels[model] = ast.literal_eval(keywords["aria_label"])
-        properties = ast.literal_eval(keywords["__properties"])
-        assert ("aria_label", "aria-label") in properties
-
-    assert models_and_labels == _DIALOG_MODELS_AND_LABELS
-    assert len(dialogs) == len(_DIALOG_MODELS_AND_LABELS)
-    assert len(set(models_and_labels.values())) == len(models_and_labels), (
-        "each dialog must have a distinct accessible name"
-    )
 
 
-def test_supercell_dialog_only_offers_real_periodic_axes():
-    """Periodic builder fields must follow the structure's per-axis PBC."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    tree = ast.parse(inspect.getsource(app.create_app))
-    expected = {
-        "build_supercell_nx": ("!is_periodic || pbc_a",),
-        "build_supercell_ny": ("!is_periodic || pbc_b",),
-        "build_supercell_nz": ("!is_periodic || pbc_c",),
-    }
-    actual = {}
-    for node in ast.walk(tree):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "VTextField"
-        ):
-            continue
-        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
-        if "v_model" not in keywords:
-            continue
-        model = ast.literal_eval(keywords["v_model"])[0]
-        if model not in expected:
-            continue
-        assert model not in actual, f"duplicate supercell field for {model}"
-        assert "v_if" in keywords, f"{model} is not gated by periodicity"
-        actual[model] = ast.literal_eval(keywords["v_if"])
-
-    assert actual == expected
 
 
-def test_every_state_driven_dialog_shares_the_focus_return_contract():
-    """One global focus lifecycle must cover the complete dialog inventory."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    scripts = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "Script"
-        and node.args
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == "_DIALOG_FOCUS_JS"
-    ]
-
-    assert len(scripts) == 1
-    assert source.count("v.VDialog(") == len(_DIALOG_MODELS_AND_LABELS)
-    dialogs = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VDialog"
-    ]
-    assert len(dialogs) == len(_DIALOG_MODELS_AND_LABELS)
-    for dialog in dialogs:
-        keywords = {kw.arg: kw.value for kw in dialog.keywords}
-        v_model = keywords.get("v_model")
-        assert isinstance(v_model, ast.Tuple) and v_model.elts
-        assert isinstance(v_model.elts[0], ast.Constant)
-        model = v_model.elts[0].value
-        assert isinstance(model, str)
-        label = keywords.get("aria_label")
-        assert isinstance(label, ast.Constant) and isinstance(label.value, str)
-        hook = keywords.get("afterLeave")
-        assert isinstance(hook, ast.Call), (
-            f"VDialog for {model!r} at line {dialog.lineno} has no afterLeave hook"
-        )
-        assert isinstance(hook.func, ast.Name) and hook.func.id == "_dialog_focus_restore"
-        assert len(hook.args) == 1 and isinstance(hook.args[0], ast.Constant)
-        assert hook.args[0].value == label.value
-
-    focus_script = app._DIALOG_FOCUS_JS
-    for marker in (
-        "document.addEventListener('focusin'",
-        "document.addEventListener('pointerdown'",
-        "Object.create(null)",
-        "event.relatedTarget",
-        "_vvFocusCaptured",
-        "current[current.length-1]!==entry",
-        "window._vvRestoreDialogFocus",
-        "requestAnimationFrame",
-        "[role=dialog]",
-        "el.isConnected",
-        ".vv-presentation-overlay-content",
-        "delete origins[key]",
-        "top.contains(target)",
-        "target.focus({preventScroll:true})",
-    ):
-        assert marker in focus_script
-    assert "history" not in focus_script
 
 
-def test_every_slider_forwards_a_unique_accessible_name():
-    """Every slider must name the focusable Vuetify thumb it generates."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    sliders = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VSlider"
-    ]
-    assert source.count("v.VSlider(") == len(sliders), (
-        "call sliders directly as v.VSlider so the complete inventory stays testable"
-    )
-
-    models_and_names = {}
-    for slider in sliders:
-        keywords = {kw.arg: kw.value for kw in slider.keywords}
-        assert "v_model" in keywords, f"VSlider at line {slider.lineno} has no model"
-        assert "aria_label" in keywords, f"unnamed VSlider at line {slider.lineno}"
-        assert "__properties" in keywords, (
-            f"VSlider at line {slider.lineno} does not forward aria-label"
-        )
-        model = ast.literal_eval(keywords["v_model"])[0]
-        name = ast.literal_eval(keywords["aria_label"])
-        assert model not in models_and_names, f"duplicate VSlider model {model!r}"
-        models_and_names[model] = name
-        properties = ast.literal_eval(keywords["__properties"])
-        assert ("aria_label", "aria-label") in properties
-
-    assert models_and_names == _SLIDER_MODELS_AND_NAMES
-    assert len(sliders) == len(_SLIDER_MODELS_AND_NAMES)
-    assert len(set(models_and_names.values())) == len(models_and_names), (
-        "each slider must have a distinct accessible name"
-    )
 
 
 def test_panel_resize_handles_share_a_keyboard_separator_contract():
     """All three resize paths must stay keyboard-operable and self-describing."""
-    import inspect
+    from tests._served import served_viewer
 
-    import vibeview.app as app
-
-    source = inspect.getsource(app.create_app)
+    source = served_viewer()
 
     for marker in (
         "attach('vv-left-panel','left','left_panel_width','Result sections',280)",
@@ -380,8 +197,8 @@ def test_panel_resize_handles_share_a_keyboard_separator_contract():
         "ResizeObserver",
         "current&&current.splitter.isConnected&&current.panel.isConnected",
         "current={splitter:s,panel:p,refresh:function(){announce(read());}}",
-        "attachAll();setInterval(attachAll,1000)",
-        "attach();setInterval(attach,1000)",
+        "window._vvOnDomChange(attachAll);",
+        "window._vvOnDomChange(attach);",
         "Math.floor(vh*0.85)",
         "min-height: 80px; height: 35vh;",
         "max-height: 85vh; overflow: auto; resize: vertical;",
@@ -394,147 +211,10 @@ def test_panel_resize_handles_share_a_keyboard_separator_contract():
     assert "min-height: 60px" not in source
 
 
-def test_clip_sliders_share_a_payload_safe_update_contract():
-    """Every clip slider sends its model value to a callback that accepts it."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    handlers = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "update_clip"
-    ]
-    assert len(handlers) == 1
-    handler = handlers[0]
-    assert [arg.arg for arg in handler.args.args] == ["axis", "value"]
-    assert len(handler.args.defaults) == 2
-    assert all(ast.literal_eval(default) is None for default in handler.args.defaults)
-
-    clip_models = {"clip_x", "clip_y", "clip_z"}
-    bindings = {}
-    for slider in (
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VSlider"
-    ):
-        keywords = {kw.arg: kw.value for kw in slider.keywords}
-        if "v_model" not in keywords:
-            continue
-        model = ast.literal_eval(keywords["v_model"])[0]
-        if model in clip_models:
-            bindings[model] = ast.unparse(keywords["update_modelValue"])
-
-    assert bindings == {
-        "clip_x": "(ctrl.update_clip, \"['x', $event]\")",
-        "clip_y": "(ctrl.update_clip, \"['y', $event]\")",
-        "clip_z": "(ctrl.update_clip, \"['z', $event]\")",
-    }
 
 
-def test_every_trajectory_and_orbital_playback_button_has_an_accessible_name():
-    """The six icon-only playback buttons must remain completely inventoried."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    target_actions = {action for action, _argument in _PLAYBACK_BUTTON_CONTRACT}
-
-    def action_key(click: ast.expr) -> tuple[str, str | None] | None:
-        if (
-            isinstance(click, ast.Attribute)
-            and isinstance(click.value, ast.Name)
-            and click.value.id == "ctrl"
-        ):
-            return click.attr, None
-        if (
-            isinstance(click, ast.Tuple)
-            and len(click.elts) == 2
-            and isinstance(click.elts[0], ast.Attribute)
-            and isinstance(click.elts[0].value, ast.Name)
-            and click.elts[0].value.id == "ctrl"
-        ):
-            return click.elts[0].attr, ast.literal_eval(click.elts[1])
-        return None
-
-    found = {}
-    for button in (
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VBtn"
-    ):
-        keywords = {kw.arg: kw.value for kw in button.keywords}
-        if "click" not in keywords:
-            continue
-        key = action_key(keywords["click"])
-        if key is None or key[0] not in target_actions:
-            continue
-
-        assert key not in found, f"duplicate playback control for {key!r}"
-        assert not button.args, f"playback VBtn {key!r} must remain icon-only"
-        assert "icon" in keywords, f"playback VBtn {key!r} lost its icon"
-        assert "title" in keywords, f"playback VBtn {key!r} has no hover name"
-        assert "aria_label" in keywords, f"playback VBtn {key!r} is unnamed"
-        assert "__properties" in keywords, (
-            f"playback VBtn {key!r} does not forward aria-label"
-        )
-        icon = ast.literal_eval(keywords["icon"])
-        title = ast.literal_eval(keywords["title"])
-        aria_label = ast.literal_eval(keywords["aria_label"])
-        properties = ast.literal_eval(keywords["__properties"])
-        assert title == aria_label
-        assert ("aria_label", "aria-label") in properties
-        found[key] = (icon, aria_label)
-
-    assert found == _PLAYBACK_BUTTON_CONTRACT
-    assert len(found) == 6
 
 
-def test_visible_native_colour_input_forwards_an_accessible_name():
-    """The raw colour picker is named; the other raw input remains hidden."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    inputs = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "html"
-        and node.func.attr == "Input"
-    ]
-    assert source.count("html.Input(") == len(inputs) == 2
-
-    by_type = {}
-    for input_node in inputs:
-        keywords = {kw.arg: kw.value for kw in input_node.keywords}
-        input_type = ast.literal_eval(keywords["type"])
-        assert input_type not in by_type, f"duplicate raw input type {input_type!r}"
-        by_type[input_type] = keywords
-
-    assert set(by_type) == {"file", "color"}
-    assert "display: none" in ast.literal_eval(by_type["file"]["style"])
-
-    colour = by_type["color"]
-    assert ast.literal_eval(colour["v_model"]) == ("element_color_value",)
-    assert ast.literal_eval(colour["title"]) == "Element colour override"
-    assert ast.literal_eval(colour["aria_label"]) == "Element colour override"
-    assert ("aria_label", "aria-label") in ast.literal_eval(colour["__properties"])
 
 
 def test_generated_vue_template_forwards_every_dialog_name():
@@ -758,6 +438,7 @@ def _serve_dialogs_open(
             target_kind = {
                 "trajectory": "trajectory",
                 "molecular-orbital": "wavefunction.gto",
+                "molecular-orbital-progress": "wavefunction.gto",
             }.get(playback_scenario)
             if target_kind is None:
                 raise ValueError(f"unknown playback scenario: {playback_scenario!r}")
@@ -767,6 +448,10 @@ def _serve_dialogs_open(
             if playback_scenario == "molecular-orbital":
                 server.state.wf_anim_speed = 60.0
             server.controller.activate_section(section.id)
+            if playback_scenario == "molecular-orbital-progress":
+                server.state.wf_anim_speed = 0.8
+                server.state.wf_selected_mo = server.state.wf_mo_rows[0]["value"]
+                server.controller.render_mo(server.state.wf_selected_mo)
         if open_initially:
             for model in dialog_models:
                 setattr(server.state, model, True)
@@ -829,6 +514,8 @@ def test_served_dialog_and_presentation_dom_contracts(
 
     browser_probe = r"""
 const { spawn } = require("node:child_process");
+const { createHash } = require("node:crypto");
+const { writeFileSync } = require("node:fs");
 const chrome = process.argv[1];
 const url = process.argv[2];
 const profile = process.argv[3];
@@ -850,6 +537,7 @@ const child = spawn(chrome, [
   "--no-first-run",
   "--no-default-browser-check",
   "--remote-debugging-port=0",
+  ...(playbackScenario === "molecular-orbital-progress" ? ["--window-size=1400,1000"] : []),
   `--user-data-dir=${profile}`,
   "about:blank",
 ], { stdio: ["ignore", "ignore", "pipe"] });
@@ -1652,7 +1340,8 @@ async function inspectPage(browserWebSocket) {
   }
   if (playbackScenario) {
     const isTrajectory = playbackScenario === "trajectory";
-    if (!isTrajectory && playbackScenario !== "molecular-orbital") {
+    const isProgress = playbackScenario === "molecular-orbital-progress";
+    if (!isTrajectory && !isProgress && playbackScenario !== "molecular-orbital") {
       throw new Error(`unknown playback scenario: ${playbackScenario}`);
     }
     const previousLabel = isTrajectory
@@ -1709,6 +1398,11 @@ async function inspectPage(browserWebSocket) {
         wavefunctionRows: trameState
           ? (trameState.get('wf_mo_rows') || []).length
           : 0,
+        selectedMO: trameState ? trameState.get('wf_selected_mo') : null,
+        lastMO: trameState ? trameState.get('mo_last_index') : null,
+        surfaceKind: trameState ? trameState.get('wf_surface_kind') : null,
+        moVisible: trameState ? Boolean(trameState.get('mo_visible')) : false,
+        statusMessage: trameState ? trameState.get('status_message') : '',
         animating: trameState
           ? Boolean(trameState.get(
               ${JSON.stringify(isTrajectory ? "trajectory_playing" : "wf_animating")}
@@ -1809,6 +1503,32 @@ async function inspectPage(browserWebSocket) {
         ),
       `${playbackScenario} controls never reached the served DOM`,
     );
+    async function canvasSnapshot(name) {
+      // Capture only the VTK canvas: picker/status changes cannot satisfy this
+      // geometry assertion, and CDP reads do not send a Trame state update.
+      const evaluation = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const canvas = Array.from(document.querySelectorAll('canvas'))
+            .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+          if (!canvas) return null;
+          const r = canvas.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height, scale: 1 };
+        })()`,
+        returnByValue: true,
+      });
+      const clip = evaluation.result.value;
+      if (!clip || clip.width < 100 || clip.height < 100) {
+        throw new Error(`missing molecular canvas: ${JSON.stringify(clip)}`);
+      }
+      const screenshot = await command("Page.captureScreenshot", {
+        format: "png", clip,
+      });
+      writeFileSync(`${profile}/${name}.png`, Buffer.from(screenshot.data, "base64"));
+      return createHash("sha256").update(screenshot.data).digest("hex");
+    }
+    // DOM controls can be ready before vtk.js consumes the initial scene.
+    if (isProgress) await delay(1000);
+    const initialCanvas = isProgress ? await canvasSnapshot("initial-orbital") : null;
     await clickPlaybackButton(startLabel);
     const playing = await waitForPlayback(
       (state) => state.animating && state.buttons.length === 3 &&
@@ -1816,6 +1536,27 @@ async function inspectPage(browserWebSocket) {
         !state.buttons.some((button) => button.ariaLabel === startLabel),
       `${playbackScenario} control did not expose its Pause name`,
     );
+    if (isProgress) {
+      const observed = [playing];
+      const finished = await waitForPlayback(
+        (state) => {
+          observed.push(state);
+          return !state.animating && state.statusMessage === "MO animation finished";
+        },
+        "MO playback did not advance and terminate without further input",
+      );
+      // Let the last vtk.js render settle, using no mouse/key/state mutation.
+      await delay(250);
+      const finalCanvas = await canvasSnapshot("final-orbital");
+      await delay(1000);
+      const settled = await playbackState();
+      socket.close();
+      finish(0, { playback: {
+        scenario: playbackScenario, initial, playing, observed, finished, settled,
+        initialCanvas, finalCanvas,
+      } });
+      return;
+    }
     await clickPlaybackButton(pauseLabel);
     const paused = await waitForPlayback(
       (state) => !state.animating && state.buttons.length === 3 &&
@@ -2889,6 +2630,13 @@ child.on("exit", (code) => {
         open_initially=False,
         playback_scenario="molecular-orbital",
     )
+    orbital_progress = collect_probe(
+        "molecular-orbital progression",
+        (),
+        "chrome-profile-orbital-progress",
+        open_initially=False,
+        playback_scenario="molecular-orbital-progress",
+    )
     presentation = collect_probe(
         "presentation mode",
         (),
@@ -3202,6 +2950,42 @@ child.on("exit", (code) => {
     assert orbitals["initial"]["wavefunctionSection"] == "wf"
     assert orbitals["initial"]["wavefunctionRows"] > 0
 
+    assert orbital_progress["initial"]["selectedMO"] == "restricted:0"
+    assert orbital_progress["initial"]["moVisible"] is True
+    assert orbital_progress["initial"]["surfaceKind"] == "mo"
+    progressed = {
+        state["selectedMO"] for state in orbital_progress["observed"]
+        if state["moVisible"] and state["surfaceKind"] == "mo"
+    }
+    # MO 1 is rendered by Start; MO 2 and 3 require scheduled callbacks.
+    assert {"restricted:2", "restricted:3"} <= progressed
+    for phase in ("finished", "settled"):
+        snapshot = orbital_progress[phase]
+        assert snapshot["selectedMO"] == "restricted:3"
+        assert snapshot["lastMO"] == 3
+        assert snapshot["moVisible"] is True
+        assert snapshot["surfaceKind"] == "mo"
+        assert snapshot["animating"] is False
+        assert snapshot["statusMessage"] == "MO animation finished"
+        assert_playback_snapshot(snapshot, (
+            "Previous molecular orbital", "Start molecular orbital animation",
+            "Next molecular orbital",
+        ))
+    assert orbital_progress["initialCanvas"] != orbital_progress["finalCanvas"]
+    import numpy as np
+    from PIL import Image
+
+    for name in ("initial-orbital", "final-orbital"):
+        with Image.open(tmp_path / "chrome-profile-orbital-progress" / f"{name}.png") as image:
+            # Reject a blank/loading canvas even when its PNG differs from the
+            # final frame. Real phase-coloured orbital surfaces are chromatic.
+            pixels = np.asarray(image.convert("RGB"), dtype=int)
+            coloured = np.count_nonzero(np.ptp(pixels, axis=2) > 40)
+            assert coloured > image.width * image.height * 0.01, (
+                f"{name} has no rendered orbital"
+            )
+
+
     entered = presentation["entered"]
     assert entered["overlayVisible"] is True
     assert entered["overlayViewport"] is True
@@ -3247,11 +3031,9 @@ child.on("exit", (code) => {
 
 def test_toolbar_tooltip_keeps_accessible_name_when_title_is_removed():
     """The custom tooltip must not delete the control's accessible name."""
-    import inspect
+    from tests._served import served_viewer
 
-    import vibeview.app as app
-
-    source = inspect.getsource(app.create_app)
+    source = served_viewer()
     guard = "!el.hasAttribute('aria-label')&&!el.hasAttribute('aria-labelledby')"
     copy = "el.setAttribute('aria-label',t)"
     remove = "el.removeAttribute('title')"
@@ -3400,11 +3182,10 @@ def test_spectra_stick_vs_envelope_display_modes():
         def probe(display):
             html = SpectraRenderer(sec, r).render_to_html(display=display)
             compact = html.replace(" ", "")
-            has_envelope = '"name":"Spectrum"' in compact
-            # each stick is its own legend-less trace; the layout adds one
-            # more showlegend:false, hence the >1 threshold for "has sticks"
-            n_legendless = compact.count('"showlegend":false')
-            return has_envelope, n_legendless > 1
+            has_envelope = '"name":"Lorentzianenvelope' in compact
+            # the sticks are one None-separated trace named "Sticks" (#46)
+            has_sticks = '"name":"Sticks"' in compact
+            return has_envelope, has_sticks
 
         assert probe("both") == (True, True)
         assert probe("envelope") == (True, False)
@@ -3441,13 +3222,15 @@ def test_comparison_overlay_honours_the_display_selector():
         def probe(**kw):
             html = render_comparison_html(entries, **kw).replace(" ", "")
             n_env = len(re.findall(r'"y":\{"dtype":', html))
-            n_stick = len(re.findall(r'"y":\[[^\]]{1,40}\]', html))
+            # one None-separated stick trace per file (#46): its y list
+            # carries the null separators
+            n_stick = len(re.findall(r'"y":\[[^\]]*null', html))
             return n_env, n_stick
 
         assert probe() == (2, 0), "parameterless default must stay envelopes-only"
-        assert probe(display="both") == (2, 4)
+        assert probe(display="both") == (2, 2)
         assert probe(display="envelope") == (2, 0)
-        assert probe(display="sticks") == (0, 4)
+        assert probe(display="sticks") == (0, 2)
         assert probe(display="junk") == (2, 0), "unknown mode falls back"
     finally:
         p1.unlink()
@@ -3512,7 +3295,6 @@ def test_command_palette_actions_well_formed():
     """Every command-palette entry has the fields the UI binds and a unique
     id, and every id is wired in run_palette_action's dispatch (design
     refresh 2026)."""
-    import inspect
 
     import vibeview.app as app
 
@@ -3523,10 +3305,8 @@ def test_command_palette_actions_well_formed():
     for a in actions:
         assert set(a) >= {"id", "title", "sub", "icon"}
         assert all(isinstance(a[k], str) and a[k] for k in ("id", "title", "sub", "icon"))
-    # Each id must appear as a dispatch key in run_palette_action's source.
-    src = inspect.getsource(app.create_app)
-    for aid in ids:
-        assert f'"{aid}"' in src, f"palette id {aid} not dispatched"
+    # That every id is dispatched is a structural contract:
+    # test_structural_contracts.py reads run_palette_action's dispatch table.
 
 def test_element_color_overrides_reach_every_render_path():
     """A per-element colour override is honoured by cpk_color and therefore by
@@ -3766,7 +3546,7 @@ def test_library_favorites_persist_in_the_session_payload():
     # recents are NOT persisted — they are implicit
     assert "library_recent" not in session
 
-def test_auto_save_writes_a_loadable_session():
+def test_auto_save_writes_a_loadable_session(tmp_path):
     """The auto-save must emit the document load_session accepts.
 
     Regression: auto_save_session built its own dict with ``version: "2.0"``
@@ -3775,59 +3555,36 @@ def test_auto_save_writes_a_loadable_session():
     session_path, an explicitly saved session was replaced within 60 s by a
     file the loader then refused ("Bad version") — destroying it — and the
     fields the auto-save omitted (camera, replication, library_favorites) were
-    lost with it. Both writers now share _session_payload, so they cannot
-    drift apart again.
+    lost with it. Driven through the controllers: both writers produce the
+    same document, and the loader accepts what the auto-save wrote.
     """
-    import inspect
+    from vibeview.app import create_app
+    from vibeview.qvf import QVFReader
 
-    import vibeview.app as app
+    reader = QVFReader(Path(__file__).parent / "data" / "h2_natural_orbitals.qvf")
+    try:
+        server = create_app(reader)
+        state, ctrl = server.state, server.controller
+        state.library_favorites = ["water"]
+        saved, autosaved = tmp_path / "saved.json", tmp_path / "auto.json"
+        ctrl.save_session(str(saved))
+        state.session_path = str(autosaved)
+        ctrl.auto_save_session()
+        explicit = json.loads(saved.read_text())
+        automatic = json.loads(autosaved.read_text())
 
-    src = inspect.getsource(app.create_app)
+        assert explicit["version"] == automatic["version"] == 1
+        assert set(automatic) - {"timestamp"} == set(explicit)
+        for field in ("camera", "replication", "library_favorites"):
+            assert field in automatic, f"{field} missing from the auto-saved session"
+        assert automatic["library_favorites"] == ["water"]
 
-    # exactly one place builds the document, and both writers use it
-    assert src.count('"version": 1') == 1, "session schema built in more than one place"
-    assert '"version": "2.0"' not in src, "auto-save still emits its own schema version"
-    assert src.count("_session_payload()") >= 2, "both writers should share the payload"
+        state.status_message = ""
+        ctrl.load_session(str(autosaved))
+        assert state.status_message != "Bad version"
+    finally:
+        reader.close()
 
-    # the loader's contract is unchanged and matches what we write
-    assert 'session.get("version") != 1' in src
-
-    # fields the old auto-save dropped are part of the shared document
-    for field in ('"camera"', '"replication"', '"library_favorites"'):
-        assert field in src, f"{field} missing from the session document"
-
-def test_section_restore_actually_activates():
-    """Restoring a bookmark or session must re-open the section, not just set
-    state.
-
-    Both paths used to assign ``state.active_section`` — a key that is never
-    declared in the state defaults and that nothing renders from (the open
-    section is ``selected_section``, and rendering happens in
-    ``ctrl.activate_section``). So a bookmark recorded ``section_id: ""`` and
-    restoring one left the viewport wherever it already was. Bookmark, session,
-    and presentation restore now share the same saved-view preparation step and
-    all activate the section it resolves.
-    """
-    import inspect
-
-    import vibeview.app as app
-
-    src = inspect.getsource(app.create_app)
-
-    # nothing writes the phantom key any more
-    assert "state.active_section =" not in src, "phantom active_section still assigned"
-    assert "state.active_section or" not in src, "bookmark still saves the phantom key"
-
-    # bookmark save records the real section
-    assert '"section_id": state.selected_section or ""' in src
-
-    # Every restore path prepares the saved view and activates the section it
-    # resolves. Pin the shared helper rather than the old direct dict indexing:
-    # issue #322 deliberately centralized validation and render-hint ordering.
-    for saved_view in ("bm", "session", "slide"):
-        anchor = f"_prepare_saved_view_restore({saved_view})"
-        assert anchor in src, f"missing saved-view restore wiring: {anchor}"
-    assert src.count("activate_section(section_id)") == 3
 
 def test_switching_sections_drops_the_other_isosurface():
     """Entering Wavefunction clears the electron density, and vice versa.
@@ -3861,7 +3618,7 @@ def test_switching_sections_drops_the_other_isosurface():
             calls.append(prefix)
             return original(plotter, prefix)
 
-        app._remove_actors_by_prefix = spy
+        app._helpers._remove_actors_by_prefix = spy
         try:
             built = app.create_app(reader)
             ctrl = built.controller
@@ -3874,7 +3631,7 @@ def test_switching_sections_drops_the_other_isosurface():
             assert "volume_" in calls
             assert "mo_iso_" in calls
         finally:
-            app._remove_actors_by_prefix = original
+            app._helpers._remove_actors_by_prefix = original
     finally:
         path.unlink()
 

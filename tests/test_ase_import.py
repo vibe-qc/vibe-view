@@ -12,13 +12,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from vibeview.bonds import structure_bonds
 from vibeview.converters import (
     _ASE_EXTENSIONS,
     _SUPPORTED_EXTENSIONS,
     convert_to_qvf,
     detect_format,
 )
-from vibeview.qvf import QVFReader, _infer_bonds_by_radii
+from vibeview.qvf import QVFReader
 
 ase = pytest.importorskip("ase", reason="needs the [ase] extra")
 
@@ -99,7 +100,7 @@ class TestTheCellIsActuallyUsed:
 
     def test_diamond_silicon_is_four_coordinate(self, tmp_path):
         sd = _structure(_poscar(tmp_path), tmp_path)
-        bonds = _infer_bonds_by_radii(sd)
+        bonds = structure_bonds(sd)
         degree = {i: 0 for i in range(len(sd.atoms))}
         for i, j, _order, _image in bonds:
             degree[i] += 1
@@ -109,7 +110,7 @@ class TestTheCellIsActuallyUsed:
     def test_bonds_are_at_the_real_si_si_distance(self, tmp_path):
         sd = _structure(_poscar(tmp_path), tmp_path)
         lattice = np.asarray(sd.lattice_vectors)
-        for i, j, _order, image in _infer_bonds_by_radii(sd):
+        for i, j, _order, image in structure_bonds(sd):
             p1 = np.asarray(sd.atoms[i].position)
             p2 = np.asarray(sd.atoms[j].position) + np.asarray(image) @ lattice
             assert float(np.linalg.norm(p2 - p1)) == pytest.approx(2.351, abs=1e-3)

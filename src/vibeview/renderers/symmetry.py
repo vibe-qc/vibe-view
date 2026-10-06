@@ -15,11 +15,11 @@ Long values (lists, matrices) are rendered as ``<pre>`` so a
 
 from __future__ import annotations
 
-import html
 import json
 from typing import TYPE_CHECKING
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._html import empty_panel, kv_table, panel_document
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader, Section, SymmetryData
@@ -81,11 +81,7 @@ class SymmetryRenderer(BaseRenderer):
             if k not in _SUPPRESSED_KEYS and not k.startswith("_")
         }
         if not items:
-            return (
-                '<div style="padding: 16px;">'
-                "structure.symmetry section is empty."
-                "</div>"
-            )
+            return empty_panel("structure.symmetry section is empty.")
 
         # Order: conventional keys first (in _KEY_ORDER), then anything
         # else alphabetically.
@@ -96,30 +92,7 @@ class SymmetryRenderer(BaseRenderer):
         for k in sorted(items):
             ordered.append((k, items[k]))
 
-        rows: list[str] = []
-        for key, value in ordered:
-            cell, is_block = _format_value(value)
-            safe_key = html.escape(key)
-            safe_val = html.escape(cell)
-            if is_block:
-                value_cell = (
-                    f'<pre style="margin: 0; font-family: monospace; '
-                    f'font-size: 0.85em; white-space: pre-wrap;">{safe_val}</pre>'
-                )
-            else:
-                value_cell = safe_val
-            rows.append(
-                f'<tr>'
-                f'<td style="padding: 4px 12px 4px 0; opacity: 0.7; '
-                f'vertical-align: top; white-space: nowrap;">{safe_key}</td>'
-                f'<td style="padding: 4px 0;">{value_cell}</td>'
-                f'</tr>'
-            )
-
-        return (
-            '<div style="padding: 8px 16px; max-height: 360px; overflow: auto;">'
-            '<table style="border-collapse: collapse; font-size: 0.92em;">'
-            f"{''.join(rows)}"
-            "</table>"
-            "</div>"
-        )
+        # Multi-line values (matrices, nested dicts) render as <pre> blocks;
+        # kv_table decides that from the text itself.
+        rows = [(key, _format_value(value)[0]) for key, value in ordered]
+        return panel_document(kv_table(rows))

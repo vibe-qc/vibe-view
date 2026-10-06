@@ -213,3 +213,54 @@ class TestThreadWatcher:
         w.stop()
         assert not w.is_running
         w.stop()  # idempotent
+
+
+class TestFileWatcher:
+    def test_import(self):
+        from vibeview.file_watcher import QVFFileWatcher, watch_qvf
+
+        assert QVFFileWatcher is not None
+        assert callable(watch_qvf)
+
+    def test_watcher_create(self, tmp_path):
+        from vibeview.file_watcher import QVFFileWatcher
+
+        f = tmp_path / "test.qvf"
+        f.write_text("test")
+        calls = []
+        w = QVFFileWatcher(str(f), lambda p: calls.append(p), interval=0.1)
+        assert not w.is_running
+        w.start()
+        assert w.is_running
+        w.stop()
+        assert not w.is_running
+
+    def test_watcher_detect_change(self, tmp_path):
+        from vibeview.file_watcher import QVFFileWatcher
+
+        f = tmp_path / "test.qvf"
+        f.write_text("initial")
+        calls = []
+        # settle_delay: the hardened watcher waits for the file to stop
+        # moving before firing (see test_file_watcher.py for full coverage).
+        w = QVFFileWatcher(str(f), lambda p: calls.append(p), interval=0.05, settle_delay=0.05)
+        w.start()
+        import time
+
+        time.sleep(0.15)
+        f.write_text("modified")
+        deadline = time.monotonic() + 3.0
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.05)
+        w.stop()
+        assert len(calls) >= 1
+
+    def test_watcher_stop_idempotent(self, tmp_path):
+        from vibeview.file_watcher import QVFFileWatcher
+
+        f = tmp_path / "test.qvf"
+        f.write_text("test")
+        w = QVFFileWatcher(str(f), lambda p: None)
+        w.start()
+        w.stop()
+        w.stop()  # Should not raise
