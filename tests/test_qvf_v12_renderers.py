@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
-import zipfile
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+from tests._qvf_builders import vibe_qc_source, write_archive
 
 
 def _sha(data: bytes) -> str:
@@ -17,17 +17,7 @@ def _sha(data: bytes) -> str:
 
 
 def _make_qvf(sections: list[dict], files: dict[str, bytes]) -> Path:
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "vibe-qc", "version": "1.2", "calculation": "test"},
-        "sections": sections,
-    }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        for path, data in files.items():
-            zf.writestr(path, data)
-    return Path(tmp.name)
+    return write_archive(sections, files, source=vibe_qc_source("1.2", "test"))
 
 
 class TestBondOrdersRenderer:
@@ -470,7 +460,7 @@ class TestBondOrdersEnrichment:
         try:
             reader = QVFReader(path)
             struct = reader.read_structure()
-            bonds = reader.infer_bonds(struct)
+            bonds = reader.connectivity(struct)
             assert len(bonds) == 2
             orders = {frozenset([b[0], b[1]]): b[2] for b in bonds}
             assert abs(orders[frozenset([0, 1])] - 1.23) < 0.01

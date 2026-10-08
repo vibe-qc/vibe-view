@@ -23,7 +23,9 @@ import numpy as np
 import plotly.graph_objects as go
 
 from vibeview.renderers import BaseRenderer
-from vibeview.renderers.bands import _band_axis_ticks
+from vibeview.renderers._plotly import chart_layout, figure_to_html, segment_lines, zero_line
+from vibeview.renderers.bands import band_axis_ticks
+from vibeview.renderers.palette import ACCENT_BLUE, ACCENT_GREEN
 
 if TYPE_CHECKING:
     from vibeview.qvf import PhononBandsData, PhononDOSData, QVFReader, Section
@@ -55,7 +57,7 @@ class PhononBandsRenderer(BaseRenderer):
                     x=list(range(n_q)),
                     y=freq[:, m],
                     mode="lines",
-                    line={"color": "#3366CC", "width": 1},
+                    line={"color": ACCENT_BLUE, "width": 1},
                     name=f"Mode {m + 1}",
                     showlegend=False,
                     hovertemplate="q-pt: %{x}<br>ν: %{y:.2f} cm⁻¹<extra></extra>",
@@ -65,27 +67,22 @@ class PhononBandsRenderer(BaseRenderer):
         # Acoustic floor at omega = 0. A negative (soft) branch dipping below
         # this line is an imaginary mode the user should notice, so mark the
         # zero line rather than clamping the y-range.
-        fig.add_hline(y=0.0, line={"color": "#888888", "width": 1, "dash": "dot"})
+        zero_line(fig)
 
         # q-path segments reuse the electronic k-path tick helper (segments
-        # carry `n_points`, which `_band_axis_ticks` already normalizes).
-        tick_vals, tick_text, boundaries = _band_axis_ticks(qpath, n_q)
-        for start in boundaries:
-            fig.add_vline(x=start, line={"color": "#999999", "width": 0.5, "dash": "dot"})
+        # carry `n_points`, which `band_axis_ticks` already normalizes).
+        tick_vals, tick_text, boundaries = band_axis_ticks(qpath, n_q)
+        segment_lines(fig, boundaries)
 
-        x_axis: dict = {"title": "q-point"}
-        if tick_vals:
-            x_axis.update({"tickvals": tick_vals, "ticktext": tick_text})
-        fig.update_layout(
+        chart_layout(
+            fig,
             title=qpath.get("title", "Phonon Band Structure"),
-            xaxis=x_axis,
-            yaxis={"title": "Frequency (cm⁻¹)"},
-            template="plotly_dark",
-            hovermode="closest",
-            height=450,
-            margin={"l": 60, "r": 20, "t": 50, "b": 50},
+            x_title="q-point",
+            xaxis={"tickvals": tick_vals, "ticktext": tick_text} if tick_vals else None,
+            y_title="Frequency (cm⁻¹)",
+            legend="default",
         )
-        return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs)
+        return figure_to_html(fig, include_plotlyjs=include_plotlyjs)
 
 
 class PhononDOSRenderer(BaseRenderer):
@@ -114,20 +111,19 @@ class PhononDOSRenderer(BaseRenderer):
                 mode="lines",
                 fill="tozeroy",
                 name="Phonon DOS",
-                line={"color": "#66AA55", "width": 1.5},
+                line={"color": ACCENT_GREEN, "width": 1.5},
                 hovertemplate="ν: %{x:.2f} cm⁻¹<br>g: %{y:.4f}<extra></extra>",
             )
         )
         # Mark omega = 0 so a DOS with weight at negative frequency (soft modes)
         # is read correctly rather than mistaken for the low-frequency edge.
-        fig.add_vline(x=0.0, line={"color": "#888888", "width": 1, "dash": "dot"})
+        zero_line(fig, axis="x")
 
-        fig.update_layout(
+        chart_layout(
+            fig,
             title="Phonon DOS",
-            xaxis={"title": "Frequency (cm⁻¹)"},
-            yaxis={"title": "DOS (states / cm⁻¹)"},
-            template="plotly_dark",
-            height=450,
-            margin={"l": 60, "r": 20, "t": 50, "b": 50},
+            x_title="Frequency (cm⁻¹)",
+            y_title="DOS (states / cm⁻¹)",
+            legend="default",
         )
-        return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs)
+        return figure_to_html(fig, include_plotlyjs=include_plotlyjs)

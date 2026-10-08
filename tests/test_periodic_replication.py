@@ -9,7 +9,6 @@ existing mesh-level ``_replicate_mesh`` in ``volume.py``.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 
 class TestPeriodicReplication:
@@ -41,8 +40,7 @@ class TestPeriodicReplication:
         from vibeview.qvf import GridData
         from vibeview.renderers.volume import replicate_volume_for_periodic
 
-        # Realistic QVF grid: voxel spacing 0.5 bohr, cell 5 Å ≈ 9.45 bohr
-        # → cell is ~19 grid points. Use a grid that exactly covers one cell.
+        # One cell contains exactly n point samples at 0.5 bohr spacing.
         n = 20
         data = np.ones((n, n, n), dtype=np.float32)
         grid = GridData(
@@ -50,9 +48,9 @@ class TestPeriodicReplication:
             voxel_vectors=np.diag(np.array([0.5, 0.5, 0.5], dtype=float)),
             shape=(n, n, n),
         )
-        lat = np.array([[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 5.0]])
+        lat = np.eye(3) * n * 0.5 * 0.529177210903
         new_data, new_grid = replicate_volume_for_periodic(data, grid, lat, replication=(1, 1, 1))
-        # Shape should increase: 20 + 2*19 ≈ 58 on each side.
+        # Each axis contains three complete cells.
         for s in new_grid.shape:
             assert s > n, f"Shape {new_grid.shape} should be larger than {n}"
 
@@ -61,8 +59,7 @@ class TestPeriodicReplication:
         from vibeview.qvf import GridData
         from vibeview.renderers.volume import replicate_volume_for_periodic
 
-        # Grid extent closely matches one cell: 2 Å / 0.529 bohr
-        # ≈ 3.78 bohr, with 0.5 bohr spacing → 8 voxels per cell.
+        # Exact integer lattice periods preserve every centre sample.
         n = 8
         rng = np.random.RandomState(42)
         data = rng.rand(n, n, n).astype(np.float32)
@@ -71,7 +68,7 @@ class TestPeriodicReplication:
             voxel_vectors=np.diag(np.array([0.5, 0.5, 0.5], dtype=float)),
             shape=(n, n, n),
         )
-        lat = np.array([[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]])
+        lat = np.eye(3) * n * 0.5 * 0.529177210903
         new_data, new_grid = replicate_volume_for_periodic(data, grid, lat, replication=(1, 1, 1))
         # The original data is placed at x0 = nx * cell_extent_x.
         # Extract the centre block by computing the offset from shape expansion.
@@ -95,7 +92,7 @@ class TestPeriodicReplication:
             voxel_vectors=np.diag(np.array([0.5, 0.5, 0.5], dtype=float)),
             shape=(n, n, n),
         )
-        lat = np.array([[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]])
+        lat = np.eye(3) * n * 0.5 * 0.529177210903
         _, new_grid = replicate_volume_for_periodic(data, grid, lat, replication=(1, 1, 1))
         # Origin should shift negative by the cell extent in bohr.
         assert np.all(new_grid.origin < 0.0), (
@@ -108,8 +105,7 @@ class TestPeriodicReplication:
         from vibeview.renderers.volume import replicate_volume_for_periodic
 
         n = 10
-        # Use a small lattice so the cell fits within the 10³ grid.
-        # 2.0 Å / 0.529… = 3.78 bohr → 3.78 / 0.5 ≈ 8 voxels.  Grid is 10³.
+        # Distinct periodic point samples: no duplicated endpoint.
         data = np.ones((n, n, n), dtype=np.float32)
         data[0, 0, 0] = 42.0
         grid = GridData(
@@ -117,7 +113,7 @@ class TestPeriodicReplication:
             voxel_vectors=np.diag(np.array([0.5, 0.5, 0.5], dtype=float)),
             shape=(n, n, n),
         )
-        lat = np.array([[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]])
+        lat = np.eye(3) * n * 0.5 * 0.529177210903
         new_data, new_grid = replicate_volume_for_periodic(data, grid, lat, replication=(1, 1, 1))
         # The marker should appear once per replicated cell: 3³ = 27 times.
         vals = new_data.flatten()

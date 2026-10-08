@@ -101,11 +101,11 @@ def test_the_catalogue_never_reuses_an_animal():
 
 
 def test_codenames_imports_nothing_outside_the_standard_library():
-    """docs/conf.py loads this module BY PATH, outside the package, in a CI
-    container where vibeview is not installed and pyvista does not exist. A
-    module-scope import of anything from vibeview (or of a third-party
-    package) breaks the documentation build, and the docs job is the only
-    place that would notice."""
+    """docs/conf.py loads this module BY PATH, outside the package, so the
+    site renders from a bare checkout without the ``[docs]`` install and
+    without the runtime it would pull. A module-scope import of anything from
+    vibeview (or of a third-party package) breaks that load, and the docs
+    build is the only place that would notice."""
     tree = ast.parse((_SRC / "codenames.py").read_text(encoding="utf-8"))
     stdlib_only = {"re", "annotations", "__future__"}
     offenders = []
@@ -158,7 +158,9 @@ def test_the_cli_reads_the_catalogue_rather_than_a_literal():
 
 
 def test_the_browser_about_box_reads_the_catalogue():
-    text = (_SRC / "app.py").read_text(encoding="utf-8")
+    from tests._sources import app_source
+
+    text = app_source()
     assert 'server.state.about_version = f"vibe-view {version_label()}"' in text
     assert _current() not in text, (
         "app.py contains a literal codename; it must resolve one instead"

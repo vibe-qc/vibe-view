@@ -7,10 +7,6 @@ capture_structure, slice_qvf, and error-handling paths.
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
-import numpy as np
 import pytest
 
 # ── Info / inspection ────────────────────────────────────────────────────
@@ -325,3 +321,22 @@ class TestSDKGetTable:
 
         with pytest.raises(ValueError):
             get_table(sample_qvf, "atom_properties")
+
+
+class TestSDKRawAPI:
+    def test_sections_on_sample(self, sample_qvf):
+        from vibeview import QVFReader, sections
+
+        reader = QVFReader(sample_qvf)
+        result = sections(reader)
+        assert isinstance(result, list)
+        reader.close()
+
+    def test_validate_on_sample(self, sample_qvf):
+        from vibeview import QVFReader, validate
+
+        reader = QVFReader(sample_qvf)
+        result = validate(reader)
+        assert isinstance(result, dict)
+        assert "valid" in result
+        reader.close()
