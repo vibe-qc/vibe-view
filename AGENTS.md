@@ -55,7 +55,10 @@ the package and distribution are `vibeview`. The licence is MPL-2.0.
 
 ```
 src/vibeview/
-  app.py            browser viewer: layout, state, controllers (~15k lines; grep, don't read it whole)
+  app/              browser viewer: __init__.py composes typed runtime and area controllers;
+                    bootstrap.py seeds state, bindings.py registers callbacks, helpers.py
+                    holds scene/section operations; layout.py and controls.py are the Vue
+                    trees, sidebar.py the section list, scene.py hooks, state.py UI types
   cli.py            the `vibe-view` command
   qvf.py            QVFReader, StructureData, archive reading and validation
   renderers/        structure, volume, wavefunction, spectra, bands and DOS
@@ -66,10 +69,10 @@ src/vibeview/
   codenames.py      release codename catalogue
   install_hints.py  install messages for optional extras
   schema.json, schema_v2.json   vendored QVF manifest schemas (pinned)
-tests/              pytest suite, about 100 files
+tests/              pytest suite
 docs/               Sphinx site, published from `release`
-electron/           desktop shell; holds three of the four version sites
-scripts/            install and update lifecycle, release artifacts, QVF conformance
+electron/           desktop shell; package version and both lockfile version entries
+scripts/            install and update lifecycle, release artifacts, changelog fold, QVF conformance
 ```
 
 | Looking for | Start at |
@@ -90,9 +93,10 @@ PYVISTA_OFF_SCREEN=True .venv/bin/python -m pytest tests/test_<area>.py -q   # w
 PYVISTA_OFF_SCREEN=True .venv/bin/python -m pytest tests -q                 # everything, 10-20 min
 ```
 
-The Sphinx toolchain is not in any extra yet (#19). To build the docs,
-install the pins listed under `.docs_deps` in `.gitlab-ci.yml` into a
-separate venv, then run `cd docs && make strict`.
+The Sphinx toolchain is the `[docs]` extra. To build the docs, run
+`.venv/bin/pip install -e '.[docs]'`, then `cd docs && make strict`. That is
+the same install `.docs_deps` performs in CI, so a local build and the
+published one use one set of pins.
 
 - **Check which tree you are testing.** Run
   `python -c "import vibeview; print(vibeview.__file__)"`. Both
@@ -123,25 +127,31 @@ judgment; see [Defaults](#defaults).
    and an install hint (`install_hints.install_hint()`), not to core.
 5. **Never hand-edit the vendored QVF schemas.** They are pinned by sha256. To
    re-vendor, move the pin and `QVF_TAG` in the same commit.
-6. **Never widen the docs `DEPLOY_PATH`.** vibe-qc.com has several
-   publishers, and an rsync `--delete-after` on a wider path deletes their
-   sites.
+6. **Never widen the docs deployment path.** The rsync target is set in
+   the external deployment include that `.gitlab-ci.yml` loads, not in this
+   repository. vibe-qc.com has several publishers, and an rsync
+   `--delete-after` on a wider path deletes their sites.
 
 ## Defaults
 
 This is how work normally goes. Use judgment when a case doesn't fit.
 
-- **Test what you touched**, plus its obvious consumers. Run the full suite
-  when you change shared machinery (reader lifecycle in `app.py`, `qvf.py`, a
-  renderer many panels use) or before a release. Name the tests you ran in the
+- **Test what you touched**, plus its obvious consumers. Use focused tests for
+  shared machinery and reserve the full suite
+  for explicit broad validation or a release. Name the tests you ran in the
   commit message or merge request.
-- **CI is a second check, not the first.** Pushes to `main` run `test`,
-  `qvf-conformance` and `docs-build`, and `release-candidate/*` branches run
-  the release gate. #22 tracks tidying these rules.
+- **CI is for releases.** Development builds, MRs and pushes neither trigger
+  nor wait for CI, including manual/scheduled/API requests on dev refs.
+  Release candidates run the full suites on Python 3.13/3.11/3.14, Ruff, mypy,
+  QVF conformance and packaging. `release` publishes docs without repeating
+  candidate tests. See
+  [testing policy and inventory](docs/testing.md) for coverage and accepted gaps.
 - **Keep `main` working.** Land in small increments, and gate unfinished
   features rather than leaving half-wired code paths.
-- **CHANGELOG.** Add user-visible changes to `[Unreleased]`. Changes that
-  only touch tests or internals may skip it.
+- **CHANGELOG.** Add a user-visible change as a fragment,
+  `changelog.d/<slug>.<added|changed|fixed|...>.md`, not by editing
+  `[Unreleased]`. `scripts/fold_changelog.py` folds them in at release.
+  Changes that only touch tests or internals may skip it.
 - **Issue numbers.** When a commit fixes a tracked issue, put `(#N)` in the
   subject, because that is how triage finds fixes. Untracked work needs no
   number.
@@ -192,19 +202,26 @@ vibe-view consumes QVF; it doesn't own the producer or the format.
 - **The browser viewer renders client-side in vtk.js.** VTK render passes
   such as SSAO and fog never reach the client, and view-dependent geometry
   goes stale as soon as the client rotates.
-- **Controllers in `app.py` share closure state.** Reader swaps go through
+- **Controllers in `vibeview.app` share one `ViewerRuntime`.** Reader swaps go through
   the reload path (`_reload_active_file`), and geometry edits through the
   reader's edit overlay. Read `tests/test_controller_state.py` before changing
-  that lifecycle.
+  that lifecycle. Patch helpers in their defining `app.helpers` module, not
+  the compatibility re-exports in `app`.
 - **Import optional extras lazily**, inside the function that needs them.
   Catch `ImportError` and raise with an install hint.
 - **Skip only for a real environment gate.** A test for a missing optional
   dependency forces the absent branch instead:
   `monkeypatch.setitem(sys.modules, "rdkit", None)`. `CONTRIBUTING.md`
   explains why.
-- **ruff is configured in `pyproject.toml`.** The tree carries pre-existing
-  findings (#8), so don't add new ones. Counts depend on the invocation, so
-  always quote the command beside the number.
+- **Ruff is routine; mypy is a full-validation gate.** `ruff check .` is clean and the `lint` job
+  keeps it that way. `mypy` with no arguments checks every source module
+  under full strict, and the `types` job keeps it that way; `[tool.mypy].files`
+  lists them, and `tests/test_type_ramp.py` fails when a new source module is
+  added without joining the list. Browser callbacks are registered after
+  construction, so their methods retain full strict checking. The test suite
+  is not type-checked. pyvista 0.49's stubs misread a few `Plotter`
+  methods; call those through `plotter_compat`, which holds the one
+  `type: ignore` each.
 - **Cite published algorithms in code.** When you implement one, name the
   paper in a comment beside the code, as the secondary-structure and ribbon
   code does.

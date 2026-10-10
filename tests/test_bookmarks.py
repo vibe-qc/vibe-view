@@ -37,8 +37,10 @@ def _make_minimal_qvf() -> Path:
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "test"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("sections/structure.json", structure)
     return Path(tmp.name)
@@ -134,19 +136,15 @@ class TestBookmarkRoundTrip:
 
     @staticmethod
     def _volume_internals(ctrl):
-        """Expose the render state hidden behind the controller closures."""
-        import inspect
-
-        closed = inspect.getclosurevars(ctrl.update_isovalue.func).nonlocals
-        return closed["viewer_state"], closed["plotter"]
+        """Inspect the shared runtime retained by the volume controller."""
+        viewer = ctrl.update_isovalue.func.__self__.viewer
+        return viewer.viewer_state, viewer.plotter
 
     @staticmethod
     def _replication_internals(ctrl):
-        """Expose the periodic render state behind the replication controller."""
-        import inspect
-
-        closed = inspect.getclosurevars(ctrl.update_replication.func).nonlocals
-        return closed["viewer_state"], closed["plotter"]
+        """Inspect the periodic state used by the replication controller."""
+        viewer = ctrl.update_replication.func.__self__.viewer
+        return viewer.viewer_state, viewer.plotter
 
     @staticmethod
     def _record_restore_order(monkeypatch, app_module) -> list[object]:
@@ -164,8 +162,8 @@ class TestBookmarkRoundTrip:
             events.append(("camera", camera))
             return original_camera(*args, **kwargs)
 
-        monkeypatch.setattr(app_module, "_activate_volume", record_activate)
-        monkeypatch.setattr(app_module, "_apply_camera", record_camera)
+        monkeypatch.setattr(app_module._helpers, "_activate_volume", record_activate)
+        monkeypatch.setattr(app_module._helpers, "_apply_camera", record_camera)
         return events
 
     def test_save_records_the_open_section_and_a_usable_camera(self) -> None:
@@ -361,9 +359,9 @@ class TestBookmarkRoundTrip:
                 events.append(("camera", camera))
                 return original_camera(*args, **kwargs)
 
-            monkeypatch.setattr(app_module, "_rebuild_scene", record_rebuild)
-            monkeypatch.setattr(app_module, "_activate_volume", record_activate)
-            monkeypatch.setattr(app_module, "_apply_camera", record_camera)
+            monkeypatch.setattr(app_module._helpers, "_rebuild_scene", record_rebuild)
+            monkeypatch.setattr(app_module._helpers, "_activate_volume", record_activate)
+            monkeypatch.setattr(app_module._helpers, "_apply_camera", record_camera)
             ctrl.load_session(str(session_path))
 
             assert saved_document["replication"] == [2, 3, 4]
@@ -423,7 +421,7 @@ class TestBookmarkRoundTrip:
             def unexpected_rebuild(*_args, **_kwargs):
                 pytest.fail("session replication unexpectedly rebuilt the scene")
 
-            monkeypatch.setattr(app_module, "_rebuild_scene", unexpected_rebuild)
+            monkeypatch.setattr(app_module._helpers, "_rebuild_scene", unexpected_rebuild)
             ctrl.load_session(str(session_path))
 
             assert "loaded" in state.status_message.lower()
@@ -775,7 +773,7 @@ class TestPresentationMode:
                 "focal_point": [0.0, 0.0, 0.0],
                 "view_up": [0.0, 0.0, 1.0],
             }
-            monkeypatch.setattr(app_module, "_apply_camera", record)
+            monkeypatch.setattr(app_module._helpers, "_apply_camera", record)
 
             ctrl.toggle_presentation()
             ctrl.presentation_next()
@@ -862,11 +860,9 @@ class TestPresentationMode:
     def test_shortcut_handler_routes_only_the_modes_and_modifiers_it_advertises(
         self,
     ) -> None:
-        import inspect
+        from tests._served import served_viewer
 
-        import vibeview.app as app_module
-
-        source = inspect.getsource(app_module.create_app)
+        source = served_viewer()
         for contract in (
             "var command=e.ctrlKey||e.metaKey;",
             "target.isContentEditable",

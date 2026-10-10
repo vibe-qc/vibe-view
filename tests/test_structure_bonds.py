@@ -74,7 +74,7 @@ def _renderer_for_structure(structure):
             return structure
 
         @staticmethod
-        def infer_bonds(loaded_structure):
+        def connectivity(loaded_structure):
             assert loaded_structure is structure
             return structure.bonds
 
@@ -375,13 +375,13 @@ def test_periodic_inferred_bonds_now_work(monkeypatch):
         zf.writestr("s.json", struct)
     reader = QVFReader(buf.getvalue())
     inference_calls = []
-    infer_bonds = reader.infer_bonds
+    infer_bonds = reader.connectivity
 
     def counted_inference(structure):
         inference_calls.append(structure)
         return infer_bonds(structure)
 
-    monkeypatch.setattr(reader, "infer_bonds", counted_inference)
+    monkeypatch.setattr(reader, "connectivity", counted_inference)
     sr = StructureRenderer(reader.get_section("structure"), reader)
     assert sr.load().bonds is None  # no explicit bonds → inferred
     plotter = pv.Plotter(off_screen=True)
@@ -406,7 +406,8 @@ def test_periodic_crystal_draws_every_bond_at_the_true_distance(tmp_path):
 
     import numpy as np
 
-    from vibeview.qvf import QVFReader, _infer_bonds_by_radii
+    from vibeview.bonds import structure_bonds
+    from vibeview.qvf import QVFReader
 
     a = 5.64
     na = [(0, 0, 0), (0, 0.5, 0.5), (0.5, 0, 0.5), (0.5, 0.5, 0)]
@@ -449,7 +450,7 @@ def test_periodic_crystal_draws_every_bond_at_the_true_distance(tmp_path):
         z.writestr("s.json", struct)
 
     structure = QVFReader(path).read_structure()
-    bonds = _infer_bonds_by_radii(structure)
+    bonds = structure_bonds(structure)
 
     degree = {i: 0 for i in range(8)}
     for i, j, _order, _image in bonds:

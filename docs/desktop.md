@@ -248,6 +248,12 @@ python -c "import vibeview, trame, uvicorn; print('ok')"
 quit; current builds route the same conditions to the setup screen, which
 names what is missing.
 
+**"Could not open" instead of the viewer.** The viewer process for that file
+stopped before it was ready, most often because the file is not a valid
+archive. The page shows the exit status and the viewer's error message.
+Choosing the file again from the browse page or Open Recent starts a new
+attempt, so fix the file first.
+
 **Check for Updates** in the Help menu queries the macOS arm64 feed, which
 currently advertises only an older ad-hoc package. It can offer a manual
 download but cannot self-install, and it never updates a source checkout.

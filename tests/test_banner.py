@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
-import zipfile
 from pathlib import Path
 
+from tests._qvf_builders import vibe_qc_source, write_archive
 from vibeview.banner import format_banner
 from vibeview.qvf import QVFReader
 
@@ -17,15 +16,7 @@ def _sha256(data: bytes) -> str:
 
 
 def _make_qvf(sections: list[dict], source_name: str = "test") -> Path:
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": source_name},
-        "sections": sections,
-    }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-    return Path(tmp.name)
+    return write_archive(sections, source=vibe_qc_source("0.9.0", source_name))
 
 
 def _structure_section(sid: str = "structure") -> tuple[dict, dict[str, bytes]]:
@@ -53,7 +44,11 @@ def _structure_section(sid: str = "structure") -> tuple[dict, dict[str, bytes]]:
 def _density_section(sid: str = "density") -> tuple[dict, dict[str, bytes]]:
     """Minimal valid `volume.density` section + zip entries."""
     grid = json.dumps(
-        {"origin": [0, 0, 0], "voxel_vectors": [[0.2, 0, 0], [0, 0.2, 0], [0, 0, 0.2]], "shape": [4, 4, 4]}
+        {
+            "origin": [0, 0, 0],
+            "voxel_vectors": [[0.2, 0, 0], [0, 0.2, 0], [0, 0, 0.2]],
+            "shape": [4, 4, 4],
+        }
     ).encode()
     import numpy as np  # local import to keep banner imports minimal
 
@@ -62,7 +57,11 @@ def _density_section(sid: str = "density") -> tuple[dict, dict[str, bytes]]:
         "id": sid,
         "kind": "volume.density",
         "members": {
-            "grid": {"path": f"sections/{sid}.grid.json", "format": "json", "sha256": _sha256(grid)},
+            "grid": {
+                "path": f"sections/{sid}.grid.json",
+                "format": "json",
+                "sha256": _sha256(grid),
+            },
             "data": {
                 "path": f"sections/{sid}.dat",
                 "format": "binary",
@@ -82,17 +81,7 @@ def _make_qvf_with_files(
     sections: list[dict], files: dict[str, bytes], source_name: str = "test"
 ) -> Path:
     """Like ``_make_qvf`` but also writes zip member payloads."""
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": source_name},
-        "sections": sections,
-    }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        for path, data in files.items():
-            zf.writestr(path, data)
-    return Path(tmp.name)
+    return write_archive(sections, files, source=vibe_qc_source("0.9.0", source_name))
 
 
 class TestBanner:
@@ -189,3 +178,15 @@ class TestBanner:
             assert "╚" in banner
         finally:
             path.unlink()
+
+
+class TestBannerModule:
+    def test_print_banner(self, sample_qvf, capsys):
+        from vibeview.banner import print_banner
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        print_banner(reader)
+        captured = capsys.readouterr()
+        assert "vibe-view" in captured.out or "vibe-qc" in captured.out
+        reader.close()

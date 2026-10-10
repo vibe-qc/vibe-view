@@ -11,7 +11,7 @@ desktop window, or headlessly. It is a companion to
 | What | Where |
 |---|---|
 | A viewer bug, a file that will not open, a rendering defect | [vibe-view issues](https://github.com/vibe-qc/vibe-view/issues) |
-| A security-relevant bug | **Email mpei@vibe-qc.com** — see [SECURITY.md](SECURITY.md). Do not open a public issue. |
+| A security-relevant bug | **Email mpei@vibe-qc.com** — see [SECURITY.md](https://github.com/vibe-qc/vibe-view/blob/main/SECURITY.md). Do not open a public issue. |
 | A wrong number *inside* a `.qvf` (the producer wrote it) | [vibe-qc issues](https://github.com/vibe-qc/vibe-qc/issues) |
 | An ambiguity or gap in the QVF format itself | [qvf issues](https://github.com/vibe-qc/qvf/issues) |
 | A queue / job-submission bug behind the vq panel | [vibe-queue issues](https://github.com/vibe-qc/vibe-queue/issues) |
@@ -50,7 +50,7 @@ python -m venv .venv
 .venv/bin/pip install -e '.[test]'
 ```
 
-`[test]` pulls the viewer, TUI, ASE, TREXIO and Jupyter extras plus pytest and scipy —
+`[test]` pulls the viewer, TUI, ASE, TREXIO and Jupyter extras plus pytest, scipy and pyyaml —
 everything the suite needs. vibe-qc is deliberately **not** installed: it would
 pull a native libint build, and the tests that need a real producer skip via
 `importorskip`. That is expected (see "Tests that skip" below).
@@ -76,6 +76,37 @@ QVF_CORPUS=../qvf/conformance/corpus python -m pytest tests -q
 The [QVF GitHub mirror](https://github.com/vibe-qc/qvf) provides the same
 standalone format repository.
 
+### Where a test goes
+
+One file per module or feature, named for it: `test_settings.py` for
+`vibeview.settings`, `test_file_watcher.py` for hot reload. Do not start a
+file named for a milestone, a release or a batch (`_extra`, `_final`,
+`_v2`, a test count, or a work item from another tracker). Nobody adding a
+test later can tell which of those files it belongs in, and they end up
+duplicating the area files. A regression for an issue in this tracker goes
+in the area file too. When one change spans several areas,
+`test_issue<N>_<area>.py` keeps its rows together and traceable.
+
+Build archives with `tests/_qvf_builders.py` or the fixtures in
+`tests/conftest.py` rather than another local builder, and write files under
+`tmp_path`. The conftest points `tempfile` and the XDG cache and config
+directories at pytest's temporary tree for the whole run, so a test never
+writes into the system temp directory or the account running it.
+
+Check behaviour, not source text: the state a controller leaves, or the page
+the client is served (`tests/_served.py`). The few contracts about the shape
+of the `vibeview.app` package itself live in `tests/test_structural_contracts.py`
+and parse the source with `ast`. A guard that has to read source text, such as
+"no colour literals", reads it through `tests/_sources.py`, which covers every
+module of the package, so it keeps working when code moves between them.
+
+The browser's `create_app` composes area controller objects around one typed
+`ViewerRuntime`. Keep reader replacement, task ownership and render epochs on
+that record so callbacks observe the current file. `bootstrap.py` initializes
+UI defaults and `bindings.py` registers controller methods after every area is
+constructed. The scene and section helpers live in `app.helpers`; patch that
+defining module in tests rather than its compatibility re-exports in `app`.
+
 ### Tests that skip, and tests that must not
 
 Skips are load-bearing here, so the suite distinguishes two kinds:
@@ -91,6 +122,20 @@ Skips are load-bearing here, so the suite distinguishes two kinds:
 
 CI sets `VIBEVIEW_REQUIRE_QVF_CORPUS=1` so that in the lane which clones the
 corpus on purpose, a missing corpus is an **error** rather than a skip.
+
+Some lanes need something the CI image does not carry, so they run only where
+a contributor provides it. Run the one your change touches before you push,
+and say so in the merge request:
+
+| Lane | Needs | Runs in CI |
+|---|---|---|
+| Producer parity: `test_details_panel_sandbox`, `test_job_container_lifecycle`, `test_live_opt`, `test_trexio_vibeqc_parity`, `test_wavefunction_libint_parity` | vibe-qc installed in the same environment | No here. vibe-qc's CI runs the pinned contract files at `VIBE_VIEW_TAG`. |
+| Native relocalization backend in `test_relocalize` | `VIBEQC_RELOCALIZE_PYTHON` naming an interpreter that has vibe-qc | No |
+| Served-DOM accessibility in `test_design_refresh` | Chrome or Chromium, and Node with `fetch` and `WebSocket` | No |
+| TREXIO cross-check in `test_trexio_import` | Node | No |
+| TREXIO round trips in `test_trexio_import` | a `trexio` wheel for the interpreter, which the newest Pythons can lack | Yes |
+| Timing budgets in `test_benchmarks` | `-m benchmark`; the default run deselects them | No |
+| SMILES with RDKit | the `[smiles]` extra, which `[test]` includes | Yes |
 
 ### Tests for optional dependencies must run in every environment
 
@@ -142,24 +187,54 @@ pattern is deliberately wide, so it matches safe code too. Check the
 Only a condition that is *true when the dependency is present* hides
 anything.
 
-The command above is deliberately narrow and matches the trap row **only** —
-verified by planting all three rows in a file and running it: one of three
-flagged. On this repository it currently returns a single hit, and that hit is
-prose in a docstring describing a gate that was removed.
+The command above is deliberately narrow and matches the trap row **only**,
+which planting all three rows in a file confirms: one of three is flagged. Its
+one hit on this repository is prose in a `test_smiles.py` docstring that
+describes a gate which was removed.
 
-The table earns its keep when you **widen** the pattern — adding
-`*_AVAILABLE` / `*_INSTALLED` constants, `find_spec(...) is not None`, or a
-bare `shutil.which(...)`. A wide sweep here returns **seven** hits and all
-seven are benign: six are the safe `shutil.which(...) is None` form and the
-seventh is that same docstring. Widen it when you want confidence there is no
-variant the narrow pattern misses, then read the direction of every hit before
-acting on any of them.
+The table earns its keep when you **widen** the search. A grep misses a
+condition split over several lines, so list every `skipif` condition in the
+suite from the syntax tree instead:
+
+```sh
+python - <<'PY'
+import ast, pathlib
+for path in sorted(pathlib.Path("tests").glob("*.py")):
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Call) and ast.unparse(node.func).endswith("skipif") and node.args:
+            print(f"{path}:{node.lineno}: {ast.unparse(node.args[0])}")
+PY
+```
+
+Then read the direction of every line before acting on any of them. When this
+section was last checked, every condition was the safe kind: a tool or
+producer that is `None` or `not` importable, a missing `/bin/bash`, a
+non-root account, or a corpus member that is absent. A new
+`find_spec(...) is not None` or `HAVE_X` line is the trap.
 
 **The carve-out:** an *extra leg* of a test may skip when a companion package
 is missing — the producer/consumer checks that need `vibeqc` do exactly that —
 provided the test's **core assertions still run unconditionally**. The rule
 bans hiding a whole test behind a capability nobody has, not gating an
 additional check that genuinely needs one.
+
+## Building the documentation
+
+```sh
+.venv/bin/pip install -e '.[docs]'
+cd docs && make strict
+```
+
+`[docs]` is the Sphinx toolchain, and the editable install is what lets
+autodoc import `vibeview` for the SDK reference. `.gitlab-ci.yml`'s
+`.docs_deps` installs the same extra, so a local build uses the pins the
+published site was rendered with — there is no second list to keep in step.
+`scripts/build_site.sh` wraps the same `sphinx-build` and adds `robots.txt`,
+`sitemap.xml` and `.build-info`; run it to reproduce the live site exactly.
+
+`make strict` builds with `-W`, which is how a broken cross-reference gets
+caught here rather than on the published site. The CI build deliberately does
+not use `-W`: a warning must not block a release.
 
 ## QVF schemas are vendored, and pinned
 
@@ -170,23 +245,53 @@ are real data files now, so the wheel is self-contained.
 Do not edit them by hand. They are pinned by sha256 in
 `scripts/check_qvf_conformance.py` (`PINNED_SCHEMAS`), checked offline by
 `tests/test_qvf_schema_identity.py`, and compared against the normative copy in
-the `qvf` repository by the `qvf-conformance` CI job. Re-vendoring is a
+the `qvf` repository inside the Python 3.13 `test` job. Re-vendoring is a
 deliberate act: move the pin and bump `QVF_TAG` in `.gitlab-ci.yml` in the same
 commit. **A failing pin is not a licence to update the constant** — find out
 which side moved first.
 
+## What CI runs, and where
+
+See [test inventory and policy](https://vibe-qc.com/vibe-view/docs/testing.html).
+Development builds, MRs and pushes neither trigger nor wait for CI. Manual,
+scheduled and API requests on development refs are also suppressed. Candidates
+run Ruff, QVF corpus conformance, full suites on Python 3.13/3.11/3.14, mypy and
+wheel/sdist/installed-wheel checks. `release` builds and publishes docs without
+repeating the candidate runtime gate.
+
 ## Before you open a merge request
 
-- Run the affected lanes locally and name them. Pushes to `main` also run the
-  `test`, `qvf-conformance` and `docs-build` jobs; treat that as a second
-  check, not the first.
+- Run the affected checks locally and name them. Their evidence supports the
+  merge; no second CI run or successful pipeline is required for development.
 - Keep `main` release-ready: no half-finished code paths, docs in parity,
-  `CHANGELOG.md` `[Unreleased]` reflecting what you actually landed.
+  and a changelog fragment for each user-visible change (see "Changelog
+  fragments" below).
 - If your change touches one of the seven files vibe-qc's `build-test` job runs
   at `VIBE_VIEW_TAG` (`test_container_submission`, `test_details_panel_sandbox`,
   `test_in_memory_handover`, `test_job_container_lifecycle`, `test_kind_drift`,
   `test_live_opt`, `test_wavefunction_libint_parity`), say so — that pin has to
   move in the vibe-qc repository for your change to be exercised.
+
+## Changelog fragments
+
+Record a user-visible change as its own file in `changelog.d/`, named
+`<slug>.<type>.md`. The slug is usually the issue number and a word or two,
+such as `57-cell-labels`; the type is one of `added`, `changed`,
+`deprecated`, `removed`, `fixed` or `security`. The text is one paragraph,
+written for a user, ending in the issue numbers:
+
+```text
+changelog.d/57-cell-labels.fixed.md
+```
+
+Do not edit `## [Unreleased]` in `CHANGELOG.md` directly. Parallel merge
+requests that each append to one section conflict on every landing; one file
+per change never does. At release time `scripts/fold_changelog.py` moves the
+fragments into `[Unreleased]` under their headings and deletes them
+(`docs/release_process.md`, step 3). `python scripts/fold_changelog.py
+--check` validates the names, and `tests/test_changelog_fragments.py` runs
+that check in the suite. Changes that only touch tests or internals need no
+fragment.
 
 ## Pre-commit hook (one-time setup)
 
@@ -219,8 +324,19 @@ why in the commit message.
 - **Python 3.11+.** PEP 8, four-space indent. Start every module with
   `from __future__ import annotations`. Type hints on public API; local
   helpers can skip them.
-- `ruff check` with the config in `pyproject.toml`. The tree carries
-  pre-existing findings; do not add new ones.
+- `ruff check .` with the config in `pyproject.toml`. The whole checkout is
+  clean, including the `docs/*.py` scripts and the `.githooks/` helper, and the `lint` CI job keeps it that way, so a
+  new finding fails the pipeline. Quote the command beside any count you
+  report: a narrower path list reads a different number.
+- `mypy` with no arguments checks every source module under `strict = true`,
+  and the `types` CI job keeps them clean. `[tool.mypy].files` lists them all,
+  and `tests/test_type_ramp.py` fails when a new source module is added
+  without joining the list. Browser callback methods are registered after
+  construction; no untyped-decorator exemption is needed.
+  The test suite is not type-checked; `mypy tests` shows what it would say.
+  `python_version` is `3.12`, not the `3.11` support floor: numpy's bundled
+  stubs use `type` statements, which mypy rejects below 3.12, and the stub
+  syntax error aborts the run before any of our code is checked.
 - Prefer editing existing modules over introducing new ones. If a new file is
   the right choice, follow its neighbours' layout.
 - **Imports of optional extras are lazy**, inside the function that needs them,
@@ -255,7 +371,7 @@ By submitting a patch, merge request, or any other contribution to vibe-view,
 you agree that:
 
 1. Your contribution is licensed under the Mozilla Public License 2.0 (the
-   project license — see [`LICENSE`](LICENSE)).
+   project license — see [`LICENSE`](https://github.com/vibe-qc/vibe-view/blob/main/LICENSE)).
 2. You grant the project owner (Michael F. Peintinger) the right to relicense
    your contribution under alternative terms, including a future commercial
    license, alongside the MPL 2.0 public license. You retain copyright.

@@ -189,3 +189,73 @@ class TestCifRoundTrip:
         q.write_bytes(cif_to_qvf(cif).getvalue())
         sd = QVFReader(q).read_structure()
         np.testing.assert_allclose(sd.atoms[0].position, [5.0, 0.0, 0.0], atol=1e-6)
+
+
+class TestExportPipeline:
+    """End-to-end export pipeline tests."""
+
+    def test_all_cli_formats_registered(self):
+        """Verify all export formats are in the CLI."""
+        import ast
+
+        cli_path = Path(__file__).parent.parent / "src" / "vibeview" / "cli.py"
+        tree = ast.parse(cli_path.read_text())
+        formats = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.List) and len(formats) == 0:
+                elts = [e.value for e in node.elts if isinstance(e, ast.Constant)]
+                if "xyz" in elts and "cif" in elts:
+                    formats = elts
+                    break
+        assert "xyz" in formats
+        assert "pov" in formats
+        assert "blend" in formats
+        assert "svg" in formats
+        assert "pdf" in formats
+
+    def test_export_formats_count(self):
+        """Verify at least 10 export formats are available."""
+        import ast
+
+        cli_path = Path(__file__).parent.parent / "src" / "vibeview" / "cli.py"
+        tree = ast.parse(cli_path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.List):
+                elts = [e.value for e in node.elts if isinstance(e, ast.Constant)]
+                if "xyz" in elts:
+                    assert len(elts) >= 10
+                    break
+
+
+class TestCMLExport:
+    def test_import(self):
+        from vibeview.export_cml import export_cml
+
+        assert callable(export_cml)
+
+    def test_export_creates_file(self, sample_qvf, tmp_path):
+        from vibeview.export_cml import export_cml
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        out = tmp_path / "test.cml"
+        export_cml(reader, str(out))
+        assert out.exists()
+        content = out.read_text()
+        assert "<cml" in content
+        assert "atomArray" in content
+        reader.close()
+
+    def test_export_valid_xml(self, sample_qvf, tmp_path):
+        from xml.etree import ElementTree as ET
+
+        from vibeview.export_cml import export_cml
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        out = tmp_path / "test.cml"
+        export_cml(reader, str(out))
+        # Should parse as valid XML
+        tree = ET.parse(out)
+        assert tree.getroot().tag.endswith("cml")
+        reader.close()

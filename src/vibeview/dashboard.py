@@ -6,12 +6,8 @@ visualizing a reaction coordinate at a glance.
 
 from __future__ import annotations
 
-import base64
-import io
 from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 # Confidence levels whose names are safe to put on a thumbnail. "low" is the
 # namer's own signal that it could not assemble a well-formed name — it is what
@@ -42,7 +38,7 @@ def _iupac_label(structure: Any) -> str | None:
         return None
     if not result.name or result.confidence.value not in _TRUSTED_CONFIDENCE:
         return None
-    return result.name
+    return str(result.name)
 
 
 def render_dashboard(
@@ -81,11 +77,11 @@ def render_dashboard(
     str
         Path to the generated image.
     """
-    import pyvista as pv
+    import numpy as np
     from PIL import Image, ImageDraw
 
+    from vibeview.headless import render_structure_frame
     from vibeview.qvf import QVFReader
-    from vibeview.renderers.structure import StructureRenderer
 
     n = len(qvf_paths)
     if n == 0:
@@ -112,26 +108,16 @@ def render_dashboard(
 
         # Render structure thumbnail
         try:
-            reader = QVFReader(qvf_path)
-            sec = next((s for s in reader.sections if s.kind == "structure"), None)
-            if sec is None:
-                reader.close()
-                continue
+            # Closed on every path, including a structure that fails to
+            # read (#39-18).
+            with QVFReader(qvf_path) as reader:
+                sec = next((s for s in reader.sections if s.kind == "structure"), None)
+                if sec is None:
+                    continue
+                name = _iupac_label(reader.read_structure()) if labels else None
+                thumb = render_structure_frame(reader, size=(cell_w, cell_h))
 
-            name = _iupac_label(reader.read_structure()) if labels else None
-
-            plotter = pv.Plotter(off_screen=True, window_size=(cell_w, cell_h))
-            try:
-                renderer = StructureRenderer(sec, reader)
-                renderer.add_to_plotter(plotter)
-                plotter.view_isometric()
-                plotter.render()
-                thumb = plotter.screenshot(return_img=True)
-            finally:
-                plotter.close()
-                reader.close()
-
-            thumb_img = Image.fromarray(thumb).resize((cell_w - 4, cell_h - 4))
+            thumb_img = Image.fromarray(np.asarray(thumb)).resize((cell_w - 4, cell_h - 4))
 
             # Paste into canvas with a border
             x = col * cell_w + 2
@@ -187,8 +173,10 @@ def dashboard_to_html(
     cells_html = []
     for idx, qvf_path in enumerate(qvf_paths):
         try:
-            reader = QVFReader(qvf_path)
-            sdata = reader.read_structure()
+            # Only the structure is needed; close before building the cell,
+            # on the error path too (#39-18).
+            with QVFReader(qvf_path) as reader:
+                sdata = reader.read_structure()
             stem = Path(qvf_path).stem
             name = _iupac_label(sdata)
 
@@ -225,7 +213,6 @@ def dashboard_to_html(
             }})();
             </script>
             """)
-            reader.close()
         except Exception:
             cells_html.append(f'<div class="cell error">{escape(Path(qvf_path).name)}</div>')
 
@@ -234,7 +221,8 @@ def dashboard_to_html(
 <style>
 body {{ font-family: sans-serif; margin: 20px; background: #f5f5f5; }}
 .grid {{ display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }}
-.cell {{ border: 1px solid #ddd; border-radius: 8px; overflow: hidden; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+.cell {{ border: 1px solid #ddd; border-radius: 8px; overflow: hidden;
+        background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
 .label {{ padding: 8px; text-align: center; background: #fafafa; }}
 .name {{ font-size: 13px; color: #222; }}
 .file {{ font-size: 11px; color: #999; margin-top: 2px; }}

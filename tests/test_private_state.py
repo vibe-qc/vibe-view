@@ -111,9 +111,17 @@ def test_xdg_default_and_home_fallback(checkout, tmp_path, monkeypatch):
     assert state.record_path(checkout).is_relative_to(tmp_path / "home/.local/state/vibe-private")
 
 
-def test_unsafe_existing_store_is_not_adopted(checkout, monkeypatch):
+@pytest.mark.parametrize("umask", [0o022, 0o077])
+def test_unsafe_existing_store_is_not_adopted(checkout, umask):
     root = Path(os.environ["VIBE_PRIVATE_ROOT"])
-    root.mkdir(mode=0o755)
+    previous_umask = os.umask(umask)
+    try:
+        root.mkdir(mode=0o755)
+    finally:
+        os.umask(previous_umask)
+    # mkdir's mode is filtered by the process umask; establish an unsafe store.
+    root.chmod(0o755)
+    assert stat.S_IMODE(root.stat().st_mode) == 0o755
     with pytest.raises(ValueError):
         state.record_path(checkout, create=True)
     assert stat.S_IMODE(root.stat().st_mode) == 0o755
