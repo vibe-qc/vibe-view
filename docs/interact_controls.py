@@ -243,7 +243,8 @@ def _check_trajectory(page: Page, outdir: Path) -> tuple[str, bool, str]:
     return (
         "trajectory play/pause",
         ok,
-        f"play_clicked={started}, playing={playing}, frame {f0}→{advanced}, paused={paused is False}",
+        f"play_clicked={started}, playing={playing}, frame {f0}→{advanced}, "
+        f"paused={paused is False}",
     )
 
 
@@ -527,7 +528,8 @@ def _run(qvf: Path, outdir: Path) -> list[tuple[str, bool, str]]:
                 try:
                     results.append(check(page, outdir))
                 except Exception as e:  # noqa: BLE001 — one bad check shouldn't abort the rest
-                    results.append((check.__name__.removeprefix("_check_"), False, f"exception: {e}"))
+                    name = check.__name__.removeprefix("_check_")
+                    results.append((name, False, f"exception: {e}"))
             browser.close()
     finally:
         proc.terminate()

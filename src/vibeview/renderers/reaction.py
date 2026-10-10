@@ -14,17 +14,29 @@ column c is left alone.
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._frames import FrameSequenceMixin
+from vibeview.renderers.cell import cell_edges
+from vibeview.renderers.palette import (
+    ACCENT_BLUE,
+    ACCENT_RED,
+    FRAME_VOLUME,
+    ISO_NEGATIVE,
+    ISO_POSITIVE,
+    WAYPOINT_KIND,
+)
+from vibeview.units import BOHR_TO_ANGSTROM as _BOHR_TO_ANGSTROM
 
 if TYPE_CHECKING:
+    import pyvista as pv
+    from matplotlib.axes import Axes
+
     from vibeview.qvf import (
+        GridData,
         QVFReader,
         ReactionPathData,
         ReactionWaypoint,
@@ -32,22 +44,11 @@ if TYPE_CHECKING:
         Section,
     )
 
-matplotlib.use("Agg")
 
 # Bohr → Ångström (CODATA 2018). The QVF v2 schema stores lattice
 # vectors in bohr to match ``vibeqc.PeriodicSystem.lattice`` exactly;
 # the renderer converts to Å on output for consistency with the atom
 # coords (which the writer has already converted to Å).
-_BOHR_TO_ANGSTROM = 0.529177210903
-
-
-_KIND_COLORS = {
-    "reactant": "#2ca02c",
-    "transition_state": "#d62728",
-    "intermediate": "#ff7f0e",
-    "product": "#1f77b4",
-    "point": "#7f7f7f",
-}
 
 
 def _wrap_positions(
@@ -87,71 +88,25 @@ def _wrap_positions(
     frac_wrapped[:, :wrap_axes] = frac[:, :wrap_axes] - np.floor(
         frac[:, :wrap_axes]
     )
-    return frac_wrapped @ lattice_angstrom.T
+    wrapped: np.ndarray = frac_wrapped @ lattice_angstrom.T
+    return wrapped
 
 
-def _cell_edges(
-    lattice_angstrom: np.ndarray,
-    dim: int = 3,
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Edges of the cell spanned by the first ``dim`` lattice vectors.
-
-    Returns ``(p1, p2)`` pairs of corner positions in Å, with the cell origin at
-    the world origin. ``dim=3`` gives the familiar 12-edge parallelepiped;
-    ``dim=2`` gives the 4-edge in-plane parallelogram; ``dim=1`` a single edge.
-
-    Columns beyond ``dim`` are **non-physical** — vibe-qc synthesizes them so
-    the lattice stays full-rank for AO integrals and spglib, and the SCF energy
-    is invariant to them. Drawing them would render a 2D slab as a sheet inside
-    a phantom box.
-
-    LATTICE CONVENTION (reaction.path): the binary ``lattice`` member stores
-    vectors as **COLUMNS** (``lattice[:, 0]`` = a) — raw
-    ``PeriodicSystem.lattice``, no transpose. This is the OPPOSITE of the
-    ``structure`` section, which stores ROWS (see
-    renderers/structure.py::_draw_unit_cell). Both are correct for their own
-    source; never feed one renderer the other's lattice without transposing.
-    """
-    n = max(0, min(int(dim), 3))
-    if n == 0:
-        return []
-    vecs = [lattice_angstrom[:, i] for i in range(n)]
-
-    # Corners are every subset-sum of the periodic vectors; an edge joins two
-    # corners differing by exactly one vector.
-    corners = [
-        sum((vecs[k] for k in range(n) if mask & (1 << k)), np.zeros(3))
-        for mask in range(1 << n)
-    ]
-    edge_pairs = [
-        (mask, mask | (1 << k))
-        for mask in range(1 << n)
-        for k in range(n)
-        if not (mask & (1 << k))
-    ]
-    return [(corners[i], corners[j]) for i, j in edge_pairs]
-
-
-class ReactionPathRenderer(BaseRenderer):
+class ReactionPathRenderer(FrameSequenceMixin, BaseRenderer):
     """Renderer for the self-contained `reaction.path` kind."""
+
+    _energy_figsize = (6.0, 2.8)
 
     def __init__(self, section: Section, reader: QVFReader) -> None:
         super().__init__(section, reader)
         self._data: ReactionPathData | None = None
-        self._frame_pngs: list[bytes] | None = None  # pre-rendered (A7-04)
+        self._frame_pngs = {}
+        self._frame_meshes: dict[tuple[int, float], pv.PolyData | None] = {}
 
     def load(self) -> ReactionPathData:
         if self._data is None:
             self._data = self.reader.read_reaction_path(self.section_id)
         return self._data
-
-    @property
-    def n_frames(self) -> int:
-        return self.load().coords.shape[0]
-
-    @property
-    def n_atoms(self) -> int:
-        return len(self.load().atoms)
 
     @property
     def has_cell(self) -> bool:
@@ -200,7 +155,8 @@ class ReactionPathRenderer(BaseRenderer):
         if arr.ndim == 2:
             return arr * _BOHR_TO_ANGSTROM
         if arr.ndim == 3:
-            return arr[index] * _BOHR_TO_ANGSTROM
+            frame: np.ndarray = arr[index] * _BOHR_TO_ANGSTROM
+            return frame
         raise ValueError(
             f"reaction.path: lattice has unexpected ndim={arr.ndim} "
             f"(expected 2 or 3)"
@@ -251,11 +207,10 @@ class ReactionPathRenderer(BaseRenderer):
         if lattice is None:
             return None
         dim = self.dim_for_frame(index)
-        return _cell_edges(lattice, 3 if dim is None else dim)
-
-    def has_energies(self) -> bool:
-        data = self.load()
-        return data.energies is not None and len(data.energies) > 0
+        dim = 3 if dim is None else max(0, min(int(dim), 3))
+        # cell_for_frame gives Å columns; the shared helper takes rows.
+        starts, ends = cell_edges(lattice.T, (dim > 0, dim > 1, dim > 2))
+        return list(zip(starts, ends, strict=True))
 
     # ── per-frame volumes (W1) ────────────────────────────────────────
 
@@ -271,7 +226,7 @@ class ReactionPathRenderer(BaseRenderer):
     def volume_isovalue(self) -> float | None:
         return self.load().volume_isovalue
 
-    def volume_grid(self):  # -> GridData | None
+    def volume_grid(self) -> GridData | None:
         """Shared real-space grid (bohr) for the per-frame volumes."""
         return self.load().volume_grid
 
@@ -288,6 +243,13 @@ class ReactionPathRenderer(BaseRenderer):
         data = self.load()
         if data.frame_volumes is None:
             return None
+        return np.asarray(data.frame_volumes[self._volume_slab_index(index)])
+
+    def _volume_slab_index(self, index: int) -> int:
+        """Position of the emitted slab shown at path frame ``index``."""
+        data = self.load()
+        if data.frame_volumes is None:
+            return 0
         vfi = data.volume_frame_index or list(range(data.frame_volumes.shape[0]))
         # Largest emitted-slab position whose frame index <= `index`.
         slab = 0
@@ -296,29 +258,70 @@ class ReactionPathRenderer(BaseRenderer):
                 slab = slab_pos
             else:
                 break
-        return np.asarray(data.frame_volumes[slab])
+        return slab
 
     def volume_mesh_for_frame(
         self,
         index: int,
         isovalue: float | None = None,
-    ):  # -> pv.PolyData | None
-        """Marching-cubes isosurface of the density at path frame
+    ) -> pv.PolyData | None:
+        """Marching-cubes isosurface of the scalar field at path frame
         ``index``, ready to add to the 3D scene. None if this archive
         has no volumes. ``isovalue`` defaults to the archive's stored
-        hint, else 0.02 e/bohr³ (a reasonable density isosurface)."""
+        hint, else 0.02 e/bohr³ (a reasonable density isosurface).
+        A negative level contours the negative lobe with outward normals.
+        """
         data = self.load()
         if data.frame_volumes is None or data.volume_grid is None:
             return None
         from vibeview.renderers.volume import build_isosurface_mesh
 
-        field = self.volume_data_for_frame(index)
-        iso = (
+        iso = float(
             isovalue
             if isovalue is not None
             else (data.volume_isovalue if data.volume_isovalue is not None else 0.02)
         )
-        return build_isosurface_mesh(field, data.volume_grid, float(iso))
+        # Decimated volumes repeat between emitted slabs, so cache by the
+        # emitted slab rather than the path frame: stepping through frames
+        # that share a slab contours it once.
+        slab = self._volume_slab_index(index)
+        key = (slab, iso)
+        if key not in self._frame_meshes:
+            field = self.volume_data_for_frame(index)
+            self._frame_meshes[key] = (
+                None if field is None else build_isosurface_mesh(
+                    -field if iso < 0 else field, data.volume_grid, abs(iso),
+                )
+            )
+        return self._frame_meshes[key]
+
+    def volume_surfaces_for_frame(
+        self,
+        index: int,
+    ) -> list[tuple[str, str, pv.PolyData]]:
+        """Visible ``(suffix, colour, mesh)`` overlays for a path frame.
+
+        Per-frame fields have no volume-kind tag in QVF. Infer signedness
+        from the emitted slab, rather than its free-text label. Signed
+        fields use the shared +/- palette; nonnegative densities retain
+        their single green surface. Empty lobes are omitted.
+        """
+        field = self.volume_data_for_frame(index)
+        if field is None:
+            return []
+        hint = self.load().volume_isovalue
+        iso = abs(float(hint if hint is not None else 0.02))
+        levels = (
+            [("pos", ISO_POSITIVE, iso), ("neg", ISO_NEGATIVE, -iso)]
+            if np.any(field < 0)
+            else [("0", FRAME_VOLUME, iso)]
+        )
+        surfaces = []
+        for suffix, colour, level in levels:
+            mesh = self.volume_mesh_for_frame(index, level)
+            if mesh is not None and mesh.n_points > 0:
+                surfaces.append((suffix, colour, mesh))
+        return surfaces
 
     def waypoints(self) -> list[ReactionWaypoint]:
         return self.load().waypoints
@@ -331,7 +334,7 @@ class ReactionPathRenderer(BaseRenderer):
 
     def _has_reaction_coordinate(self) -> bool:
         data = self.load()
-        n = len(data.energies or [])
+        n = 0 if data.energies is None else len(data.energies)
         return (
             data.reaction_coordinate is not None
             and len(data.reaction_coordinate) == n
@@ -358,76 +361,39 @@ class ReactionPathRenderer(BaseRenderer):
             return data.reaction_coordinate_label
         return "Reaction coordinate"
 
-    def render_energy_plot(self, current_frame: int) -> bytes:
-        """Return a pre-rendered PNG of the energy plot for ``current_frame``.
-
-        All N frame variants are rendered once and cached on first call
-        (A7-04); subsequent calls are O(1) lookups.
-        """
+    def _frame_x_values(self, n_frames: int) -> np.ndarray:
+        """The reaction coordinate when the path carries one, else the frame index."""
         data = self.load()
-        if not data.energies:
-            return b""
-        if self._frame_pngs is None:
-            self._frame_pngs = self._prerender_all_frames(data)
-        n = len(self._frame_pngs)
-        if n == 0:
-            return b""
-        idx = max(0, min(current_frame, n - 1))
-        return self._frame_pngs[idx]
-
-    def _prerender_all_frames(self, data) -> list[bytes]:
-        """Render one PNG per frame (frame indicator moves; everything else fixed)."""
-        if not data.energies:
-            return []
-        energies = np.array(data.energies, dtype=np.float64)
-        n = len(energies)
-        if n == 0:
-            return []
-
         if self._has_reaction_coordinate():
             assert data.reaction_coordinate is not None
-            xs = np.array(data.reaction_coordinate, dtype=np.float64)
-        else:
-            xs = np.arange(n)
-        x_label = self.energy_plot_x_label()
+            return np.array(data.reaction_coordinate, dtype=np.float64)
+        return np.arange(n_frames, dtype=np.float64)
 
-        pngs: list[bytes] = []
-        for frame in range(n):
-            fig, ax = plt.subplots(figsize=(6, 2.8))
-            ax.plot(xs, energies, "-", color="#3366CC", linewidth=1.0, zorder=1)
-            ax.plot(xs, energies, "o", color="#3366CC", markersize=3, zorder=2)
-
-            for wp in data.waypoints:
-                if not 0 <= wp.frame_index < n:
-                    continue
-                color = _KIND_COLORS.get(wp.kind, "#444444")
-                ax.plot(
-                    xs[wp.frame_index], energies[wp.frame_index],
-                    marker="*", color=color, markersize=14,
-                    markeredgecolor="black", markeredgewidth=0.5, zorder=4,
-                )
-                ax.annotate(
-                    wp.label,
-                    xy=(xs[wp.frame_index], energies[wp.frame_index]),
-                    xytext=(6, 8), textcoords="offset points",
-                    fontsize=8, color=color,
-                )
-
+    def _draw_energy_figure(self, ax: Axes, energies: np.ndarray, frame: int) -> None:
+        data = self.load()
+        n = len(energies)
+        xs = self._frame_x_values(n)
+        ax.plot(xs, energies, "-", color=ACCENT_BLUE, linewidth=1.0, zorder=1)
+        ax.plot(xs, energies, "o", color=ACCENT_BLUE, markersize=3, zorder=2)
+        for wp in data.waypoints:
+            if not 0 <= wp.frame_index < n:
+                continue
+            color = WAYPOINT_KIND.get(wp.kind, "#444444")
             ax.plot(
-                xs[frame], energies[frame], "o",
-                color="#CC3333", markersize=8, zorder=5,
+                xs[wp.frame_index], energies[wp.frame_index],
+                marker="*", color=color, markersize=14,
+                markeredgecolor="black", markeredgewidth=0.5, zorder=4,
             )
-            ax.set_xlabel(x_label)
-            ax.set_ylabel("Energy (a.u.)")
-            ax.grid(True, alpha=0.3)
-            fig.tight_layout()
-
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=100)
-            plt.close(fig)
-            buf.seek(0)
-            pngs.append(buf.read())
-        return pngs
+            ax.annotate(
+                wp.label,
+                xy=(xs[wp.frame_index], energies[wp.frame_index]),
+                xytext=(6, 8), textcoords="offset points",
+                fontsize=8, color=color,
+            )
+        ax.plot(xs[frame], energies[frame], "o", color=ACCENT_RED, markersize=8, zorder=5)
+        ax.set_xlabel(self.energy_plot_x_label())
+        ax.set_ylabel("Energy (a.u.)")
+        ax.grid(True, alpha=0.3)
 
 
 class ReactionWaypointsRenderer(BaseRenderer):

@@ -7,8 +7,12 @@ to identify bottlenecks in large-system visualization.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class ProfileResult:
@@ -36,7 +40,7 @@ class ProfileResult:
 class Profiler:
     """Simple in-process profiler for vibe-view operations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._results: list[ProfileResult] = []
         self._active: dict[str, ProfileResult] = {}
 
@@ -56,7 +60,7 @@ class Profiler:
         return result
 
     @contextmanager
-    def measure(self, name: str):
+    def measure(self, name: str) -> Iterator[None]:
         """Context manager for timing a block."""
         self.start(name)
         try:
@@ -64,7 +68,7 @@ class Profiler:
         finally:
             self.stop(name)
 
-    def get_stats(self) -> list[dict]:
+    def get_stats(self) -> list[dict[str, Any]]:
         """Return all timing results as a list of dicts."""
         return [{"name": r.name, "elapsed_s": r.elapsed} for r in self._results]
 
@@ -88,12 +92,12 @@ class Profiler:
 profiler = Profiler()
 
 
-def profile(func):
+def profile(func: Callable[P, R]) -> Callable[P, R]:
     """Decorator: profile a function call."""
     import functools
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         with profiler.measure(func.__name__):
             return func(*args, **kwargs)
 

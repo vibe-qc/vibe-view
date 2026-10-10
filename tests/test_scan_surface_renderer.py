@@ -40,12 +40,6 @@ def _scan_surface_qvf(with_geometries: bool = False) -> tuple[Path, str]:
         "coordinate_b_label": "angle 1–0–2",
         "coordinate_b_unit": "rad",
     }
-    members = {
-        "metadata": ("scan/meta.json", None),
-        "axis_a": ("scan/a.bin", axis_a.tobytes(), "float64", [n_a]),
-        "axis_b": ("scan/b.bin", axis_b.tobytes(), "float64", [n_b]),
-        "energies": ("scan/e.bin", energies.tobytes(), "float64", [n_a, n_b]),
-    }
     geo_bytes = None
     if with_geometries:
         geo = np.zeros((n_a * n_b, 3, 3), dtype=np.float64)
@@ -91,8 +85,10 @@ def _scan_surface_qvf(with_geometries: bool = False) -> tuple[Path, str]:
             {"id": "scan", "kind": "scan.surface", "members": section_members}
         ],
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("scan/meta.json", meta)
         zf.writestr("scan/a.bin", axis_a.tobytes())

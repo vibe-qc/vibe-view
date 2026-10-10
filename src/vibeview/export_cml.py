@@ -17,8 +17,19 @@ if TYPE_CHECKING:
 
 import numpy as np
 
+from vibeview.bonds import in_cell, structure_bonds
 
-def export_cml(reader: "QVFReader", output_path: str) -> str:
+
+def _cml_order(order: float) -> str:
+    """CML bond order: ``1``/``2``/``3``, ``A`` for aromatic (1.5), else the number."""
+    if order == 1.5:
+        return "A"
+    if float(order).is_integer():
+        return str(int(order))
+    return f"{order:g}"
+
+
+def export_cml(reader: QVFReader, output_path: str) -> str:
     """Export molecular structure as a CML file.
 
     Parameters
@@ -48,7 +59,7 @@ def export_cml(reader: "QVFReader", output_path: str) -> str:
 
     # Atom array
     atom_array = ET.SubElement(mol, "atomArray")
-    for i, (symbol, pos) in enumerate(zip(symbols, positions)):
+    for i, (symbol, pos) in enumerate(zip(symbols, positions, strict=True)):
         ET.SubElement(
             atom_array,
             "atom",
@@ -59,36 +70,19 @@ def export_cml(reader: "QVFReader", output_path: str) -> str:
             z3=f"{pos[2]:.6f}",
         )
 
-    # Bond array (distance-based detection)
-    cov_radii = {
-        "H": 0.31,
-        "C": 0.76,
-        "N": 0.71,
-        "O": 0.66,
-        "F": 0.57,
-        "P": 1.07,
-        "S": 1.05,
-        "Cl": 1.02,
-        "Br": 1.20,
-        "I": 1.39,
-    }
-    radii = [cov_radii.get(s, 0.8) for s in symbols]
-
+    # Bond array: the viewer's connectivity (explicit bonds when the archive
+    # has them, otherwise the shared covalent-radius inference). CML addresses
+    # atoms by id and has no periodic images, so bonds across a cell face are
+    # left out.
     bond_array = ET.SubElement(mol, "bondArray")
-    bond_idx = 1
-    for i in range(len(symbols)):
-        for j in range(i + 1, len(symbols)):
-            d = np.linalg.norm(positions[i] - positions[j])
-            threshold = (radii[i] + radii[j]) * 1.2
-            if 0.4 < d < threshold:
-                ET.SubElement(
-                    bond_array,
-                    "bond",
-                    id=f"b{bond_idx}",
-                    atomRefs2=f"a{i + 1} a{j + 1}",
-                    order="1",
-                )
-                bond_idx += 1
+    for bond_idx, (i, j, order, _image) in enumerate(in_cell(structure_bonds(sdata)), start=1):
+        ET.SubElement(
+            bond_array,
+            "bond",
+            id=f"b{bond_idx}",
+            atomRefs2=f"a{i + 1} a{j + 1}",
+            order=_cml_order(order),
+        )
 
     # Pretty-print XML
     xml_str = ET.tostring(root, encoding="utf-8")

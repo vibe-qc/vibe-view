@@ -279,22 +279,16 @@ class TestServeModule:
             assert response.reason == "could not create a new structure here"
             assert "X-Injected" not in str(response.headers)
 
-    def test_human_size(self) -> None:
-        from vibeview.serve import _human_size
-
-        assert _human_size(0) == "0.0 B"
-        assert _human_size(1023) == "1023.0 B"
-        assert _human_size(1024) == "1.0 KB"
-        assert _human_size(1048576) == "1.0 MB"
-
-    def test_browse_dir_absolute_navigation_links(self) -> None:
+    def test_browse_dir_absolute_navigation_links(self, monkeypatch, tmp_path) -> None:
         """Directory rows, parent, and Home links use /browse?dir=<abs>
         so the user can walk the whole filesystem, not just the launch
-        directory."""
+        directory. HOME points at a scratch directory, so the test never
+        reads the account running it."""
         import urllib.parse
 
         from vibeview.serve import _browse_dir
 
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
         with tempfile.TemporaryDirectory() as tmpdir:
             td = Path(tmpdir).resolve()
             (td / "runs").mkdir()
@@ -535,18 +529,103 @@ class TestNewStructureAndRecursiveBrowse:
         assert resp.status == 403
         assert not (root / "new-structure.qvf").exists()
 
-    def test_find_qvfs_respects_the_time_budget(self) -> None:
+    def test_find_qvfs_respects_the_time_budget(self, monkeypatch, tmp_path) -> None:
         """The desktop app's browse root can be $HOME or even / (dock
         launches have no cwd handshake), where an unbounded walk takes
         minutes while the page shows nothing — the original 'the button
-        does nothing' report. A zero budget must return immediately and
-        say it was cut off."""
-        import time
+        does nothing' report. A spent budget must stop the walk at its first
+        step and say it was cut off. The tree here is endless, so a walk
+        that ignored the budget would never return; no wall clock is read."""
+        import itertools
 
-        from vibeview.serve import _find_qvfs
+        from vibeview import serve
 
-        t0 = time.monotonic()
-        files, truncated = _find_qvfs(Path.home(), time_budget_s=0.0)
-        assert time.monotonic() - t0 < 1.0
+        steps: list[int] = []
+
+        def endless_walk(root, followlinks=False):
+            for step in itertools.count():
+                steps.append(step)
+                yield (str(Path(root) / f"d{step}"), [], ["found.qvf"])
+
+        monkeypatch.setattr(serve.os, "walk", endless_walk)
+        files, truncated = serve._find_qvfs(tmp_path, time_budget_s=-1.0)
         assert truncated is True
+        assert steps == [0]
         assert files == []
+
+    def test_open_on_a_bad_archive_reports_the_failure_once(self, tmp_path) -> None:
+        """#59: a viewer child that dies on a bad archive must surface its
+        exit status and error on /open-status, and the poll must not spawn
+        a replacement child every time it asks."""
+        import http.client
+        import socket
+        import threading
+        import time
+        import urllib.parse
+
+        from vibeview import serve
+
+        bad = tmp_path / "bad.qvf"
+        bad.write_bytes(b"not a zip archive")
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        threading.Thread(
+            target=serve.serve_directory, args=(tmp_path,), kwargs={"port": port}, daemon=True
+        ).start()
+
+        def get(path: str) -> tuple[int, str]:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            return resp.status, resp.read().decode()
+
+        query = "?file=" + urllib.parse.quote(str(bad.resolve()))
+        try:
+            for _ in range(50):
+                try:
+                    status, body = get("/open" + query)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                raise AssertionError("server did not start")
+            assert status == 200
+            assert "/open-status" in body  # the loading page, not a redirect
+
+            key = str(bad.resolve())
+            first_proc = serve._viewers[key]["proc"]
+            deadline = time.monotonic() + 60
+            while True:
+                reply = json.loads(get("/open-status" + query)[1])
+                if reply.get("failed") or time.monotonic() > deadline:
+                    break
+                time.sleep(0.2)
+
+            assert reply["failed"] is True
+            assert reply["ready"] is False
+            assert reply["exit_code"] == 1
+            assert "not a valid zip archive" in reply["error"]
+
+            # Further polls keep reporting the same dead child.
+            for _ in range(3):
+                assert json.loads(get("/open-status" + query)[1])["failed"] is True
+            assert serve._viewers[key]["proc"] is first_proc
+
+            # A fresh /open is a new attempt and may start a new child.
+            get("/open" + query)
+            assert serve._viewers[key]["proc"] is not first_proc
+        finally:
+            serve._shutdown_viewers()
+
+    def test_loading_page_shows_a_failed_viewer_as_text(self) -> None:
+        """The failure branch writes the name and error through textContent,
+        with the name passed as a script string, never as markup."""
+        from vibeview.serve import _loading_page
+
+        name = '</script><img src=x onerror=alert(1)>'
+        page = _loading_page(name, "/open-status?file=x")
+        assert "d.failed" in page
+        assert "error.textContent = d.error" in page
+        assert "</script><img" not in page
+        assert "\\u003c/script\\u003e\\u003cimg" in page

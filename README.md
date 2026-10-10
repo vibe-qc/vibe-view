@@ -230,7 +230,7 @@ tui              Interactive terminal viewer (needs the [tui] extra)
 show             Render one frame as terminal text and exit
 compare          Side-by-side with auto compare-mode
 serve            Web-based QVF file browser
-dashboard        Multi-QVF web dashboard
+dashboard        Grid preview of several QVF files
 desktop          Launch the native Electron window (source checkout)
 table            Dump tabular data (table/csv/json)
 batch            Offscreen PNG gallery (+ --volumes)
@@ -309,7 +309,7 @@ CLI, the Python SDK and troubleshooting.
 Build it from a checkout:
 
 ```sh
-pip install sphinx myst-parser furo sphinx-copybutton sphinx-design linkify-it-py
+pip install -e '.[docs]'  # the Sphinx toolchain, pinned in pyproject.toml
 cd docs && make html      # renders into docs/_build/html
 cd docs && make strict    # the same build with -W; run this before pushing docs
 ```
