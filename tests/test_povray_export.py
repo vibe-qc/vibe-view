@@ -5,43 +5,26 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
-import zipfile
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+from tests._qvf_builders import vibe_qc_source, write_archive
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _make_qvf(
-    sections: list[dict],
-    files: dict[str, bytes] | None = None,
-) -> Path:
-    """Create a minimal valid .qvf file in a temp directory."""
-    manifest = {
-        "qvf_version": 1,
-        "source": {
-            "program": "vibe-qc",
-            "version": "0.9.0",
-            "calculation": "test",
-        },
-        "sections": sections,
-    }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        if files:
-            for path, data in files.items():
-                zf.writestr(path, data)
-    return Path(tmp.name)
+def _make_qvf(sections: list[dict], files: dict[str, bytes] | None = None) -> Path:
+    return write_archive(sections, files, source=vibe_qc_source("0.9.0", "test"))
 
 
 @pytest.fixture
-def sample_qvf() -> Path:
-    """Create a QVF with a water-like molecule for testing."""
+def water_structure_qvf() -> Path:
+    """A structure-only water archive. Named apart from conftest's
+    ``sample_qvf`` (water plus a density grid), which it used to shadow."""
     structure = json.dumps(
         {
             "atoms": [
@@ -80,12 +63,12 @@ class TestPOVRayExport:
 
         assert callable(export_povray)
 
-    def test_export_creates_file(self, sample_qvf: Path) -> None:
+    def test_export_creates_file(self, water_structure_qvf: Path) -> None:
         """Export creates a .pov file with expected content."""
         from vibeview.povray_export import export_povray
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         with tempfile.NamedTemporaryFile(suffix=".pov", delete=False) as f:
             path = f.name
 
@@ -102,12 +85,12 @@ class TestPOVRayExport:
         finally:
             Path(path).unlink(missing_ok=True)
 
-    def test_export_styles(self, sample_qvf: Path) -> None:
+    def test_export_styles(self, water_structure_qvf: Path) -> None:
         """All four styles produce valid .pov files."""
         from vibeview.povray_export import export_povray
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         for style in ["ball_and_stick", "space_filling", "sticks_only", "wireframe"]:
             with tempfile.NamedTemporaryFile(suffix=".pov", delete=False) as f:
                 path = f.name
@@ -119,30 +102,14 @@ class TestPOVRayExport:
             finally:
                 Path(path).unlink(missing_ok=True)
 
-    def test_detect_bonds(self) -> None:
-        """Bond detection finds bonds between close atoms."""
-        from vibeview.povray_export import _detect_bonds
-
-        # H2 molecule: two H atoms at ~0.74 A
-        positions = np.array([[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]])
-        z_list = [1, 1]  # H-H
-        bonds = _detect_bonds(positions, z_list)
-        assert len(bonds) > 0
-
-        # Far apart atoms
-        positions_far = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
-        bonds_far = _detect_bonds(positions_far, z_list)
-        assert len(bonds_far) == 0
-
     def test_cpk_colors(self) -> None:
-        """CPK colour map has entries for common elements."""
-        from vibeview.povray_export import CPK_COLORS, _cpk_rgb
+        """Colours come from the viewer's CPK table (#54)."""
+        from vibeview.elements import cpk_hex
+        from vibeview.povray_export import _cpk_rgb
+        from vibeview.renderers import palette
 
-        assert 1 in CPK_COLORS  # H
-        assert 6 in CPK_COLORS  # C
-        assert 7 in CPK_COLORS  # N
-        assert 8 in CPK_COLORS  # O
-
+        r, g, b = palette.rgb(cpk_hex(8))
+        assert _cpk_rgb(8) == f"<{r / 255:.3f}, {g / 255:.3f}, {b / 255:.3f}>"
         color = _cpk_rgb(6)
         assert "<" in color
         assert ">" in color
@@ -189,22 +156,22 @@ class TestPOVRayExport:
 
     def test_vdw_radius_exceeds_covalent(self) -> None:
         """Regression: space_filling claimed vdW but used covalent radii."""
-        from vibeview.povray_export import _COVALENT_RADII, _vdw_radius
+        from vibeview.elements import COVALENT_RADII, vdw_radius
 
-        # vdW radius exceeds covalent for tabulated elements.
-        assert _vdw_radius(8) == 1.52
-        assert _vdw_radius(8) > _COVALENT_RADII[8]
-        # 1.75x covalent fallback for untabulated elements.
-        assert _vdw_radius(53) == _COVALENT_RADII[53] * 1.75
+        # The exporter sizes space-filling spheres by the viewer's vdW table
+        # (#54): tabulated for O, estimated above the covalent radius for I.
+        assert vdw_radius(8) == 1.52
+        assert vdw_radius(8) > COVALENT_RADII[8]
+        assert vdw_radius(53) > COVALENT_RADII[53]
 
-    def test_space_filling_uses_vdw_radii(self, sample_qvf: Path) -> None:
+    def test_space_filling_uses_vdw_radii(self, water_structure_qvf: Path) -> None:
         """space_filling spheres must be sized by vdW radii (e.g. O -> 1.52)."""
         import tempfile
 
         from vibeview.povray_export import export_povray
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         with tempfile.NamedTemporaryFile(suffix=".pov", delete=False) as f:
             path = f.name
         try:
@@ -354,13 +321,60 @@ class TestPOVRayExport:
         finally:
             path.unlink()
 
-    def test_export_from_qvf_convenience(self, sample_qvf: Path) -> None:
+    def test_export_from_qvf_convenience(self, water_structure_qvf: Path) -> None:
         """export_from_qvf convenience wrapper produces a .pov file."""
         from vibeview.povray_export import export_from_qvf
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            out = export_from_qvf(str(sample_qvf), output_dir=tmpdir)
+            out = export_from_qvf(str(water_structure_qvf), output_dir=tmpdir)
             assert out.endswith(".pov")
             assert Path(out).exists()
             content = Path(out).read_text()
             assert "camera" in content
+
+
+class TestPOVRayBlenderRoundtrip:
+    """Test that export modules produce valid output from real data."""
+
+    def test_povray_from_sample(self, sample_qvf):
+        from vibeview.povray_export import export_povray
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        with tempfile.NamedTemporaryFile(suffix=".pov", delete=False) as f:
+            path = f.name
+        try:
+            scene = export_povray(reader, path)
+            assert "camera" in scene
+            assert "light_source" in scene
+            assert "sphere" in scene
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_blender_from_sample(self, sample_qvf):
+        from vibeview.blender_export import export_blender_script
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            path = f.name
+        try:
+            script = export_blender_script(reader, path)
+            assert "bpy" in script
+            assert "CYCLES" in script
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_povray_all_styles_from_sample(self, sample_qvf):
+        from vibeview.povray_export import export_povray
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        for style in ["ball_and_stick", "space_filling", "sticks_only", "wireframe"]:
+            with tempfile.NamedTemporaryFile(suffix=".pov", delete=False) as f:
+                path = f.name
+            try:
+                scene = export_povray(reader, path, style=style)
+                assert "sphere" in scene
+            finally:
+                Path(path).unlink(missing_ok=True)

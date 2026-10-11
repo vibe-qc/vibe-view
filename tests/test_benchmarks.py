@@ -1,17 +1,20 @@
-"""Performance benchmarks for vibe-view v2.x.
+"""Performance benchmarks for vibe-view.
 
-Not intended as part of the CI pass/fail gate, but as a reproducible
-way to track performance regressions.  Run with:
+Every test here asserts a wall-clock budget, which depends on the machine
+running it, so the module carries the ``benchmark`` marker and the default
+run (``addopts`` in pyproject.toml) deselects it. They are a reproducible way
+to track performance regressions, not part of the pass/fail gate. Run with:
 
-    PYVISTA_OFF_SCREEN=True pytest vibe-view/tests/test_benchmarks.py -v
+    PYVISTA_OFF_SCREEN=True python -m pytest tests/test_benchmarks.py -m benchmark -v
 """
 
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.benchmark
 
 
 class TestStructureRenderingBenchmarks:

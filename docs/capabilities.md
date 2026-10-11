@@ -77,10 +77,15 @@ Computed electron density from the formaldehyde showcase archive.
 ```
 
 
-All of these use the same isosurface renderer, with an adjustable isovalue and
-colormap, and all are **lazy-loaded**: the binary payload is read from the zip
-on first activation, not at file-open time, so opening a file with a dozen
-orbitals in it is instant.
+All of these have an adjustable isovalue and colormap. Payloads are
+**lazy-loaded**: the binary grid is read on first activation, while the
+initial file open reads the manifest and section metadata. A larger grid
+still takes time to load and contour when selected.
+
+**Try it:** run `vibe-view info FILE.qvf`, note the ID of a `volume.*`
+section, and select it in the sidebar. Lower the isovalue to include more of
+the field. A signed orbital or difference field can have two lobes; the
+colours represent sign, not two different substances.
 
 | Kind | What it is |
 |---|---|
@@ -127,8 +132,8 @@ An illustrative band/DOS fixture demonstrates the combined panel; these curves a
 
 | Kind | What you get |
 |---|---|
-| `bands` | Electronic band structure, interactive, with the Fermi level marked |
-| `dos.total`, `dos.projected` | Total and projected density of states |
+| `bands` | Electronic band structure, interactive, with the Fermi level marked and an adjustable energy window |
+| `dos.total`, `dos.projected` | Total and projected density of states, on the same energy window |
 | `dos.coop`, `dos.cohp` | Crystal orbital overlap / Hamilton populations |
 | `phonon_bands`, `phonon_dos` | Phonon dispersion and density of states |
 | `fermi_surface` | The Fermi surface in reciprocal space |
@@ -144,9 +149,14 @@ The computed IR spectrum from the formaldehyde showcase archive.
 ```
 
 
-`spectra.ir`, `spectra.uvvis`, `spectra.raman`, `spectra.ecd`, `spectra.vcd`,
-`spectra.nmr`, `spectra.epr` and `spectra.generic` all render as interactive
-stem plots with hover tooltips, on a shared renderer.
+IR, UV/visible, Raman, ECD, VCD and generic spectra use interactive plots.
+NMR and EPR also expose their nucleus/site and tensor data in dedicated
+panels. Availability depends on which sections the producer stored.
+
+**Read the axes first:** frequencies, excitation energies, shifts and field
+values are different quantities. A broadening curve is a display aid laid
+over the stored transitions; it is not an additional calculated result.
+The [browser reference](browser.md) describes the controls.
 
 ## Things that change over a coordinate
 
@@ -179,27 +189,25 @@ display.
 
 ## Which surface renders what
 
-Every renderer is shared; the surfaces differ in how you drive them, not in
-what they can draw.
+The archive is shared; the capabilities below are specific to each surface.
+“Stored volume” means a sampled grid in the file. “On demand” means evaluating
+an orbital from its basis and coefficient data.
 
-| | Browser | Desktop | TUI | `show` | Headless | Jupyter |
-|---|---|---|---|---|---|---|
-| Structures | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Volumes / orbitals | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| On-demand wavefunction evaluation | ✅ | ✅ | ✅ | — | SDK only | — |
-| Bands / DOS / spectra / SCF | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Tables | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Editing, fragment library, crystal builder | ✅ | ✅ | — | — | — | — |
-| vq job panel | ✅ | ✅ | — | — | — | — |
-| Animation playback | ✅ | ✅ | ✅ | — | ✅ (to file) | — |
-| Needs a GL context | ✅ | ✅ | — | — | offscreen | — |
+| Task | Browser / desktop | TUI | One-shot `show` | Headless / Python |
+|---|---|---|---|---|
+| Structure and stored volume | Interactive scene | Interactive text scene | One text frame | PNG with `capture` or SDK |
+| On-demand orbital or density | Wavefunction controls | Surface table | Not evaluated | Internal wavefunction API; see [headless](headless.md) |
+| Bands, DOS, spectra, SCF | Interactive plots | Terminal charts | Terminal charts | Bands PNG; other chart helpers write HTML |
+| Scientific tables | Result panel | Data panes | Use `table` instead | `table` CSV/JSON or SDK `get_table` |
+| Editing and builders | Available | Read-only | Read-only | Separate structure commands; no interactive editor |
+| Trajectories and normal modes | Playback | Playback | A selected frame | `animate` writes frames, GIF or MP4 |
+| Graphics requirement | Browser WebGL | No OpenGL | No OpenGL | PNG needs offscreen OpenGL; text/data export does not |
 
-"SDK only" means what it says: `vibe-view capture` renders *stored*
-`volume.*` sections and the orbital energy diagram, but has no flag for
-evaluating an orbital on demand. `vibeview.renderers.wavefunction.WavefunctionRenderer`
-does — `evaluate_mo`, `evaluate_density`, `evaluate_spin_density`,
-`evaluate_elf`, `evaluate_nci` — so a script can do it headlessly even though
-the CLI cannot.
+`vibe-view capture` accepts a structure, stored `volume.*` / `basis.ao`, or
+bands section. It does not evaluate orbitals on demand or capture every
+kind in this catalogue. The [capture API](headless.md#the-capture-api) lists
+other export routes, including the orbital energy diagram. Notebook image
+capture has the same offscreen graphics requirements as any PNG capture.
 
 The terminal surfaces deserve the emphasis: `vibe-view tui` gives you the 3-D
 viewer, the charts and a selectable surface table as Unicode braille, over

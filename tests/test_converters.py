@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 from pathlib import Path
 
@@ -60,7 +61,10 @@ class TestDetectFormat:
 
 class TestXYZConverter:
     def test_water(self) -> None:
-        xyz = "3\nwater\nO   0.000   0.000   0.117\nH   0.757   0.000  -0.469\nH  -0.757   0.000  -0.469\n"
+        xyz = (
+            "3\nwater\nO   0.000   0.000   0.117\n"
+            "H   0.757   0.000  -0.469\nH  -0.757   0.000  -0.469\n"
+        )
         buf = xyz_to_qvf(xyz.encode())
         reader = QVFReader(buf)
         struct = reader.read_structure()
@@ -254,8 +258,8 @@ class TestGROConverter:
         gro = """water
     3
     1WATER  OW1    1   0.000   0.000   0.012
-    1WATER HW2    2   0.076   0.000  -0.047
-    1WATER HW3    3  -0.076   0.000  -0.047
+    1WATER  HW2    2   0.076   0.000  -0.047
+    1WATER  HW3    3  -0.076   0.000  -0.047
    3.00000   3.00000   3.00000
 """
         buf = gro_to_qvf(gro.encode())
@@ -616,3 +620,81 @@ class TestPDBResidueModel:
         assert sd.backbone_trace().shape == (0, 3)
         assert all(a.atom_name is None for a in sd.atoms)
         p.unlink()
+
+
+class TestConvertersExtended:
+    def test_symbol_to_z(self):
+        from vibeview.converters import _SYMBOL_TO_Z
+
+        assert _SYMBOL_TO_Z["H"] == 1
+        assert _SYMBOL_TO_Z["C"] == 6
+        assert _SYMBOL_TO_Z["O"] == 8
+        assert _SYMBOL_TO_Z["He"] == 2
+
+    def test_xyz_to_qvf_with_helium(self):
+        from vibeview.converters import xyz_to_qvf
+
+        xyz = b"1\n\nHe  0.0  0.0  0.0\n"
+        buf = xyz_to_qvf(xyz)
+        import zipfile
+
+        zf = zipfile.ZipFile(buf)
+        assert "manifest.json" in zf.namelist()
+
+    def test_xyz_to_qvf_water(self):
+        from vibeview.converters import xyz_to_qvf
+
+        xyz = (
+            b"3\n\nO   0.000   0.000   0.117\n"
+            b"H   0.000   0.757  -0.469\nH   0.000  -0.757  -0.469\n"
+        )
+        buf = xyz_to_qvf(xyz)
+        import zipfile
+
+        zf = zipfile.ZipFile(buf)
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["qvf_version"] == 1
+
+
+class TestConverterEdgeCases:
+    def test_xyz_to_qvf_empty_raises(self):
+        from vibeview.converters import xyz_to_qvf
+
+        # XYZ with 0 atoms should raise ValueError
+        with pytest.raises(ValueError, match="no atoms"):
+            xyz_to_qvf(b"0\n\n")
+
+    def test_xyz_to_qvf_large(self):
+        from vibeview.converters import xyz_to_qvf
+
+        # 100-atom molecule
+        xyz = b"100\nLarge molecule\n"
+        for i in range(100):
+            xyz += f"C    {i * 1.5:.6f}    0.000000    0.000000\n".encode()
+        buf = xyz_to_qvf(xyz)
+        import zipfile
+
+        zf = zipfile.ZipFile(buf)
+        assert "manifest.json" in zf.namelist()
+
+
+class TestConverterFormats:
+    """Test format converters for import."""
+
+    def test_xyz_to_qvf(self):
+        from vibeview.converters import xyz_to_qvf
+
+        xyz_content = b"""3
+Water molecule
+O    0.000000    0.000000    0.117790
+H    0.000000    0.755450   -0.471160
+H    0.000000   -0.755450   -0.471160
+"""
+        buf = xyz_to_qvf(xyz_content)
+        assert buf is not None
+        # Verify it's a valid zip
+        import zipfile
+
+        zf = zipfile.ZipFile(buf)
+        names = zf.namelist()
+        assert "manifest.json" in names

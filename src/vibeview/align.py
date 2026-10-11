@@ -52,6 +52,10 @@ def kabsch_fit(mobile: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, float]:
         raise ValueError(
             f"kabsch_fit: need matching [N, 3] arrays, got {P.shape} vs {Q.shape}"
         )
+    if P.shape[0] == 0:
+        # The centroid of no points is nan with a warning, and the SVD of
+        # nan is unpredictable: refuse, as ``kabsch`` and ``align`` do (#67).
+        raise ValueError("kabsch_fit: need at least one point")
     centroid_p = P.mean(axis=0)
     centroid_q = Q.mean(axis=0)
     p0 = P - centroid_p
@@ -70,8 +74,15 @@ def rmsd(a: np.ndarray, b: np.ndarray) -> float:
     """Index-wise RMSD between two ``[N, 3]`` coordinate sets (no superposition)."""
     arr_a = np.asarray(a, dtype=float)
     arr_b = np.asarray(b, dtype=float)
+    if arr_a.ndim != 2 or arr_a.shape[1] != 3:
+        # A ``(0,)`` array (``np.array([])``) used to reach the axis-1 sum
+        # and raise AxisError (#67).
+        raise ValueError(f"rmsd: need [N, 3] arrays, got {arr_a.shape}")
     if arr_a.shape != arr_b.shape:
         raise ValueError(f"rmsd: shape mismatch {arr_a.shape} vs {arr_b.shape}")
+    if arr_a.shape[0] == 0:
+        # The mean of nothing is nan with a warning, not an RMSD (#67).
+        raise ValueError("rmsd: need at least one point")
     return float(np.sqrt(np.mean(np.sum((arr_a - arr_b) ** 2, axis=1))))
 
 
