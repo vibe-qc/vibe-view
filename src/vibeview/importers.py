@@ -33,6 +33,7 @@ RESERVED_FORMAT_NAMES = frozenset(
         "gjf",
         "gro",
         "mol2",
+        "orca",
         "pdb",
         "py",
         "qvf",

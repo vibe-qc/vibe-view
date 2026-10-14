@@ -95,7 +95,7 @@ const APP_VERSION = CONFIG.version || app.getVersion();
 // VIBEVIEW_DESKTOP_CONFIG -- it is the only copy of the string left in this
 // file, and tests/test_release_codenames.py asserts it equals what the
 // catalogue resolves for the current version.
-const FALLBACK_CODENAME = "Lorensen's Loon";
+const FALLBACK_CODENAME = "Levoy's Lemur";
 const APP_CODENAME = CONFIG.codename || FALLBACK_CODENAME;
 
 app.setName("vibe-view");
@@ -774,9 +774,12 @@ function createTray() {
       click: () => createWindow(),
     },
     {
-      label: "Open QVF or TREXIO File...",
+      label: "Open QVF, TREXIO or ORCA File...",
       click: () => showOpenDialog([
-        { name: "QVF and TREXIO Files", extensions: ["qvf", "trexio", "h5", "hdf5"] },
+        {
+          name: "QVF, TREXIO and ORCA Files",
+          extensions: ["qvf", "trexio", "h5", "hdf5", "gbw", "json", "txt", "mcd", "out", "inp"],
+        },
       ]),
     },
     { type: "separator" },
@@ -833,12 +836,13 @@ function createMenu() {
       label: "File",
       submenu: [
         {
-          label: "Open QVF or TREXIO File...",
+          label: "Open QVF, TREXIO or ORCA File...",
           accelerator: "CmdOrCtrl+O",
           click: () =>
             showOpenDialog([
               { name: "QVF Files", extensions: ["qvf"] },
               { name: "TREXIO Files", extensions: ["trexio", "h5", "hdf5"] },
+              { name: "ORCA Files", extensions: ["gbw", "json", "txt", "mcd", "out", "inp"] },
               { name: "All Files", extensions: ["*"] },
             ]),
         },

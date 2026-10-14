@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._qvf_builders import vibe_qc_source, write_archive
 from vibeview.qvf import (
     ManifestValidationError,
     MemberSpec,
@@ -25,31 +26,11 @@ def _make_qvf(
     files: dict[str, bytes] | None = None,
     viewer_defaults: dict | None = None,
 ) -> Path:
-    """Create a minimal valid .qvf file in a temp directory.
-
-    sections: list of section dicts for the manifest.
-    files: extra files to include in the zip (keyed by path inside zip).
-    viewer_defaults: optional viewer_defaults dict.
-    """
-    manifest = {
-        "qvf_version": 1,
-        "source": {
-            "program": "vibe-qc",
-            "version": "0.9.0",
-            "calculation": "test",
-        },
-        "sections": sections,
-    }
-    if viewer_defaults is not None:
-        manifest["viewer_defaults"] = viewer_defaults
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        if files:
-            for path, data in files.items():
-                zf.writestr(path, data)
-    return Path(tmp.name)
+    """A version-1 archive with these sections, member payloads and optional
+    ``viewer_defaults``, in a temporary file."""
+    return write_archive(
+        sections, files, source=vibe_qc_source("0.9.0", "test"), viewer_defaults=viewer_defaults
+    )
 
 
 def _sha256(data: bytes) -> str:
@@ -487,7 +468,7 @@ class TestQVFReaderPayloadErrors:
             reader = QVFReader(path)
             structure_data = reader.read_structure()
             assert structure_data.bonds == [(0, 1, 1.0, (0, 0, 0))]
-            assert reader.infer_bonds(structure_data) == [(0, 1, 1.0, (0, 0, 0))]
+            assert reader.connectivity(structure_data) == [(0, 1, 1.0, (0, 0, 0))]
         finally:
             path.unlink()
 
@@ -584,6 +565,100 @@ class TestSHA256MismatchNotSwallowed:
             reader = QVFReader(path)
             structure_data = reader.read_structure()
             with pytest.raises(SHA256MismatchError):
-                reader.infer_bonds(structure_data)
+                reader.connectivity(structure_data)
         finally:
             path.unlink()
+
+
+class TestQVFReaderEdgeCases:
+    def test_reader_hash(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        h = hash(reader)
+        assert isinstance(h, int)
+        reader.close()
+
+    def test_reader_repr(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        r = repr(reader)
+        assert "QVFReader" in r
+        reader.close()
+
+    def test_reader_context_manager(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        with QVFReader(sample_qvf) as reader:
+            assert reader.sections is not None
+
+    def test_manifest_source(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        src = reader.manifest.source
+        assert src.program == "vibe-qc"
+        reader.close()
+
+    def test_manifest_qvf_version(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        version = reader.manifest.qvf_version
+        assert isinstance(version, int)
+        reader.close()
+
+    def test_reader_sections_iterable(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        sections_list = list(reader.sections)
+        assert len(sections_list) >= 1
+        reader.close()
+
+    def test_reader_has_section(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        assert reader.has_section("structure") is True
+        assert reader.has_section("nonexistent") is False
+        reader.close()
+
+
+class TestQVFSource:
+    def test_reader_from_path(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        assert reader is not None
+        reader.close()
+
+    def test_reader_from_bytes(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        data = sample_qvf.read_bytes()
+        reader = QVFReader(data)
+        assert reader is not None
+        reader.close()
+
+
+class TestReaderSurface:
+    def test_reader_manifest_to_dict(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        manifest = reader.manifest
+        assert hasattr(manifest, "source")
+        reader.close()
+
+    def test_section_attributes(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        for section in reader.sections:
+            assert hasattr(section, "id")
+            assert hasattr(section, "kind")
+            break
+        reader.close()
+

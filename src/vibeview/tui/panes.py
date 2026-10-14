@@ -10,10 +10,32 @@ content would corrupt the display.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
 import numpy as np
 from rich.markup import escape
 
 from vibeview.kinds import classify_section
+from vibeview.renderers._coerce import as_float
+from vibeview.renderers.wavefunction import (
+    ELECTRON_OCCUPATION,
+    TRANSITION_WEIGHT,
+    frontier_orbitals,
+    natural_value_semantics,
+)
+from vibeview.units import (
+    HARTREE_TO_EV,
+    energy_factor,
+    energy_label,
+    length_from_angstrom,
+    length_label,
+)
+from vibeview.units import energy_unit as _energy_unit_key
+
+if TYPE_CHECKING:
+    from vibeview.qvf import QVFReader
+
 
 _H = "bold #d7dce8"  # section heading
 _K = "#8a93a8"  # key
@@ -22,13 +44,15 @@ _WARN = "bold #f0b050"
 
 _MAX_LOG_LINES = 400
 _MAX_ROWS = 500
+# Longest archive string a pane shows in one cell. Rich wraps a long cell
+# in time quadratic in its length: 80,000 characters took 23 s, and a
+# 1,000,000-character section id kept `show --info` busy for over an hour
+# (#62).
+_MAX_CELL_CHARS = 200
 
-# How far an occupation may sit from an integer and still be treated as one.
-# Covers float round-trip through the archive's JSON, nothing more: a genuine
-# fractional occupation is a statement about the wavefunction, not noise, and
-# is handled by _frontier_orbitals rather than absorbed by a tolerance.
-_OCC_INTEGER_TOL = 1e-6
-
+# The frontier rule, its tolerances and the occupation semantics live in
+# renderers.wavefunction (frontier_orbitals), shared with the browser.
+#
 # Pulay & Hamilton, J. Chem. Phys. 88, 4926 (1988), doi:10.1063/1.454704, § II:
 # natural orbitals with occupation numbers between 0.02 and 1.98 are the
 # fractionally occupied ones and constitute the MC-SCF active space. Their
@@ -37,19 +61,18 @@ _OCC_INTEGER_TOL = 1e-6
 _NO_ACTIVE_LO = 0.02
 _NO_ACTIVE_HI = 1.98
 
-# How far the occupations may sum from the system's electron count and still
-# be read as occupancies. Loose enough for accumulated float error over a few
-# hundred orbitals, far tighter than the gap between an electron count and an
-# NTO's transition weights (16 versus 1.0042 on the H2CO TDDFT archive).
-_OCC_ELECTRON_TOL = 0.05
-_ELECTRON_OCCUPATION = "electron_occupation"
-_TRANSITION_WEIGHT = "transition_weight"
+
+def _clip(text: str) -> str:
+    """``text`` cut to :data:`_MAX_CELL_CHARS`, saying how much was left out."""
+    if len(text) <= _MAX_CELL_CHARS:
+        return text
+    return f"{text[:_MAX_CELL_CHARS]}… (+{len(text) - _MAX_CELL_CHARS:,} chars)"
 
 
-def _kv(key: str, value, width: int = 22) -> str:
+def _kv(key: str, value: object, width: int = 22) -> str:
     if value is None or value == "":
         return ""
-    return f"[{_K}]{key:<{width}}[/] [{_V}]{escape(str(value))}[/]"
+    return f"[{_K}]{escape(_clip(key)):<{width}}[/] [{_V}]{escape(_clip(str(value)))}[/]"
 
 
 def _lines(*parts: str) -> str:
@@ -57,14 +80,16 @@ def _lines(*parts: str) -> str:
 
 
 def _table(headers: list[str], rows: list[list[str]], widths: list[int] | None = None) -> str:
+    rows = [[_clip(cell) for cell in row] for row in rows]
     if widths is None:
         widths = [
             max(len(headers[i]), *(len(r[i]) for r in rows)) if rows else len(headers[i])
             for i in range(len(headers))
         ]
-    head = "  ".join(f"[{_K}]{h:<{w}}[/]" for h, w in zip(headers, widths))
+    head = "  ".join(f"[{_K}]{h:<{w}}[/]" for h, w in zip(headers, widths, strict=True))
     body = [
-        "  ".join(f"[{_V}]{escape(cell):<{w}}[/]" for cell, w in zip(row, widths)) for row in rows
+        "  ".join(f"[{_V}]{escape(cell):<{w}}[/]" for cell, w in zip(row, widths, strict=True))
+        for row in rows
     ]
     if len(rows) >= _MAX_ROWS:
         body.append(f"[{_K}]… truncated at {_MAX_ROWS} rows[/]")
@@ -74,7 +99,7 @@ def _table(headers: list[str], rows: list[list[str]], widths: list[int] | None =
 # ── overview ──────────────────────────────────────────────────────────────
 
 
-def overview(reader) -> str:
+def overview(reader: QVFReader) -> str:
     """File-level summary: provenance, lifecycle, and the section inventory."""
     manifest = reader.manifest
     source = reader.source
@@ -92,7 +117,7 @@ def overview(reader) -> str:
     if warnings:
         out.append("")
         out.append(f"[{_H}]Lifecycle warnings[/]")
-        out.extend(f"[{_WARN}]! {escape(str(w))}[/]" for w in warnings)
+        out.extend(f"[{_WARN}]! {escape(_clip(str(w)))}[/]" for w in warnings)
 
     provenance = reader.provenance or {}
     if provenance:
@@ -119,11 +144,30 @@ def overview(reader) -> str:
 # ── structure ─────────────────────────────────────────────────────────────
 
 
-def structure_table(reader, limit: int = _MAX_ROWS) -> str:
-    """Cartesian geometry, cell parameters, and the bond list."""
-    structure = reader.read_structure()
+def structure_table(
+    reader: QVFReader,
+    limit: int = _MAX_ROWS,
+    structure_id: str = "structure",
+    *,
+    length_unit: str = "angstrom",
+) -> str:
+    """Cartesian geometry, cell parameters, and the bond list.
+
+    ``structure_id`` selects a non-primary structure section, such as the
+    geometry a ``wavefunction.gto`` names in ``structure_ref``.
+    ``length_unit`` (a ``vibeview.units.LENGTH_UNITS`` key, the browser's
+    ``measure_unit`` setting) sets the unit of every length shown; the
+    structure stays in Å (#58).
+    """
+    unit = length_label(length_unit)
+
+    def _len(value: float) -> float:
+        return length_from_angstrom(float(value), length_unit)
+
+    structure = reader.read_structure(structure_id)
     atoms = structure.atoms
-    out = [f"[{_H}]Structure[/]", _kv("atoms", len(atoms))]
+    title = "Structure" if structure_id == "structure" else f"Structure · {structure_id}"
+    out = [f"[{_H}]{title}[/]", _kv("atoms", len(atoms))]
 
     lattice = structure.lattice_vectors
     if lattice is not None and any(structure.pbc):
@@ -135,11 +179,12 @@ def structure_table(reader, limit: int = _MAX_ROWS) -> str:
             if not flag:
                 continue
             vec = np.asarray(lattice[i], dtype=float)
+            x, y, z = (_len(c) for c in vec)
             out.append(
                 _kv(
                     f"  {names[i]}",
-                    f"{vec[0]:9.4f} {vec[1]:9.4f} {vec[2]:9.4f}   |{names[i]}| ="
-                    f" {np.linalg.norm(vec):8.4f} Å",
+                    f"{x:9.4f} {y:9.4f} {z:9.4f}   |{names[i]}| ="
+                    f" {_len(np.linalg.norm(vec)):8.4f} {unit}",
                 )
             )
     if structure.has_residues:
@@ -148,16 +193,16 @@ def structure_table(reader, limit: int = _MAX_ROWS) -> str:
     out.append("")
     rows = []
     biomolecular = structure.has_residues
-    headers = ["#", "el", "x (Å)", "y (Å)", "z (Å)"]
+    headers = ["#", "el", f"x ({unit})", f"y ({unit})", f"z ({unit})"]
     if biomolecular:
         headers += ["res", "seq", "chain", "name"]
     for i, atom in enumerate(atoms[:limit]):
         row = [
             str(i + 1),
             atom.symbol,
-            f"{atom.position[0]:10.5f}",
-            f"{atom.position[1]:10.5f}",
-            f"{atom.position[2]:10.5f}",
+            f"{_len(atom.position[0]):10.5f}",
+            f"{_len(atom.position[1]):10.5f}",
+            f"{_len(atom.position[2]):10.5f}",
         ]
         if biomolecular:
             row += [
@@ -184,17 +229,17 @@ def structure_table(reader, limit: int = _MAX_ROWS) -> str:
                     f"{atoms[i].symbol}{i + 1}",
                     f"{atoms[j].symbol}{j + 1}",
                     f"{order:.2f}",
-                    f"{dist:.4f}",
+                    f"{_len(dist):.4f}",
                 ]
             )
-        out.append(_table(["i", "j", "order", "dist (Å)"], brows))
+        out.append(_table(["i", "j", "order", f"dist ({unit})"], brows))
     return _lines(*out)
 
 
 # ── per-kind panes ────────────────────────────────────────────────────────
 
 
-def atom_properties(reader, section_id: str) -> str:
+def atom_properties(reader: QVFReader, section_id: str) -> str:
     data = reader.read_atom_properties(section_id)
     structure = reader.read_structure()
     symbols = [a.symbol for a in structure.atoms]
@@ -219,14 +264,20 @@ def atom_properties(reader, section_id: str) -> str:
     return _lines(f"[{_H}]Atom properties[/]", _table(headers, rows + [totals]))
 
 
-def bond_orders(reader, section_id: str) -> str:
+def bond_orders(reader: QVFReader, section_id: str, *, length_unit: str = "angstrom") -> str:
+    """Bond-order pairs; distances in ``length_unit`` (#58)."""
     data = reader.read_bond_orders(section_id)
+    unit = length_label(length_unit)
     rows = [
         [
             str(pair.get("i", "")),
             str(pair.get("j", "")),
-            f"{float(pair.get('order', 0.0)):.4f}",
-            f"{float(pair.get('distance_ang', 0.0)):.4f}" if "distance_ang" in pair else "-",
+            f"{as_float(pair.get('order'), 0.0):.4f}",
+            (
+                f"{length_from_angstrom(as_float(pair.get('distance_ang'), 0.0), length_unit):.4f}"
+                if "distance_ang" in pair
+                else "-"
+            ),
         ]
         for pair in (data.pairs or [])[:_MAX_ROWS]
     ]
@@ -234,108 +285,36 @@ def bond_orders(reader, section_id: str) -> str:
         f"[{_H}]Bond orders[/]",
         _kv("method", data.method),
         "",
-        _table(["i", "j", "order", "dist (Å)"], rows),
+        _table(["i", "j", "order", f"dist ({unit})"], rows),
     )
 
 
-def _natural_value_semantics(data) -> str | None:
-    """Resolve explicitly declared natural-orbital value semantics."""
-    explicit = getattr(data, "occupation_semantics", None)
-    if explicit in {_ELECTRON_OCCUPATION, _TRANSITION_WEIGHT}:
-        return explicit
-    return None
+#: Fixed-width orbital-energy columns per display unit: (heading, format).
+#: Hartree keeps the terminal's historical "Ha" heading and six places.
+_ENERGY_COLUMNS = {
+    "hartree": ("ε (Ha)", "+12.6f"),
+    "ev": ("ε (eV)", "+10.4f"),
+    "kcal_mol": ("ε (kcal/mol)", "+12.2f"),
+}
 
 
-def _frontier_orbitals(
-    occ,
-    n_orbitals: int,
-    orbital_kind: str,
-    n_electrons=None,
-    occupation_semantics: str | None = None,
-):
-    """``(homo, lumo, undefined_reason)`` for one spin block.
+def wavefunction(
+    reader: QVFReader,
+    section_id: str,
+    energy_unit: str = "hartree",
+    *,
+    length_unit: str = "angstrom",
+) -> str:
+    """MO listing — energies, occupations, symmetry labels, HOMO/LUMO gap.
 
-    An orbital is occupied or it is not. For canonical sets and natural sets
-    carrying explicit electron-occupation semantics, the value is an electron
-    count per MO. In the case where "highest occupied" means anything the
-    canonical value is an integer (2 or 0 restricted, 1 or 0 per spin), while
-    a natural occupation can be fractional. Natural transition weights use
-    the same storage slot but are never treated as occupations. Rounding to
-    nearest is the frontier test and is robust to float round-trip through
-    JSON: 1.9999999 is occupied, 0.4 is not.
-
-    Where the occupations are *not* integers, HOMO and LUMO are not merely
-    hard to locate, they do not exist. Natural orbitals have genuinely
-    fractional occupations (that is what natural orbitals are), and so do
-    smeared / finite-temperature canonical orbitals. Picking the last one
-    above an arbitrary cut would invent a frontier the wavefunction does not
-    have, so nothing is labelled and the reason is surfaced instead. The
-    occupation column already carries what there is to say.
-
-    Localized orbitals are excluded for a different reason: they are not
-    energy ordered, so "highest" has no referent even when the occupations
-    are clean integers.
+    ``energy_unit`` (a ``vibeview.units.ENERGY_UNITS`` key; the browser's
+    ``energy_unit`` setting) picks the first energy column and the gap's
+    unit (#58). The second column keeps a reference: eV beside Hartree, as
+    before, and the stored Hartree value beside any other unit. With the
+    display in Hartree the gap is quoted in eV, as in the browser.
     """
-    if occ is None or n_orbitals == 0:
-        return None, None, None
-    n = min(len(occ), n_orbitals)
-    if n == 0:
-        return None, None, None
-    if orbital_kind == "localized":
-        return None, None, "localized orbitals are not energy ordered"
-
-    counts = np.asarray(occ[:n], dtype=float)
-    fractional = not np.allclose(counts, np.rint(counts), atol=_OCC_INTEGER_TOL)
-    if orbital_kind == "natural":
-        if occupation_semantics == _TRANSITION_WEIGHT:
-            return None, None, (
-                "transition weights (natural transition orbitals), not electron "
-                "occupations, so no frontier is named"
-            )
-        if occupation_semantics != _ELECTRON_OCCUPATION:
-            return None, None, (
-                "the archive does not declare whether these natural-orbital values "
-                "are electron occupations or transition weights, so no frontier is named"
-            )
-        if n_electrons is not None:
-            total = float(np.sum(counts))
-            if abs(total - float(n_electrons)) > _OCC_ELECTRON_TOL:
-                return None, None, (
-                    f"occupations sum to {total:.4g}, not the {n_electrons} electrons in "
-                    "this system: this is a partial or inconsistent occupation set"
-                )
-    elif fractional:
-        # Canonical orbitals with non-integer occupations mean smearing or a
-        # finite-temperature ensemble. There the frontier is the Fermi level,
-        # not an orbital index, so naming one would be a category error.
-        return None, None, (
-            "fractional occupations (smearing or an ensemble), so the frontier is a Fermi"
-            " level rather than an orbital"
-        )
-
-    # Natural orbitals are fractionally occupied by construction, and the
-    # literature does still speak of a highest occupied one: Pulay & Hamilton,
-    # J. Chem. Phys. 88, 4926 (1988), doi:10.1063/1.454704, § II, classify UHF
-    # natural orbitals by occupancy into doubly occupied, fractionally occupied
-    # (the active space), and virtual. Their window is 0.02 to 1.98, and they
-    # call it "somewhat arbitrary" in as many words, which is why the cut is
-    # reported next to the label rather than hidden inside it. Rounding to
-    # nearest is a much looser cut than theirs and only ever moves the frontier
-    # outward, so it cannot claim occupancy Pulay's window would deny.
-    filled = np.rint(counts) > 0
-    occupied = np.flatnonzero(filled)
-    homo = int(occupied[-1]) if occupied.size else None
-    # The LUMO is the lowest virtual *above* the HOMO, not merely the first
-    # empty row: a non-aufbau occupation (a hole below a filled level) would
-    # otherwise put the LUMO under the HOMO and invert the reported gap.
-    search_from = 0 if homo is None else homo + 1
-    empty = np.flatnonzero(~filled[search_from:])
-    lumo = int(empty[0] + search_from) if empty.size else None
-    return homo, lumo, None
-
-
-def wavefunction(reader, section_id: str) -> str:
-    """MO listing — energies, occupations, symmetry labels, HOMO/LUMO gap."""
+    unit = _energy_unit_key(energy_unit)
+    columns = (unit, "ev" if unit == "hartree" else "hartree")
     data = reader.read_wavefunction_gto(section_id)
     # The electron count is what separates an occupancy vector from a set of
     # transition weights; see _frontier_orbitals.
@@ -343,7 +322,7 @@ def wavefunction(reader, section_id: str) -> str:
         n_electrons = (reader.provenance or {}).get("n_electrons")
     except Exception:  # noqa: BLE001 — provenance is optional, never fatal here
         n_electrons = None
-    natural_semantics = _natural_value_semantics(data)
+    natural_semantics = natural_value_semantics(data)
     out = [
         f"[{_H}]Wavefunction (GTO)[/]",
         _kv("spin", data.spin),
@@ -353,7 +332,12 @@ def wavefunction(reader, section_id: str) -> str:
         _kv("spherical (pure)", data.pure),
     ]
 
-    def block(title, energies, occupations, labels):
+    def block(
+        title: str,
+        energies: Sequence[float] | np.ndarray | None,
+        occupations: Sequence[float] | np.ndarray | None,
+        labels: Sequence[str] | None,
+    ) -> str:
         if energies is None:
             return ""
         energies = np.asarray(energies, dtype=float)
@@ -363,7 +347,7 @@ def wavefunction(reader, section_id: str) -> str:
         # orbital "HOMO", because `homo` had been advanced to the current
         # index by the time that row was written. Only the last one is the
         # highest occupied.
-        homo, lumo, undefined = _frontier_orbitals(
+        homo, lumo, undefined = frontier_orbitals(
             occ,
             len(energies),
             data.orbital_kind,
@@ -387,8 +371,10 @@ def wavefunction(reader, section_id: str) -> str:
             rows.append(
                 [
                     str(i + 1),
-                    f"{energy:+12.6f}",
-                    f"{energy * 27.211386245988:+10.4f}",
+                    *(
+                        format(energy * energy_factor(column), _ENERGY_COLUMNS[column][1])
+                        for column in columns
+                    ),
                     # round-then-normalize: a natural occupation of -6.6e-17
                     # (a diagonalizer's numerical zero) formats as "-0.000",
                     # which reads as a defect rather than as zero.
@@ -401,14 +387,15 @@ def wavefunction(reader, section_id: str) -> str:
         if data.orbital_kind == "natural":
             value_heading = (
                 "occ"
-                if natural_semantics == _ELECTRON_OCCUPATION
+                if natural_semantics == ELECTRON_OCCUPATION
                 else (
                     "weight"
-                    if natural_semantics == _TRANSITION_WEIGHT
+                    if natural_semantics == TRANSITION_WEIGHT
                     else "value"
                 )
             )
-        text = _table(["#", "ε (Ha)", "ε (eV)", value_heading, "sym", ""], rows)
+        headings = [_ENERGY_COLUMNS[column][0] for column in columns]
+        text = _table(["#", *headings, value_heading, "sym", ""], rows)
         # For natural orbitals the informative statement is not where the
         # frontier sits but how many orbitals are genuinely fractional, which
         # is the active space in Pulay's classification.
@@ -427,7 +414,7 @@ def wavefunction(reader, section_id: str) -> str:
 
         gap = ""
         if homo is not None and lumo is not None and lumo < len(energies):
-            if data.orbital_kind == "natural":
+            if data.orbital_kind == "natural" and occ is not None:
                 # No energy gap here. A natural orbital's eigenvalue is its
                 # occupation number, not an orbital energy, so subtracting two
                 # of whatever a producer put in `energies` would dress a
@@ -438,8 +425,12 @@ def wavefunction(reader, section_id: str) -> str:
                     f"{occ[homo]:.4f} / {occ[lumo]:.4f}",
                 )
             else:
-                gap_ev = (energies[lumo] - energies[homo]) * 27.211386245988
-                gap = _kv(f"{frontier_names[0]}-{frontier_names[1]} gap", f"{gap_ev:.4f} eV")
+                gap_eh = float(energies[lumo] - energies[homo])
+                if unit == "hartree":
+                    gap_text = f"{gap_eh * HARTREE_TO_EV:.4f} eV"
+                else:
+                    gap_text = f"{gap_eh * energy_factor(unit):.4f} {energy_label(unit)}"
+                gap = _kv(f"{frontier_names[0]}-{frontier_names[1]} gap", gap_text)
         elif undefined:
             gap = _kv("frontier orbitals", undefined)
         return _lines("", f"[{_H}]{title}[/]", gap, active, text)
@@ -463,10 +454,22 @@ def wavefunction(reader, section_id: str) -> str:
         )
     else:
         out.append(block("Orbitals", data.energies, data.occupations, data.symmetry_labels))
+    # The viewport draws this wavefunction on the geometry its structure_ref
+    # names; show that geometry too, not only the primary structure's
+    # table, which describes a different geometry (#38-33).
+    structure_ref = str(getattr(data, "structure_ref", "") or "structure")
+    if structure_ref != "structure":
+        try:
+            out.append("")
+            out.append(
+                structure_table(reader, structure_id=structure_ref, length_unit=length_unit)
+            )
+        except Exception as exc:  # noqa: BLE001 — the MO listing stays usable
+            out.append(f"[bold #eb6e6e]geometry {structure_ref!r}: {exc}[/]")
     return _lines(*out)
 
 
-def citations(reader, section_id: str) -> str:
+def citations(reader: QVFReader, section_id: str) -> str:
     data = reader.read_citations(section_id)
     return _lines(
         f"[{_H}]Citations (BibTeX)[/]",
@@ -476,7 +479,7 @@ def citations(reader, section_id: str) -> str:
     )
 
 
-def run_record(reader, section_id: str, log_tail: int = _MAX_LOG_LINES) -> str:
+def run_record(reader: QVFReader, section_id: str, log_tail: int = _MAX_LOG_LINES) -> str:
     """Program invocation, its verbatim input, and the tail of its log."""
     data = reader.read_run_record(section_id)
     sequence, total = reader.run_record_position(section_id)
@@ -508,7 +511,7 @@ def run_record(reader, section_id: str, log_tail: int = _MAX_LOG_LINES) -> str:
     return _lines(*out)
 
 
-def job_spec(reader, section_id: str) -> str:
+def job_spec(reader: QVFReader, section_id: str) -> str:
     data = reader.read_job_spec(section_id)
     out = [
         f"[{_H}]Job spec[/]",
@@ -531,7 +534,7 @@ def job_spec(reader, section_id: str) -> str:
     return _lines(*out)
 
 
-def symmetry(reader, section_id: str) -> str:
+def symmetry(reader: QVFReader, section_id: str) -> str:
     data = reader.read_symmetry(section_id)
     return _lines(
         f"[{_H}]Symmetry[/]",
@@ -539,7 +542,7 @@ def symmetry(reader, section_id: str) -> str:
     )
 
 
-def tensor_pane(reader, section_id: str, title: str) -> str:
+def tensor_pane(reader: QVFReader, section_id: str, title: str) -> str:
     """NMR / EPR sections — schema-free dicts, so surface every key found."""
     read = reader.read_nmr if title == "NMR" else reader.read_epr
     raw = read(section_id).raw or {}
@@ -561,17 +564,18 @@ def tensor_pane(reader, section_id: str, title: str) -> str:
     return _lines(*out)
 
 
-def qtaim(reader, section_id: str) -> str:
+def qtaim(reader: QVFReader, section_id: str) -> str:
     data = reader.read_topology_qtaim(section_id)
     rows = []
     for point in (data.points or [])[:_MAX_ROWS]:
-        position = point.get("position") or [0, 0, 0]
+        raw_position = point.get("position")
+        position = raw_position if isinstance(raw_position, list | tuple) else [0, 0, 0]
         rows.append(
             [
                 str(point.get("type", "")),
-                " ".join(f"{float(c):8.4f}" for c in position),
-                f"{float(point.get('rho', 0.0)):.5f}",
-                f"{float(point.get('laplacian', 0.0)):+.5f}",
+                " ".join(f"{as_float(c, 0.0):8.4f}" for c in position),
+                f"{as_float(point.get('rho'), 0.0):.5f}",
+                f"{as_float(point.get('laplacian'), 0.0):+.5f}",
             ]
         )
     out = [f"[{_H}]QTAIM topology[/]", _table(["type", "position (Å)", "ρ", "∇²ρ"], rows)]
@@ -581,7 +585,7 @@ def qtaim(reader, section_id: str) -> str:
     return _lines(*out)
 
 
-def vibrations_table(reader, section_id: str) -> str:
+def vibrations_table(reader: QVFReader, section_id: str) -> str:
     data = reader.read_vibrations(section_id)
     frequencies = np.asarray(data.frequencies, dtype=float)
     rows = []
@@ -605,7 +609,7 @@ def vibrations_table(reader, section_id: str) -> str:
     )
 
 
-def generic_section(reader, section_id: str) -> str:
+def generic_section(reader: QVFReader, section_id: str) -> str:
     """Fallback: whatever the manifest records about a section we can't chart."""
     section = reader.get_section(section_id)
     status, detail = classify_section(section.kind)
@@ -656,6 +660,7 @@ HELP = f"""[{_H}]vibe-view terminal mode[/]
   [{_K}]up down + Enter[/]     choose a surface in the right-hand table
   [{_K}]n p[/]                next / previous orbital
   [{_K}]D[/]                  total density    [{_K}]S[/]              spin density
+  [{_K}]e[/]                  energy unit: Eh / eV / kcal/mol (saved as a setting)
 
 [{_H}]Frames[/]
   [{_K}]space[/]              play / pause      [{_K}][ ][/]            step frame

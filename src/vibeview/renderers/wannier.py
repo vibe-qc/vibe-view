@@ -23,7 +23,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from vibeview.qvf import QVFReader
+    import pyvista as pv
+
+    from vibeview.qvf import QVFReader, Section
 
 WANNIER_KIND = "x_ccm.wannier_centers"
 
@@ -36,12 +38,12 @@ class WannierCentre:
     orbital_ref: str | None = None
 
 
-def find_wannier_section(reader: "QVFReader"):
+def find_wannier_section(reader: QVFReader) -> Section | None:
     """Return the wannier-centres section, or None."""
     return next((s for s in reader.sections if s.kind == WANNIER_KIND), None)
 
 
-def read_wannier_centres(reader: "QVFReader") -> list[WannierCentre]:
+def read_wannier_centres(reader: QVFReader) -> list[WannierCentre]:
     """Parse the ``x_ccm.wannier_centers`` section into centres.
 
     Returns ``[]`` when the section is absent or empty. Malformed entries
@@ -52,7 +54,7 @@ def read_wannier_centres(reader: "QVFReader") -> list[WannierCentre]:
     if section is None or not section.members:
         return []
     # Prefer a member named "centers"/"wannier_centers", else the first.
-    member = None
+    member: str | None = None
     for name in ("centers", "wannier_centers"):
         if name in section.members:
             member = name
@@ -60,7 +62,7 @@ def read_wannier_centres(reader: "QVFReader") -> list[WannierCentre]:
     if member is None:
         member = next(iter(section.members))
 
-    raw = reader._read_json_member(section.id, member)
+    raw = reader.read_json_member(section.id, member)
     items = raw.get("centers", []) if isinstance(raw, dict) else raw
     if not isinstance(items, list):
         return []
@@ -88,7 +90,9 @@ def read_wannier_centres(reader: "QVFReader") -> list[WannierCentre]:
     return out
 
 
-def build_wannier_glyphs(centres: list[WannierCentre], *, base_radius: float = 0.35):
+def build_wannier_glyphs(
+    centres: list[WannierCentre], *, base_radius: float = 0.35
+) -> pv.PolyData | None:
     """Sphere markers at each centre, radius scaled by sqrt(spread).
 
     Returns a single glyph-instanced ``pv.PolyData`` (one draw call), or
@@ -108,8 +112,9 @@ def build_wannier_glyphs(centres: list[WannierCentre], *, base_radius: float = 0
 
     poly = pv.PolyData(pts)
     poly["radius"] = radii
-    return poly.glyph(
+    glyphs: pv.PolyData = poly.glyph(
         geom=pv.Sphere(radius=1.0, theta_resolution=16, phi_resolution=16),
         scale="radius",
         orient=False,
     )
+    return glyphs

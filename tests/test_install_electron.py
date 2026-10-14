@@ -6,7 +6,6 @@ import importlib.util
 import io
 import json
 import plistlib
-import re
 import stat
 import threading
 import tomllib
@@ -22,8 +21,8 @@ VIEWER_DIR = Path(__file__).resolve().parents[1]
 # the checkout it belongs to -- so a literal here silently turns every
 # release into six failing tests, which is exactly what v2.15.3's
 # release-candidate pipeline caught. pyproject.toml is the canonical
-# source; test_desktop_version_files_stay_in_sync holds the other four
-# version sites to it.
+# source; tests/test_version_sites.py checks every version site and citation
+# release date.
 VIEWER_VERSION = tomllib.loads(
     (VIEWER_DIR / "pyproject.toml").read_text()
 )["project"]["version"]
@@ -589,21 +588,6 @@ def test_installer_lock_serializes_concurrent_refreshes(
 
     assert acquired.is_set()
     assert not thread.is_alive()
-
-
-def test_desktop_version_files_stay_in_sync() -> None:
-    pyproject = tomllib.loads((VIEWER_DIR / "pyproject.toml").read_text())
-    package = json.loads((VIEWER_DIR / "electron" / "package.json").read_text())
-    lock = json.loads((VIEWER_DIR / "electron" / "package-lock.json").read_text())
-    init_text = (VIEWER_DIR / "src" / "vibeview" / "__init__.py").read_text()
-    match = re.search(r'^__version__ = "([^"]+)"', init_text, re.MULTILINE)
-    assert match is not None
-
-    expected = pyproject["project"]["version"]
-    assert match.group(1) == expected
-    assert package["version"] == expected
-    assert lock["version"] == expected
-    assert lock["packages"][""]["version"] == expected
 
 
 def test_legacy_launcher_is_recognised_only_for_its_checkout(
