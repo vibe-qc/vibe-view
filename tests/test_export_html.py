@@ -41,8 +41,10 @@ def _make_structure_qvf() -> Path:
             }
         ],
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("sections/s.json", structure)
     return Path(tmp.name)
@@ -113,3 +115,20 @@ class TestExportHTML:
         finally:
             q.unlink()
             out.unlink(missing_ok=True)
+
+
+class TestExportHTMLExtended:
+    def test_export_html_import(self):
+        from vibeview.export_html import export_html
+
+        assert callable(export_html)
+
+    def test_export_html_creates_file(self, sample_qvf, tmp_path):
+        from vibeview.export_html import export_html
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        out = tmp_path / "test.html"
+        export_html(reader, out)
+        assert out.exists()
+        reader.close()

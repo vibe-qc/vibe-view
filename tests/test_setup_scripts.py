@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -189,6 +190,34 @@ def test_shell_script_has_valid_bash_syntax(script: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+# ${name[@]+"${name[@]}"} expands to nothing when the array is empty and to
+# the elements otherwise, in every Bash the scripts support.
+_GUARDED_ARRAY_EXPANSION = re.compile(r'\$\{(\w+)\[@\]\+"\$\{\1\[@\]\}"\}')
+_ARRAY_EXPANSION = re.compile(r"\$\{\w+\[@\]\}")
+
+
+def test_shell_scripts_expand_arrays_safely_for_macos_bash_3() -> None:
+    """Every array expansion survives an empty array under ``set -u``.
+
+    Stock macOS Bash 3.2 rejects a bare ``${a[@]}`` on an empty array as an
+    unbound variable; Bash 4.4 and newer expand it to nothing. CI runs
+    Linux, so it never sees the failure and only macOS developers do.
+    Guarding every expansion is cheaper than tracking which arrays the
+    control flow can leave empty.
+    """
+    offenders = []
+    for script in sorted(SCRIPT_DIR.glob("*.sh")):
+        for number, line in enumerate(script.read_text().splitlines(), 1):
+            bare = _GUARDED_ARRAY_EXPANSION.sub("", line)
+            if _ARRAY_EXPANSION.search(bare):
+                offenders.append(f"{script.name}:{number}: {line.strip()}")
+
+    assert not offenders, (
+        "expand these through ${name[@]+\"${name[@]}\"} for Bash 3.2:\n"
+        + "\n".join(offenders)
+    )
+
+
 @pytest.mark.parametrize("script", SHELL_SCRIPTS)
 def test_user_facing_shell_scripts_are_executable(script: Path) -> None:
     assert script.stat().st_mode & stat.S_IXUSR
@@ -306,6 +335,43 @@ def test_link_bin_creates_marked_launcher_and_unlink_removes_it(
     assert not record.exists()
 
 
+@pytest.mark.skipif(
+    not Path("/bin/bash").exists(), reason="stock macOS Bash is unavailable"
+)
+def test_bin_link_record_without_dry_run_is_bash_3_safe(tmp_path: Path) -> None:
+    """The record helper leaves its option array empty off the dry-run path.
+
+    install.sh and uninstall.sh source the helpers under ``set -u``, where
+    Bash 3.2 rejects the expansion and aborts the whole uninstall.
+    """
+    viewer = tmp_path / "vibe-view"
+    scripts = viewer / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(SCRIPT_DIR / "_venv_helpers.sh", scripts / "_venv_helpers.sh")
+    _copy_shared_lifecycle_lock(tmp_path)
+    helper = shlex.quote(str(scripts / "_venv_helpers.sh"))
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            f"set -euo pipefail; . {helper}; vibe_view_bin_link_record 0",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "unbound variable" not in result.stderr
+    key = hashlib.sha256(os.fsencode(viewer.resolve())).hexdigest()
+    record = (
+        Path(os.environ["VIBE_PRIVATE_ROOT"]) / "vibe-view" / "state" / key / "bin-links"
+    )
+    assert result.stdout.strip() == str(record)
+
+
 def test_link_bin_refuses_unmanaged_and_foreign_files(tmp_path: Path) -> None:
     viewer = tmp_path / "vibe-view"
     scripts = viewer / "scripts"
@@ -395,7 +461,9 @@ def test_install_naming_path_writes_pth_and_is_idempotent(tmp_path: Path) -> Non
         check=False,
     )
     assert absent.returncode == 0
-    assert not (bare_venv / "lib" / "python3.14" / "site-packages" / "vibe-view-repo-python.pth").exists()
+    assert not (
+        bare_venv / "lib" / "python3.14" / "site-packages" / "vibe-view-repo-python.pth"
+    ).exists()
 
 
 @pytest.mark.skipif(not Path("/bin/bash").exists(), reason="stock macOS Bash is unavailable")
@@ -501,7 +569,7 @@ def test_linux_root_desktop_launch_is_refused_before_side_effects(monkeypatch) -
     def unexpected_electron_lookup() -> Path:
         raise AssertionError("root refusal must happen before Electron setup")
 
-    monkeypatch.setattr(cli, "_electron_dir", unexpected_electron_lookup)
+    monkeypatch.setattr(cli.install_hints, "electron_dir", unexpected_electron_lookup)
 
     result = CliRunner().invoke(cli.main, ["desktop"])
 
@@ -530,7 +598,7 @@ def test_linux_desktop_no_sandbox_is_explicit_and_cleans_config(
 
     monkeypatch.setattr(cli.sys, "platform", "linux")
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000, raising=False)
-    monkeypatch.setattr(cli, "_electron_dir", lambda: electron_dir)
+    monkeypatch.setattr(cli.install_hints, "electron_dir", lambda: electron_dir)
     monkeypatch.setattr(cli, "_abort_if_port_in_use", lambda *_args: None)
     monkeypatch.setattr(cli, "_record_interpreter", lambda: None)
     monkeypatch.setattr(cli, "_write_desktop_config", lambda *_args: config)
@@ -573,7 +641,7 @@ def test_linux_desktop_propagates_electron_failure_and_cleans_config(
 
     monkeypatch.setattr(cli.sys, "platform", "linux")
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000, raising=False)
-    monkeypatch.setattr(cli, "_electron_dir", lambda: electron_dir)
+    monkeypatch.setattr(cli.install_hints, "electron_dir", lambda: electron_dir)
     monkeypatch.setattr(cli, "_abort_if_port_in_use", lambda *_args: None)
     monkeypatch.setattr(cli, "_record_interpreter", lambda: None)
     monkeypatch.setattr(cli, "_write_desktop_config", lambda *_args: config)
@@ -625,7 +693,7 @@ def test_desktop_repairs_present_but_unhealthy_runtime(
         return subprocess.CompletedProcess(command, 1 if "--check" in command else 0)
 
     monkeypatch.setattr(cli.sys, "platform", "darwin")
-    monkeypatch.setattr(cli, "_electron_dir", lambda: electron_dir)
+    monkeypatch.setattr(cli.install_hints, "electron_dir", lambda: electron_dir)
     monkeypatch.setattr(cli, "_abort_if_port_in_use", lambda *_args: None)
     monkeypatch.setattr(cli, "_record_interpreter", lambda: None)
     monkeypatch.setattr(cli, "_write_desktop_config", lambda *_args: config)
@@ -1576,6 +1644,10 @@ def test_view_lifecycle_does_not_trust_poisoned_home_or_xdg() -> None:
 
 
 def test_view_lifecycle_does_not_trust_another_uids_home(tmp_path: Path) -> None:
+    # The helper exempts only a canonical account home (/Users/*, /home/*,
+    # ...), so a scratch directory cannot stand in for one. The real home is
+    # resolved and never written: the helper must refuse before creating the
+    # probe, which the last assertion checks.
     home = Path.home().resolve()
     home_text = str(home)
     if not (home_text == "/root" or home_text.startswith(("/Users/", "/home/", "/var/home/"))):
@@ -1610,6 +1682,7 @@ def test_view_lifecycle_does_not_trust_another_uids_home(tmp_path: Path) -> None
     )
     assert result.returncode != 0
     assert "protected system location" in result.stderr
+    assert not target.exists()
 
 
 def test_view_target_lock_contends_across_different_checkouts(tmp_path: Path) -> None:
@@ -2611,6 +2684,63 @@ def test_default_update_uses_configured_renamed_upstream(tmp_path: Path) -> None
     assert _git(consumer, "branch", "--show-current").stdout.strip() == "local-install"
     assert "reviewed/published-name" in result.stdout
     assert "configured upstream" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+@pytest.mark.parametrize("prefix", ["", "vibe-view", "products/viewer copy"])
+@pytest.mark.parametrize("protocol", ["safe", "legacy", "missing"])
+def test_desktop_update_tag_checks_actual_project_prefix(
+    tmp_path: Path, prefix: str, protocol: str,
+) -> None:
+    seed = tmp_path / "seed"
+    viewer = seed / prefix
+    scripts = viewer / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("update-desktop.sh", "update.sh", "_venv_helpers.sh"):
+        shutil.copy2(SCRIPT_DIR / name, scripts / name)
+    _copy_shared_lifecycle_lock(viewer)
+    installer = viewer / "electron" / "install-electron.py"
+    installer.parent.mkdir()
+    if protocol != "missing":
+        installer.write_text(
+            "SOURCE_DESKTOP_UPDATE_PROTOCOL = 1\n" if protocol == "safe"
+            else "# legacy installer without safety protocol\n"
+        )
+    (seed / ".gitignore").write_text(".venv/\n")
+    _git(seed, "init", "-b", "main")
+    _git(seed, "config", "user.name", "Setup Script Test")
+    _git(seed, "config", "user.email", "mpei@vibe-qc.com")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "target installer")
+    _git(seed, "tag", "target")
+    target = _git(seed, "rev-parse", "HEAD").stdout.strip()
+    installer.write_text("SOURCE_DESKTOP_UPDATE_PROTOCOL = 1\n# current installer\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "current installer")
+    current = _git(seed, "rev-parse", "HEAD").stdout.strip()
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "clone", "--bare", str(seed), str(remote))
+    consumer = tmp_path / "consumer"
+    _git(tmp_path, "clone", str(remote), str(consumer))
+    project = consumer / prefix
+    _fake_venv(project / ".venv")
+    log = tmp_path / "desktop-tag.log"
+    result = _run(
+        project / "scripts" / "update-desktop.sh", "--branch", "target",
+        "--extras", "viewer", cwd=tmp_path,
+        env=dict(os.environ, FAKE_LOG=str(log)),
+    )
+    if protocol == "safe":
+        assert result.returncode == 0, result.stderr
+        assert _git(consumer, "rev-parse", "HEAD").stdout.strip() == target
+        assert "install-electron.py --refresh-app" in log.read_text()
+        assert "vibe-view update complete" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert "does not support safe desktop updates" in result.stderr
+        assert _git(consumer, "rev-parse", "HEAD").stdout.strip() == current
+        assert _git(consumer, "branch", "--show-current").stdout.strip() == "main"
+        assert not log.exists()
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")

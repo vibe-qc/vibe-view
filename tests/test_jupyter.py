@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
+
+from tests._qvf_builders import vibe_qc_source, write_archive
 
 
 class _ScriptCollector(HTMLParser):
@@ -42,19 +45,7 @@ def _make_qvf(
     *,
     source: dict | None = None,
 ) -> Path:
-    manifest = {
-        "qvf_version": 1,
-        "source": source or {"program": "vibe-qc", "version": "0.9.0", "calculation": "test"},
-        "sections": sections,
-    }
-    with tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp:
-        path = Path(tmp.name)
-    with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        if files:
-            for p, d in files.items():
-                zf.writestr(p, d)
-    return path
+    return write_archive(sections, files, source=source or vibe_qc_source("0.9.0", "test"))
 
 
 def _sha256(data: bytes) -> str:
@@ -158,7 +149,6 @@ class TestJupyterMagic:
 
     def test_sniff_qvf(self) -> None:
         """_sniff_qvf returns correct section list and source info."""
-        import os
 
         os.environ.setdefault("PYVISTA_OFF_SCREEN", "True")
         from vibeview.jupyter import _sniff_qvf
@@ -195,7 +185,6 @@ class TestJupyterMagic:
 
     def test_render_structure(self) -> None:
         """_render_structure returns non-empty PNG bytes."""
-        import os
 
         os.environ.setdefault("PYVISTA_OFF_SCREEN", "True")
         from vibeview.jupyter import _render_structure
@@ -230,7 +219,6 @@ class TestJupyterMagic:
 
     def test_sniff_no_structure(self) -> None:
         """_sniff_qvf handles files without structure gracefully."""
-        import os
 
         os.environ.setdefault("PYVISTA_OFF_SCREEN", "True")
         from vibeview.jupyter import _sniff_qvf
@@ -436,6 +424,9 @@ class TestInlineImage:
                 self.close_calls = 0
                 self.instances.append(self)
 
+            def set_background(self, _color) -> None:
+                pass  # the shared headless scene themes the plotter first
+
             def close(self) -> None:
                 self.close_calls += 1
 
@@ -443,7 +434,7 @@ class TestInlineImage:
             def __init__(self, _section, _reader) -> None:
                 pass
 
-            def add_to_plotter(self, _plotter, *, representation) -> None:
+            def add_to_plotter(self, _plotter, *, representation, **_options) -> None:
                 assert representation == "ball_and_stick"
                 raise failure
 
@@ -591,9 +582,8 @@ class TestIPythonMagic:
         def fake_capture(reader, section_id, output, **kwargs):
             captured.update(section_id=section_id, **kwargs)
             Path(output).write_bytes(b"\x89PNG")
-            return True
 
-        monkeypatch.setattr("vibeview.capture.capture_volume", fake_capture)
+        monkeypatch.setattr("vibeview.capture.render_volume", fake_capture)
         try:
             png = _capture_section(path, "volume.difference")
         finally:
@@ -702,3 +692,53 @@ class TestIPythonMagic:
         self._shell().run_line_magic("vibeview", f"{sample_qvf} {arguments}")
 
         assert message in capsys.readouterr().out
+
+
+class TestJupyterIntegration:
+    def test_imports(self):
+        from vibeview.jupyter import (
+            _render_structure,
+            _sniff_qvf,
+            qvf_to_html,
+            qvf_to_image,
+        )
+
+        assert callable(qvf_to_html)
+        assert callable(qvf_to_image)
+        assert callable(_sniff_qvf)
+        assert callable(_render_structure)
+
+    def test_notebook_cell_generation(self):
+        from vibeview.jupyter import export_notebook_cell
+
+        code = export_notebook_cell("/tmp/test.qvf")
+        assert "QVFReader" in code
+        assert "/tmp/test.qvf" in code
+
+    def test_notebook_cell_with_options(self):
+        from vibeview.jupyter import export_notebook_cell
+
+        code = export_notebook_cell(
+            "/tmp/test.qvf",
+            include_density=True,
+            include_orbitals=True,
+        )
+        assert "get_volume" in code
+        compile(code, "<vibe-view notebook cell>", "exec")
+
+    def test_qvf_to_html(self, sample_qvf):
+        from vibeview.jupyter import qvf_to_html
+
+        html = qvf_to_html(str(sample_qvf))
+        assert isinstance(html, str)
+        assert "3Dmol" in html
+
+    def test_qvf_to_image(self, sample_qvf):
+
+        os.environ.setdefault("PYVISTA_OFF_SCREEN", "True")
+        from vibeview.jupyter import qvf_to_image
+
+        png = qvf_to_image(str(sample_qvf))
+        assert isinstance(png, bytes)
+        assert len(png) > 100
+        assert png[:4] == b"\x89PNG"

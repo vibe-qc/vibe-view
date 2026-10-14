@@ -176,3 +176,49 @@ class TestRendersAndReports:
         before = app.state.cartoon_color_mode
         app.controller.set_cartoon_color_mode("not-a-colour-mode")
         assert app.state.cartoon_color_mode == before
+
+
+class TestWholeStructureScale:
+    """Maintainer decision (#49): the ramp is one min-max over ALL atoms of
+    the structure, in the browser cartoon as in the terminal, so an equal B
+    is an equal colour whichever chain it sits in."""
+
+    def _two_chains(self, tmp_path):
+        from vibeview.converters import pdb_to_qvf
+        from vibeview.qvf import QVFReader
+
+        lines, serial = [], 0
+        for chain, bs, x0 in (("A", [10.0, 20.0, 30.0, 40.0], 0.0),
+                              ("B", [40.0, 50.0, 60.0, 70.0], 40.0)):
+            for i, (pos, b) in enumerate(zip(_helix(len(bs)), bs, strict=True), start=1):
+                serial += 1
+                lines.append(
+                    "ATOM  " + f"{serial:>5}" + "  CA  ALA " + chain + f"{i:>4}" + "    "
+                    + f"{pos[0] + x0:8.3f}{pos[1]:8.3f}{pos[2]:8.3f}" + f"{1.0:6.2f}{b:6.2f}"
+                )
+        pdb = tmp_path / "two.pdb"
+        pdb.write_text("\n".join(lines) + "\n")
+        q = tmp_path / "two.qvf"
+        q.write_bytes(pdb_to_qvf(pdb).getvalue())
+        return QVFReader(q).read_structure()
+
+    def test_equal_bfactor_is_equal_colour_across_chains(self, tmp_path):
+        sd = self._two_chains(tmp_path)
+        a = _cartoon_bfactor_colors(sd, "A", 4, 4)
+        b = _cartoon_bfactor_colors(sd, "B", 4, 4)
+        # Residue A4 and residue B1 both carry B = 40.
+        assert tuple(a[3]) == tuple(b[0])
+        # The ends of the scale are the structure's, not each chain's.
+        assert tuple(a[0]) == _CARTOON_BFACTOR_COLD
+        assert tuple(b[3]) == _CARTOON_BFACTOR_WARM
+        assert tuple(b[0]) != _CARTOON_BFACTOR_COLD
+
+    def test_cartoon_matches_the_terminal_ramp(self, tmp_path):
+        from vibeview.renderers import palette
+        from vibeview.tui import scene as scenelib
+
+        sd = self._two_chains(tmp_path)
+        terminal = scenelib._atom_colors(sd.atoms, "bfactor", sd, [])
+        browser = np.vstack([_cartoon_bfactor_colors(sd, c, 4, 4) for c in ("A", "B")])
+        assert [tuple(int(v) for v in c) for c in terminal] == [tuple(c) for c in browser]
+        assert tuple(browser[3]) == palette.sequential_ramp([10.0, 40.0, 70.0])[1]

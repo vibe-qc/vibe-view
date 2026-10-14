@@ -10,7 +10,16 @@ build. A normal `./build-desktop.sh` creates the platform's packaged artifacts.
 On supported macOS arm64 builds, the hosted updater reads the configured feed.
 Linux builds currently produce an AppImage without publishing a hosted feed.
 
-Keep packaging versions and update manifests consistent. Review only artifacts
+The desktop version is the product version. A release sets it in
+`package.json` (`version`) and in both `version` entries of
+`package-lock.json`, the top-level one and the one under `packages[""]`, in
+the same commit as `pyproject.toml`; step 1 of `docs/release_process.md`
+lists every site, and `tests/test_version_sites.py` fails when they
+disagree. Do not bump the version for a packaging-only rebuild: an update
+feed compares versions, so a rebuilt installer under an old number is never
+offered, and one under a new number is a release.
+
+Keep update manifests consistent with that version. Review only artifacts
 from the intended build: stale files in `dist/` can otherwise enter a feed.
 Signing and notarization use the platform's configured signing environment;
 private keys and account credentials must never be committed.

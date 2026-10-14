@@ -80,10 +80,8 @@ class TestQVFReaderInMemory:
         # Write to a real temp file then open via a file handle, not via
         # the path-string code path.
         data = _make_qvf_bytes()
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        tmp.write(data)
-        tmp.flush()
-        tmp.close()
+        with tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp:
+            tmp.write(data)
         try:
             with open(tmp.name, "rb") as fh:
                 reader = QVFReader(fh)
@@ -110,10 +108,8 @@ class TestQVFReaderInMemory:
     def test_path_based_open_still_works(self) -> None:
         """Regression: the original path-based constructor must keep working."""
         data = _make_qvf_bytes()
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        tmp.write(data)
-        tmp.flush()
-        tmp.close()
+        with tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp:
+            tmp.write(data)
         try:
             reader = QVFReader(tmp.name)
             assert reader.path is not None

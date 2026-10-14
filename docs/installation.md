@@ -117,10 +117,15 @@ is deliberately lean so a capture-only host does not drag in a web server.
 | `viewer` | trame, trame-vtk, trame-vuetify, uvicorn | `vibe-view open`, `serve`, `dashboard`, `desktop` |
 | `tui` | textual | `vibe-view tui` (`vibe-view show` is core) |
 | `ase` | ase | The long tail of structure formats, via `ase.io.read` |
+| `trexio` | TREXIO | Gaussian wavefunctions and structures from supported TREXIO datasets |
 | `smiles` | rdkit | Build a 3-D structure from a SMILES string |
 | `jupyter` | ipython, ipywidgets | The `%vibeview` notebook magic |
+| `sysinfo` | psutil | CPU and RAM use in the browser viewer's About dialog |
+| `capture` | nothing | Headless capture and export are core; the name documents a capture-only install |
+| `povray` | nothing | The POV-Ray scene export is core; POV-Ray itself is a separate program |
+| `blender` | nothing | The Blender script export is core; Blender itself is a separate program |
 | `queue` | vq | The vq job panel and `vibe-view from-vq` — see [Queue integration](queue.md) |
-| `all` | viewer + tui + ase + smiles + jupyter | Everything **except** `queue` |
+| `all` | viewer + tui + ase + trexio + smiles + jupyter + sysinfo | Everything **except** `queue` |
 
 Two of these have caveats worth knowing before you hit them:
 
@@ -184,6 +189,10 @@ association and the Linux and Windows notes.
 ./scripts/update.sh --skip-git   # reinstall the checked-out source only
 ./scripts/update-desktop.sh      # source + Python + the Electron app
 ```
+
+Desktop revision checks resolve the installer within the current Git project,
+including standalone and nested source checkouts. A target revision without
+the safe desktop update protocol is refused before switching the checkout.
 
 Quit every desktop window before `update-desktop.sh`. It refreshes the
 source-backed Electron app owned by this checkout — including its displayed

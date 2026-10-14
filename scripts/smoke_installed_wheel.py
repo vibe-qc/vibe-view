@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     source_root = args.source_root.resolve()
 
     import vibeview
-    from vibeview import cli
+    from vibeview.install_hints import electron_dir as _electron_dir
 
     package_path = Path(vibeview.__file__).resolve()
     if package_path.is_relative_to(source_root):
@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     # The Electron application remains source-checkout-only in this milestone.
     # Assert that boundary explicitly so CI cannot be mistaken for a packaged
     # desktop-app launch test.
-    electron_dir = cli._electron_dir()
+    electron_dir = _electron_dir()
     if electron_dir.exists():
         raise RuntimeError(
             f"unexpected Electron source directory beside installed wheel: {electron_dir}"
