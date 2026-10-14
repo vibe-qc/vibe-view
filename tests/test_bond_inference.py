@@ -12,11 +12,9 @@ import time
 import numpy as np
 import pytest
 
-from vibeview.qvf import (
-    _BOND_TOLERANCE,
-    _COVALENT_RADII,
-    _infer_bonds_by_radii,
-)
+from vibeview.bonds import BOND_TOLERANCE as _BOND_TOLERANCE
+from vibeview.bonds import structure_bonds as _infer_bonds_by_radii
+from vibeview.elements import COVALENT_RADII as _COVALENT_RADII
 
 
 class _Atom:
@@ -66,12 +64,21 @@ class TestMatchesAllPairs:
             (511, 14.0),  # dense path (n <= 512)
             (513, 15.0),  # cell-list path
             (1500, 26.0),
-            (900, 3.0),  # pathologically dense: most pairs bond
+            # Pathologically dense (2.6 atoms/Å³, 27 bonds per atom), yet
+            # under the #62 bond cap. 900 atoms in a 3 Å box (33 per Å³,
+            # 180 bonds each) is now refused; see the next test.
+            (900, 7.0),
         ],
     )
     def test_identical_to_the_loop_it_replaced(self, n, box):
         s = _random(n, box, seed=n)
         assert _infer_bonds_by_radii(s) == _all_pairs(s)
+
+    def test_a_box_denser_than_any_solid_is_refused(self):
+        from vibeview.bonds import BondSearchLimitError
+
+        with pytest.raises(BondSearchLimitError, match="too dense"):
+            _infer_bonds_by_radii(_random(900, 3.0, seed=900))
 
     def test_pairs_are_ordered_and_unique(self):
         """A cell list visits each bin pair twice; emitting i<j only is
@@ -170,11 +177,20 @@ class TestBondsThroughPeriodicBoundaries:
         s = _PeriodicStruct([_Atom(17, (0, 0, 0)), _Atom(17, (5, 0, 0))], CUBIC10)
         assert _infer_bonds_by_radii(s) == []
 
-    def test_an_atom_does_not_bond_to_its_own_image(self):
-        """A lone atom in a cell narrower than the cutoff would otherwise
-        pair with itself, which is not a bond anything can draw."""
+    def test_an_atom_bonds_to_its_own_image_only_through_a_translation(self):
+        """A lone atom in a cell narrower than the cutoff bonds to its own
+        periodic images, which the renderers draw through the bond's image
+        (``bonds.bond_endpoints``), exactly as they already did for the same
+        self-image pairs in multi-atom cells. It never pairs with itself at
+        the zero image. This used to pin ``[]``, the #35-9 defect: Cl-Cl
+        cutoff 2 * 1.02 + 0.45 = 2.49 A exceeds the 2.0 A edge, so the three
+        axis images are bonded and the face diagonals (2.83 A) are not."""
         s = _PeriodicStruct([_Atom(17, (0, 0, 0))], np.eye(3) * 2.0)
-        assert _infer_bonds_by_radii(s) == []
+        bonds = _infer_bonds_by_radii(s)
+        assert sorted(image for _i, _j, _order, image in bonds) == [
+            (0, 0, 1), (0, 1, 0), (1, 0, 0),
+        ]
+        assert all(i == j == 0 and any(image) for i, j, _order, image in bonds)
 
     def test_each_bond_is_reported_once(self):
         """The same physical bond is reachable from both sides of a wall."""

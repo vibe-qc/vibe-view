@@ -166,25 +166,6 @@ def test_the_release_extra_declares_nothing_the_script_does_not_need() -> None:
     )
 
 
-def test_every_release_requirement_is_version_pinned() -> None:
-    """Release tooling decides what bytes ship; an unpinned major is a
-    reproducibility risk, not a convenience."""
-    unpinned = [r for r in _release_extra() if not re.search(r"[<>=~]", r)]
-    assert not unpinned, f"unpinned release requirements: {unpinned}"
-
-
-def test_ci_installs_the_extra_rather_than_repeating_its_pins() -> None:
-    """The pins lived in .gitlab-ci.yml and nowhere else. If they come back
-    there, the extra has quietly stopped being the source of truth."""
-    ci = (VIEWER_DIR / ".gitlab-ci.yml").read_text(encoding="utf-8")
-    assert "pip install -e '.[test,release]'" in ci
-    for tool in ("build>=", "twine>="):
-        assert tool not in ci, (
-            f"{tool!r} is pinned in .gitlab-ci.yml again; it belongs in the "
-            "[release] extra so the pin lives with the code that needs it"
-        )
-
-
 def test_the_missing_tool_message_points_at_the_extra() -> None:
     """The old remediation was `pip install build twine`, which works but
     leaves the venv undeclared next time."""

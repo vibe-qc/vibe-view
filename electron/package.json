@@ -1,7 +1,7 @@
 {
   "name": "vibe-view",
   "productName": "vibe-view",
-  "version": "2.17.1",
+  "version": "2.20.11",
   "description": "GPU-accelerated interactive 3D viewer for quantum-chemistry data",
   "main": "main.js",
   "scripts": {
@@ -46,6 +46,12 @@
         "ext": "py",
         "name": "vibe-qc Python Input",
         "description": "vibe-qc Python Input",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["gbw", "mcd", "hess"],
+        "name": "ORCA Calculation",
+        "description": "ORCA GBW orbitals, HESS vibrations or MCD transitions",
         "role": "Viewer"
       },
       {

@@ -6,8 +6,6 @@ patterns: open -> inspect -> extract -> export -> validate -> slice.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 
@@ -64,7 +62,6 @@ class TestE2EWorkflow:
     def test_full_pipeline_read_only(self, sample_qvf, tmp_path):
         """Exercise every read-only SDK function on the sample."""
         from vibeview import (
-            QVFReader,
             diff,
             export_xyz,
             get_structure,

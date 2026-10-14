@@ -5,43 +5,25 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
-import zipfile
 from pathlib import Path
 
-import numpy as np
 import pytest
+
+from tests._qvf_builders import vibe_qc_source, write_archive
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _make_qvf(
-    sections: list[dict],
-    files: dict[str, bytes] | None = None,
-) -> Path:
-    """Create a minimal valid .qvf file in a temp directory."""
-    manifest = {
-        "qvf_version": 1,
-        "source": {
-            "program": "vibe-qc",
-            "version": "0.9.0",
-            "calculation": "test",
-        },
-        "sections": sections,
-    }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        if files:
-            for path, data in files.items():
-                zf.writestr(path, data)
-    return Path(tmp.name)
+def _make_qvf(sections: list[dict], files: dict[str, bytes] | None = None) -> Path:
+    return write_archive(sections, files, source=vibe_qc_source("0.9.0", "test"))
 
 
 @pytest.fixture
-def sample_qvf() -> Path:
-    """Create a QVF with a water-like molecule for testing."""
+def water_structure_qvf() -> Path:
+    """A structure-only water archive. Named apart from conftest's
+    ``sample_qvf`` (water plus a density grid), which it used to shadow."""
     structure = json.dumps(
         {
             "atoms": [
@@ -80,7 +62,7 @@ class TestBlenderExport:
 
         assert callable(export_blender_script)
 
-    def test_generated_script_is_valid_python(self, sample_qvf: Path) -> None:
+    def test_generated_script_is_valid_python(self, water_structure_qvf: Path) -> None:
         """Regression: the generated script must be valid Python and its
         embedded data must round-trip through json.loads (bug: raw json.dumps
         emitted ``null`` / ``[false,...]`` as Python literals, and json.loads
@@ -90,7 +72,7 @@ class TestBlenderExport:
         from vibeview.blender_export import export_blender_script
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
             path = f.name
         try:
@@ -115,12 +97,12 @@ class TestBlenderExport:
         finally:
             Path(path).unlink(missing_ok=True)
 
-    def test_export_creates_file(self, sample_qvf: Path) -> None:
+    def test_export_creates_file(self, water_structure_qvf: Path) -> None:
         """Export creates a .py file with expected content."""
         from vibeview.blender_export import export_blender_script
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
             path = f.name
 
@@ -149,12 +131,12 @@ class TestBlenderExport:
         finally:
             Path(path).unlink(missing_ok=True)
 
-    def test_export_styles(self, sample_qvf: Path) -> None:
+    def test_export_styles(self, water_structure_qvf: Path) -> None:
         """All four styles produce valid scripts."""
         from vibeview.blender_export import export_blender_script
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         for style in ["ball_and_stick", "space_filling", "sticks_only", "wireframe"]:
             with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
                 path = f.name
@@ -168,32 +150,16 @@ class TestBlenderExport:
             finally:
                 Path(path).unlink(missing_ok=True)
 
-    def test_detect_bonds(self) -> None:
-        """Bond detection finds bonds between close atoms."""
-        from vibeview.blender_export import _detect_bonds
-
-        # H2 molecule: two H atoms at ~0.74 A
-        positions = [[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]
-        z_list = [1, 1]
-        bonds = _detect_bonds(positions, z_list)
-        assert len(bonds) > 0
-
-        # Far apart atoms
-        positions_far = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]
-        bonds_far = _detect_bonds(positions_far, z_list)
-        assert len(bonds_far) == 0
-
     def test_cpk_colors(self) -> None:
-        """CPK colour map has entries for common elements."""
-        from vibeview.blender_export import CPK_COLORS
+        """The script carries the viewer's CPK colours for the elements present (#54)."""
+        from vibeview.blender_export import _cpk_rgb_floats, _element_table
+        from vibeview.elements import cpk_hex
+        from vibeview.renderers import palette
 
-        assert 1 in CPK_COLORS  # H
-        assert 6 in CPK_COLORS  # C
-        assert 7 in CPK_COLORS  # N
-        assert 8 in CPK_COLORS  # O
-
-        # Fallback: element not in table
-        assert 2 not in CPK_COLORS  # He not in blender export set
+        table = _element_table([1, 6, 6, 8, 999], _cpk_rgb_floats)
+        assert set(table) == {1, 6, 8}  # unknown elements keep the script's fallback
+        r, g, b = palette.rgb(cpk_hex(6))
+        assert table[6] == (round(r / 255, 3), round(g / 255, 3), round(b / 255, 3))
 
     def test_export_no_structure_graceful(self) -> None:
         """Exporting a QVF with no structure section produces a graceful
@@ -214,12 +180,12 @@ class TestBlenderExport:
         finally:
             path.unlink()
 
-    def test_export_from_qvf_convenience(self, sample_qvf: Path) -> None:
+    def test_export_from_qvf_convenience(self, water_structure_qvf: Path) -> None:
         """export_from_qvf convenience wrapper produces a .py file."""
         from vibeview.blender_export import export_from_qvf
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            out = export_from_qvf(str(sample_qvf), output_dir=tmpdir)
+            out = export_from_qvf(str(water_structure_qvf), output_dir=tmpdir)
             assert out.endswith("_blender.py")
             assert Path(out).exists()
             content = Path(out).read_text()
@@ -339,23 +305,23 @@ class TestBlenderExport:
         finally:
             qvf_path.unlink()
 
-    def test_molecule_centered(self, sample_qvf: Path) -> None:
+    def test_molecule_centered(self, water_structure_qvf: Path) -> None:
         """Generated positions should be centred around origin."""
         from vibeview.blender_export import export_blender_script
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         script = export_blender_script(reader, "/dev/null")
 
         # The structure data should not appear at raw coords
         assert "0.117" not in script.split("ATOM_DATA")[1].split("BOND_DATA")[0]
 
-    def test_space_filling_has_no_bonds(self, sample_qvf: Path) -> None:
+    def test_space_filling_has_no_bonds(self, water_structure_qvf: Path) -> None:
         """Space-filling style produces empty bond data."""
         from vibeview.blender_export import export_blender_script
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
             path = f.name
         try:
@@ -367,12 +333,12 @@ class TestBlenderExport:
         finally:
             Path(path).unlink(missing_ok=True)
 
-    def test_rendersettings_present(self, sample_qvf: Path) -> None:
+    def test_rendersettings_present(self, water_structure_qvf: Path) -> None:
         """Generated script includes Cycles render settings."""
         from vibeview.blender_export import export_blender_script
         from vibeview.qvf import QVFReader
 
-        reader = QVFReader(sample_qvf)
+        reader = QVFReader(water_structure_qvf)
         with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
             path = f.name
         try:

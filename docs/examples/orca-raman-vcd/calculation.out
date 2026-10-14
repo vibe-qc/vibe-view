@@ -1,0 +1,28 @@
+# Scientific excerpt of the completed ORCA 6.1.1 output; not the full run log.
+NAME = calculation.inp
+
+CARTESIAN COORDINATES (ANGSTROEM)
+---------------------------------
+  O     -0.725221   -0.038413    0.055255
+  O      0.725261    0.064716   -0.018183
+  H     -0.961493    0.909393   -0.020297
+  H      0.961453   -0.315697    0.853226
+
+
+VCD SPECTRUM CALCULATION
+------------------------
+
+Calculating the atomic axial tensor (analytic) ... done ( 0.192 sec)
+
+---------------------------------
+ Mode   Freq    VCD-Intensity
+       (1/cm) (1E-44*esu^2*cm^2)
+---------------------------------
+    6   328.8        194.95
+    7   911.4         -9.19
+    8  1263.8          7.24
+    9  1405.5         -8.39
+   10  3637.4        -54.89
+   11  3638.0         28.83
+
+****ORCA TERMINATED NORMALLY****
