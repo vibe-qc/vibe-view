@@ -80,7 +80,7 @@ above the list with the job's state and the tail of its stdout and stderr,
 which advances with the queue while the monitor is on. **Fetch results
 into** sets the directory finished jobs are pulled to, `vq-fetched/` under
 the launch directory by default; opening a completed job runs `vq fetch`
-under the hood and opens every archive it produced.
+under the hood and opens its QVF archives and ORCA calculation datasets.
 
 **Watch live**, the eye icon on a running job that has written a
 checkpoint, opens that job's checkpoint archive and turns auto-reload on for
@@ -98,6 +98,11 @@ vibe-view from-vq JOB_A JOB_B -o results/  # several, into a directory
 ```
 
 ## Submitting from the viewer
+
+Choose **Calculation engine → ORCA** to prepare and submit a native ORCA
+input. The [ORCA tutorial](orca.md#prepare-save-and-submit-an-orca-input)
+covers preview, saving, local vq setup, resource budgets and opening results.
+The remaining instructions in this section describe the **vibe-qc** engine.
 
 With a structure on screen, set the method, functional, basis, charge,
 multiplicity and calculation type in the **Calculation Parameters** panel

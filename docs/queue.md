@@ -16,7 +16,8 @@ viewer starts, opens files and renders exactly as it otherwise would.
 * **Live checkpoints.** Open a running job's checkpoint QVF and watch the
   calculation progress in the viewer.
 * **Submission.** Send a structure or a QVF container to the queue from
-  inside the viewer.
+  inside the viewer. Native ORCA input submission and completed-result opening
+  are covered in the [ORCA tutorial](orca.md#prepare-save-and-submit-an-orca-input).
 * **`vibe-view from-vq JOB...`** — fetch one or more finished jobs' QVF output
   to a local directory.
 * **`vibe-view vq-features`** — report which visualizations a producer has
@@ -77,7 +78,7 @@ queue integration, run the viewer on Python 3.12 or newer.
 
 ## Without the extra
 
-Every one of the seven places vibe-view reaches for `vq` is a lazy import
+Every one of the eight places vibe-view reaches for `vq` is a lazy import
 inside a try/except, and every one of them has a remediation path. You get a
 message naming the extra and the install command — not a traceback, not a
 blank panel:
@@ -98,7 +99,7 @@ package and a dead daemon are different problems and now say so.
 extra, with a note explaining that the extra alone is not actionable for a
 dependency that is on no index.
 
-Two tests keep this honest: one asserts that all seven `from vq...` sites are
+Two tests keep this honest: one asserts that all eight `from vq...` sites are
 inside a guard that catches `ImportError`, and one that every such site
-reaches a `queue_missing_message()`. An unguarded eighth site would take the
+reaches a `queue_missing_message()`. An unguarded additional site would take the
 whole viewer down when the extra is absent, so it fails the suite instead.

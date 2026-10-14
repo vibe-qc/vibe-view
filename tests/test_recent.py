@@ -22,11 +22,13 @@ class TestRecent:
     def test_recent_path_in_cache_dir(self) -> None:
         """recent.json lives in the XDG cache dir — shared with the
         Electron desktop app's Open Recent submenu."""
-        from vibeview.recent import _recent_path
+        from vibeview.paths import recent_path
 
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": td}):
-                assert _recent_path() == Path(td) / "vibe-view" / "recent.json"
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.dict(os.environ, {"XDG_CACHE_HOME": td}),
+        ):
+            assert recent_path() == Path(td) / "vibe-view" / "recent.json"
 
     def test_add_and_get(self) -> None:
         from vibeview.recent import add_recent, get_recent
@@ -54,7 +56,8 @@ class TestRecent:
 
     def test_migrates_from_legacy_config_location(self) -> None:
         """Entries from the old ~/.config/vibe-view/recent.json carry over."""
-        from vibeview.recent import _recent_path, get_recent
+        from vibeview.paths import recent_path
+        from vibeview.recent import get_recent
 
         with tempfile.TemporaryDirectory() as cache_td, tempfile.TemporaryDirectory() as cfg_td:
             env = {"XDG_CACHE_HOME": cache_td, "XDG_CONFIG_HOME": cfg_td}
@@ -66,4 +69,4 @@ class TestRecent:
                 legacy.write_text(json.dumps([str(dummy)]))
                 assert get_recent() == [str(dummy)]
                 # Migration materialized the new file
-                assert _recent_path().exists()
+                assert recent_path().exists()

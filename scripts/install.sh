@@ -251,11 +251,8 @@ if [ "$WITH_ELECTRON" = "1" ]; then
     ELECTRON_ARGS=()
     [ "$ADOPT_DESKTOP" = "1" ] && ELECTRON_ARGS+=(--refresh-app --adopt-app)
     [ "$DOCK" = "1" ] && ELECTRON_ARGS+=(--dock)
-    if [ ${#ELECTRON_ARGS[@]} -gt 0 ]; then
-        vibe_view_install_electron "$VENV_PATH" "${ELECTRON_ARGS[@]}"
-    else
-        vibe_view_install_electron "$VENV_PATH"
-    fi
+    vibe_view_install_electron "$VENV_PATH" \
+        ${ELECTRON_ARGS[@]+"${ELECTRON_ARGS[@]}"}
 fi
 if [ -n "$LINK_BIN_DIR" ]; then
     vibe_view_link_bin "$VENV_PATH" "$LINK_BIN_DIR"

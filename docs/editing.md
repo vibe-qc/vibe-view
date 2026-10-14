@@ -25,17 +25,30 @@ the viewport starts taking clicks as edits:
   <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>. Every edit is
   one undo step.
 
-Bonds are recomputed from covalent radii after each edit. Edits compound in
+Bonds are recomputed after each edit with the same covalent-radius rule the
+viewer draws with, so connectivity does not change on the first edit, and a
+periodic structure keeps its bonds through the cell faces. The edited
+structure is drawn the way the unedited one is, in the representation and at
+the replication you chose. Edits compound in
 place: the geometry you export or submit is the geometry as edited, and the
 original archive on disk is not touched.
+
+An edit replaces the atom list, so the file's biomolecular metadata does not
+carry over to the edited geometry: residue and chain names, B-factors, and
+any producer-supplied residues, chains or secondary structure describe the
+original atoms and are dropped. The views built on that metadata (cartoon
+and backbone, colouring by chain, secondary structure or B-factor) have
+nothing to draw from until the archive is reloaded.
 
 Edit mode and measure mode are mutually exclusive; <kbd>Esc</kbd> leaves
 either.
 
 ## Fragments and hydrogens
 
-The **Fragment Library** attaches a group to the selected atom, or places it
-at the molecule's centre when nothing is selected:
+The **Fragment Library** attaches a group to the last selected atom, one
+bond length (1.5 Å) out from it, on the side facing away from the molecule's
+centre. With nothing selected, the group is set down beside the structure,
+2.5 Å past its largest x coordinate, so it never lands inside the molecule:
 
 | Fragment | Group |
 |---|---|
@@ -71,7 +84,10 @@ The **Build molecule** dialog takes either:
   sensible starting point, not an optimised structure.
 
 The **Structure Library** card remembers what you built, and lets you pin
-favourites to reuse.
+favourites to reuse. It shows a thumbnail of the molecule you pick, and
+each pinned and recent chip carries a small picture of its molecule. The
+pictures are drawn in the background from the library's geometry once a
+name is picked, pinned or used, so they appear a moment after the name.
 
 From Python the SMILES route is a function that returns an in-memory
 archive, so it can be handed straight to the viewer:
@@ -117,6 +133,18 @@ vibe-view supercell si.qvf --nx 2 --ny 2 --nz 2 -o si_2x2x2.qvf
 The crystal-builder helpers behind it are importable for scripts: a
 space-group search, conversion between a lattice matrix and cell parameters,
 Miller-plane slab cutting with a vacuum gap, and supercell replication.
+`miller_slab` works for any orientation of a nonsingular cell: it builds the (hkl)
+surface cell from two lattice vectors that lie in the plane and one that steps
+a single interplanar spacing along the normal, repeats the parent cell's atoms
+`n_layers` times along that step, and adds `2 * vacuum` to the cell length
+along the normal. The atoms are not shifted to center them in that padding,
+so the gaps on either side need not be equal. The in-plane vectors and the
+atoms stay in the parent crystal's Cartesian frame, so the slab overlays the
+bulk it was cut from. The determinant-one surface basis preserves the input
+cell's handedness. `n_layers`
+counts repetitions of the cell, so a conventional fcc cell gives one atomic
+plane per layer for (111) and two for (001); indices with a common factor,
+such as (002), name the same plane family as their reduced form.
 
 ```python
 from vibeview.crystal_builder import (
@@ -126,7 +154,7 @@ from vibeview.crystal_builder import (
 search_space_groups("Fm-3m")                          # [{'number': 225, ...}]
 cell = cell_from_abc(5.43, 5.43, 5.43, 90, 90, 90)
 a, b, c, alpha, beta, gamma = abc_from_cell(cell)
-new_cell, slab_atoms = miller_slab(cell, atoms, hkl=(0, 0, 1), n_layers=3, vacuum=15.0)
+new_cell, slab_atoms = miller_slab(cell, atoms, hkl=(1, 1, 1), n_layers=3, vacuum=15.0)
 super_cell, super_atoms = replicate_cell(cell, atoms, nx=2, ny=2, nz=2)
 ```
 
@@ -136,6 +164,10 @@ parallelogram and never a box around the vacuum.
 ## From structure to calculation
 
 ### The Calculation Parameters panel
+
+Select **Calculation engine → ORCA** for basic molecular ORCA preparation,
+input preview, `.inp` download and vq submission. The [ORCA walkthrough](orca.md#prepare-save-and-submit-an-orca-input)
+shows each step. The settings below describe the **vibe-qc** engine.
 
 With a structure active, the right drawer shows **Calculation Parameters**:
 method (RHF, UHF, RKS, UKS, RMP2, UMP2), functional (PBE, PBE0, B3LYP, BLYP,
@@ -181,7 +213,7 @@ input resolves to nothing rather than running.
 
 None of this writes to the archive you opened. To keep an edited structure:
 
-* **Export** it from the toolbar as XYZ, CIF, CML, JSON or a Python input,
+* **Export** it from the toolbar as XYZ, CIF, CML or a Python input,
   or as a mesh or scene; see [Figures without a display](headless.md#export)
   for the formats.
 * **Save a session** to keep views of it; see

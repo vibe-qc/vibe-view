@@ -23,7 +23,6 @@ import pytest
 from vibeview.qvf import QVFReader
 from vibeview.renderers.reaction import (
     ReactionPathRenderer,
-    _cell_edges,
     _wrap_positions,
 )
 
@@ -69,8 +68,10 @@ def _molecular_rxn_path_qvf() -> tuple[Path, str]:
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("rxn/meta.json", meta)
         zf.writestr("rxn/coords.dat", coords)
@@ -155,8 +156,10 @@ def _periodic_rxn_path_qvf(
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("rxn/meta.json", meta)
         zf.writestr("rxn/coords.dat", coords_bytes)
@@ -225,10 +228,18 @@ class TestWrapPositionsHelper:
         np.testing.assert_allclose(out, np.array([[1.0, 5.0, 5.0]]))
 
 
+def _column_cell_edges(lattice_columns: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    """The reaction path's column-major lattice through the shared row-major helper."""
+    from vibeview.renderers.cell import cell_edges
+
+    starts, ends = cell_edges(lattice_columns.T)
+    return list(zip(starts, ends, strict=True))
+
+
 class TestCellEdgesHelper:
     def test_orthorhombic_cell_emits_12_edges(self):
         L = np.diag([1.0, 2.0, 3.0])
-        edges = _cell_edges(L)
+        edges = _column_cell_edges(L)
         assert len(edges) == 12
         # Origin is a corner.
         starts = {tuple(p1) for p1, _ in edges}
@@ -239,7 +250,7 @@ class TestCellEdgesHelper:
 
     def test_edge_lengths_match_lattice_vectors(self):
         L = np.diag([2.0, 3.0, 5.0])
-        edges = _cell_edges(L)
+        edges = _column_cell_edges(L)
         lengths = sorted(
             float(np.linalg.norm(p2 - p1)) for p1, p2 in edges
         )
@@ -460,8 +471,10 @@ def _labelled_rxn_path_qvf(
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("rxn/meta.json", meta)
         zf.writestr("rxn/coords.dat", coords)
@@ -539,8 +552,10 @@ def _rxn_path_with_volumes_qvf(
         "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "t"},
         "sections": sections,
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("rxn/meta.json", meta)
         zf.writestr("rxn/coords.dat", coords)
