@@ -9,10 +9,11 @@ from typing import Any
 
 import numpy as np
 
+from vibeview.units import ANGSTROM_TO_BOHR as _ANGSTROM_TO_BOHR
+
 # QVF structures store positions in Angstrom; vibe-qc Atom()/PeriodicSystem
 # take bohr (CODATA 2018, same constant vibe-qc uses internally). Emitting
 # Å values verbatim shrinks every generated geometry by 0.529x.
-_ANGSTROM_TO_BOHR = 1.0 / 0.529177210903
 
 _TEMPLATES = {
     "single_point": """# {title}
@@ -24,12 +25,12 @@ mol = Molecule([
 
 run_job(
     mol,
-    basis="{basis}",
-    method="{method}",
-    functional="{functional}",
+    basis={basis},
+    method={method},
+    functional={functional},
     charge={charge},
     multiplicity={multiplicity},
-    output="{output}",
+    output={output},
     output_qvf=True,
     write_molden_file=True,
 )
@@ -43,12 +44,12 @@ mol = Molecule([
 
 run_job(
     mol,
-    basis="{basis}",
-    method="{method}",
-    functional="{functional}",
+    basis={basis},
+    method={method},
+    functional={functional},
     charge={charge},
     multiplicity={multiplicity},
-    output="{output}",
+    output={output},
     output_qvf=True,
     write_molden_file=True,
     optimize=True,
@@ -63,12 +64,12 @@ mol = Molecule([
 
 run_job(
     mol,
-    basis="{basis}",
-    method="{method}",
-    functional="{functional}",
+    basis={basis},
+    method={method},
+    functional={functional},
     charge={charge},
     multiplicity={multiplicity},
-    output="{output}",
+    output={output},
     output_qvf=True,
     write_molden_file=True,
     hessian=True,
@@ -83,12 +84,12 @@ mol = Molecule([
 
 run_job(
     mol,
-    basis="{basis}",
-    method="{method}",
-    functional="{functional}",
+    basis={basis},
+    method={method},
+    functional={functional},
     charge={charge},
     multiplicity={multiplicity},
-    output="{output}",
+    output={output},
     output_qvf=True,
     write_cube=["density", "homo", "lumo"],
     write_molden_file=True,
@@ -116,14 +117,14 @@ system = PeriodicSystem(
     multiplicity={multiplicity},
 )
 
-basis = BasisSet(system.unit_cell_molecule(), "{basis}")
+basis = BasisSet(system.unit_cell_molecule(), {basis})
 
 run_periodic_job(
     system,
     basis=basis,
-    method="{method}",
-    functional="{functional}",
-    output="{output}",
+    method={method},
+    functional={functional},
+    output={output},
     output_qvf=True,
     write_density=True,
 )
@@ -156,6 +157,7 @@ def _structure_calculation_params(
 
     params: dict[str, Any] = {"atoms": list(atoms)}
     raw_pbc = getattr(sdata, "pbc", None)
+    pbc: tuple[bool, ...]
     if raw_pbc is None:
         pbc = (False, False, False)
     else:
@@ -249,14 +251,14 @@ def generate_input(
     tpl = _TEMPLATES.get(template, _TEMPLATES["single_point"])
 
     script = tpl.format(
-        title=title or "vibe-qc calculation",
+        title="\n# ".join((title or "vibe-qc calculation").splitlines()),
         atoms="\n".join(atom_lines),
-        basis=basis,
-        method=method,
-        functional=functional,
+        basis=repr(basis),
+        method=repr(method),
+        functional=repr(functional),
         charge=charge,
         multiplicity=multiplicity,
-        output=output,
+        output=repr(output),
         lattice=_format_lattice(lattice_vectors) if lattice_vectors else "",
         dimensionality=periodic_dimensionality,
     )

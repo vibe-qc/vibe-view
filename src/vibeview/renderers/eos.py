@@ -15,12 +15,16 @@ record of what equation is implemented and how to verify it.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import plotly.graph_objects as go
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._plotly import chart_layout, figure_to_html
+from vibeview.renderers.palette import ACCENT_BLUE, ACCENT_GREEN, ACCENT_RED
+from vibeview.units import GPA_A3_PER_EV as _GPA_A3_PER_EV
 
 if TYPE_CHECKING:
     from vibeview.qvf import EquationOfStateData, QVFReader, Section
@@ -29,7 +33,6 @@ if TYPE_CHECKING:
 # Murnaghan energy forms multiply a pressure (B0) by a volume; that product is in
 # GPa·Å³ and must be converted to eV. 1 eV = 160.2176634 GPa·Å³
 # (1.602176634e-19 J / 1e-21 J).
-_GPA_A3_PER_EV = 160.2176634
 
 
 def _f(x: object) -> float | None:
@@ -70,6 +73,44 @@ def _murnaghan_energy(
     )
 
 
+@dataclass(frozen=True)
+class EOSFitCurve:
+    """Sampled producer fit in Å³/eV, with its model label and reference."""
+
+    volumes: np.ndarray
+    energies: np.ndarray
+    label: str
+    citation: str
+    volume0: float
+    energy0: float
+
+
+def sample_eos_fit(data: EquationOfStateData) -> EOSFitCurve | None:
+    """Evaluate the producer fit for both browser and terminal charts.
+
+    Preserve the browser's model aliases, default Birch-Murnaghan selection,
+    parameter guard and 200-point padded sampling range. Computed energies
+    are independent observations and never stand in for a fitted curve.
+    """
+    volumes = np.asarray(data.volumes, dtype=float)
+    fit = data.fit or {}
+    V0, E0 = _f(fit.get("V0")), _f(fit.get("E0"))
+    B0, B0p = _f(fit.get("B0")), _f(fit.get("B0_prime"))
+    if V0 is None or E0 is None or B0 is None or B0p is None or B0p == 1.0 or not volumes.size:
+        return None
+    vmin, vmax = float(volumes.min()), float(volumes.max())
+    pad = 0.05 * ((vmax - vmin) or 1.0)
+    grid = np.linspace(vmin - pad, vmax + pad, 200)
+    model = str(fit.get("model", "")).lower()
+    if "murnaghan" in model and "birch" not in model:
+        energies = _murnaghan_energy(grid, V0, E0, B0, B0p)
+        label, citation = "Murnaghan", "Murnaghan (1944)"
+    else:
+        energies = _birch_murnaghan_energy(grid, V0, E0, B0, B0p)
+        label, citation = "Birch-Murnaghan", "Birch (1947)"
+    return EOSFitCurve(grid, energies, f"{label} fit", citation, V0, E0)
+
+
 class EquationOfStateRenderer(BaseRenderer):
     """Volume-energy curve with the producer's fitted EOS overlaid."""
 
@@ -93,51 +134,38 @@ class EquationOfStateRenderer(BaseRenderer):
         fig.add_trace(
             go.Scatter(
                 x=V, y=E, mode="markers", name="Computed",
-                marker={"color": "#3366CC", "size": 7},
+                marker={"color": ACCENT_BLUE, "size": 7},
                 hovertemplate="V: %{x:.3f} Å³<br>E: %{y:.4f} eV<extra></extra>",
             )
         )
 
-        V0, E0 = _f(fit.get("V0")), _f(fit.get("E0"))
+        V0 = _f(fit.get("V0"))
         B0, B0p = _f(fit.get("B0")), _f(fit.get("B0_prime"))
-        model = str(fit.get("model", "")).lower()
-
+        sampled = sample_eos_fit(data)
         cite = ""
-        # Overlay the fitted curve only when the parameters are complete and
-        # sane (B0′ == 1 makes Murnaghan singular).
-        if None not in (V0, E0, B0, B0p) and B0p != 1.0 and V.size:
-            vmin, vmax = float(V.min()), float(V.max())
-            pad = 0.05 * ((vmax - vmin) or 1.0)
-            grid = np.linspace(vmin - pad, vmax + pad, 200)
-            if "murnaghan" in model and "birch" not in model:
-                curve = _murnaghan_energy(grid, V0, E0, B0, B0p)
-                label, cite = "Murnaghan", "Murnaghan (1944)"
-            else:
-                curve = _birch_murnaghan_energy(grid, V0, E0, B0, B0p)
-                label, cite = "Birch-Murnaghan", "Birch (1947)"
+        if sampled is not None:
+            cite = sampled.citation
             fig.add_trace(
                 go.Scatter(
-                    x=grid, y=curve, mode="lines", name=f"{label} fit",
-                    line={"color": "#66AA55", "width": 2},
+                    x=sampled.volumes, y=sampled.energies, mode="lines", name=sampled.label,
+                    line={"color": ACCENT_GREEN, "width": 2},
                     hovertemplate="V: %{x:.3f} Å³<br>E: %{y:.4f} eV<extra></extra>",
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    x=[V0], y=[E0], mode="markers", name="V₀",
-                    marker={"color": "#CC3333", "size": 11, "symbol": "x"},
+                    x=[sampled.volume0], y=[sampled.energy0], mode="markers", name="V₀",
+                    marker={"color": ACCENT_RED, "size": 11, "symbol": "x"},
                     hovertemplate="V₀: %{x:.3f} Å³<br>E₀: %{y:.4f} eV<extra></extra>",
                 )
             )
 
-        fig.update_layout(
+        chart_layout(
+            fig,
             title="Equation of State",
-            xaxis={"title": "Volume (Å³)"},
-            yaxis={"title": "Energy (eV)"},
-            template="plotly_dark",
-            hovermode="closest",
-            height=450,
-            margin={"l": 70, "r": 20, "t": 50, "b": 50},
+            x_title="Volume (Å³)",
+            y_title="Energy (eV)",
+            legend="default",
         )
 
         # Surface the fitted parameters + the model citation to the user (the
@@ -159,4 +187,4 @@ class EquationOfStateRenderer(BaseRenderer):
                 bgcolor="rgba(20,20,30,0.7)", bordercolor="#555", borderwidth=1,
                 font={"size": 12, "color": "#ccc"},
             )
-        return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs)
+        return figure_to_html(fig, include_plotlyjs=include_plotlyjs)

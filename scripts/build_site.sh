@@ -6,6 +6,10 @@
 # vibe-qc's scripts/build_site.sh (project 34), so the two publishers behave
 # identically where they can.
 #
+# Requires the `[docs]` extra on PATH: `pip install -e '.[docs]'` from the
+# repository root. That is what .gitlab-ci.yml's .docs_deps installs, so a
+# local run of this script reproduces the published build.
+#
 # Reads:
 #
 #   docs/                          -- Sphinx source
@@ -27,6 +31,10 @@
 #   CI_COMMIT_REF_NAME             -- branch name; set by GitLab CI, falls back
 #                                     to `git rev-parse` for local builds
 #   CI_PIPELINE_ID                 -- recorded in .build-info when set
+#   SPHINX_STRICT                  -- 1 adds -W, so a warning fails the build.
+#                                     CI sets it on merge requests and release
+#                                     candidates; the published build leaves
+#                                     it unset.
 set -euo pipefail
 
 # Override the public canonical URL for a separately configured documentation site.
@@ -37,9 +45,17 @@ OUT="${OUT:-public}"
 rm -rf "$OUT"
 
 # --keep-going without -W: warnings do not fail the publish. `make strict` in
-# docs/ is the developer-facing build that turns them into errors, which is
-# where a broken cross-reference should be caught.
-sphinx-build -b html --keep-going -q docs/ "$OUT"
+# docs/ is the developer-facing build that turns them into errors, and
+# SPHINX_STRICT=1 is the same gate on a merge request, which is where a
+# broken cross-reference should be caught.
+# A plain word, not an array: macOS still ships bash 3.2, where an empty
+# array under `set -u` is an unbound variable.
+STRICT_FLAG=""
+if [ "${SPHINX_STRICT:-0}" = 1 ]; then
+    STRICT_FLAG="-W"
+fi
+# shellcheck disable=SC2086  # STRICT_FLAG is empty or one word
+sphinx-build -b html --keep-going $STRICT_FLAG -q docs/ "$OUT"
 
 # robots.txt
 cat > "$OUT/robots.txt" <<EOF

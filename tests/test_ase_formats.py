@@ -8,6 +8,7 @@ files than the opener could read.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -92,26 +93,25 @@ class TestBrowseAndOpenerAgree:
 
 
 class TestMissingExtraIsActionable:
-    def test_error_names_the_extra_and_the_file(self, tmp_path):
+    def test_error_names_the_extra_and_the_file(self, tmp_path, monkeypatch):
         """Without ASE the user must learn what to install, not just that
         something failed."""
-        try:
-            import ase  # noqa: F401
-        except ImportError:
-            pass
-        else:
-            pytest.skip("ASE is installed; the missing-extra path cannot run")
+        # Mask the submodule too: an earlier conversion may have cached ase.io.
+        monkeypatch.setitem(sys.modules, "ase", None)
+        monkeypatch.setitem(sys.modules, "ase.io", None)
         p = tmp_path / "POSCAR"
         p.write_text("dummy\n")
         with pytest.raises(ValueError) as exc:
             convert_to_qvf(p)
         msg = str(exc.value)
-        assert "vibe-view[ase]" in msg, msg
+        assert "ASE" in msg, msg
+        assert "[ase]" in msg, msg
+        assert "pip install" in msg, msg
         assert "POSCAR" in msg, msg
 
 
 class TestRealAseRoundTrip:
-    """Only runs where the extra is installed — the CI gate does not have it."""
+    """Exercise real conversion when the optional extra is installed."""
 
     def test_extxyz_reads_through_ase(self, tmp_path):
         pytest.importorskip("ase", reason="needs the [ase] extra")

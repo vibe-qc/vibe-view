@@ -5,8 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._html import data_table, empty_panel, panel_document
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from vibeview.qvf import AtomPropertiesData, QVFReader, Section
 
 
@@ -36,46 +39,36 @@ class AtomPropertiesRenderer(BaseRenderer):
         """
         data = self.load()
 
-        def _table(title: str, charges) -> str:
-            total = sum(charges)
-            rows = [
-                f"<tr><th>Atom</th><th>{title}</th></tr>",
-                *[f"<tr><td>{i + 1}</td><td>{q:+.4f}</td></tr>" for i, q in enumerate(charges)],
-                # Summary row — total charge (should sum to net charge of system).
-                (
-                    f"<tr style='border-top:2px solid #888;font-weight:600'>"
-                    f"<td>Total</td><td>{total:+.4f}</td></tr>"
-                ),
-            ]
-            return f"<table>{''.join(rows)}</table>"
+        def _table(title: str, charges: np.ndarray) -> str:
+            # Summary row: the total charge, which should sum to the system's.
+            return data_table(
+                ["Atom", title],
+                [[i + 1, float(q)] for i, q in enumerate(charges)],
+                numeric_format="+.4f",
+                footer=["Total", float(sum(charges))],
+            )
 
         blocks: list[str] = []
-        if charge_kind is None or charge_kind == "mulliken":
-            if data.mulliken_charges is not None:
-                blocks.append(_table("Mulliken", data.mulliken_charges))
-        if charge_kind is None or charge_kind == "loewdin":
-            if data.loewdin_charges is not None:
-                blocks.append(_table("Löwdin", data.loewdin_charges))
-        if charge_kind is None or charge_kind == "hirshfeld":
-            if data.hirshfeld_charges is not None:
-                blocks.append(_table("Hirshfeld", data.hirshfeld_charges))
-        if charge_kind is None or charge_kind == "iao":
-            if data.iao_charges is not None:
-                blocks.append(_table("IAO", data.iao_charges))
+        if (charge_kind is None or charge_kind == "mulliken") and (
+            data.mulliken_charges is not None
+        ):
+            blocks.append(_table("Mulliken", data.mulliken_charges))
+        if (charge_kind is None or charge_kind == "loewdin") and (
+            data.loewdin_charges is not None
+        ):
+            blocks.append(_table("Löwdin", data.loewdin_charges))
+        if (charge_kind is None or charge_kind == "hirshfeld") and (
+            data.hirshfeld_charges is not None
+        ):
+            blocks.append(_table("Hirshfeld", data.hirshfeld_charges))
+        if (charge_kind is None or charge_kind == "iao") and data.iao_charges is not None:
+            blocks.append(_table("IAO", data.iao_charges))
         if data.spin_populations is not None:
             blocks.append(_table("Spin pop.", data.spin_populations))
-        body = "".join(blocks) if blocks else "<p>No charge data in this section.</p>"
-
-        return (
-            "<!doctype html><html><head><meta charset='utf-8'><style>"
-            "html,body{margin:0;padding:8px;font-family:system-ui,sans-serif;"
-            "font-size:13px;line-height:1.4;}"
-            "body{height:100%;overflow:auto;display:flex;gap:24px;flex-wrap:wrap;}"
-            "table{border-collapse:collapse;flex:0 0 auto;}"
-            "th,td{padding:2px 12px;text-align:right;}"
-            "th{border-bottom:1px solid #888;text-align:left;font-weight:600;}"
-            "td:first-child,th:first-child{text-align:left;color:#666;}"
-            "</style></head><body>"
-            f"{body}"
-            "</body></html>"
+        if not blocks:
+            return empty_panel("No charge data in this section.")
+        # The charge tables sit side by side and wrap when the panel is narrow.
+        return panel_document(
+            "".join(blocks),
+            extra_css="body{display:flex;gap:24px;flex-wrap:wrap;}table{flex:0 0 auto;}",
         )

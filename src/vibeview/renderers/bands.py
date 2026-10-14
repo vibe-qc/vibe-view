@@ -10,20 +10,26 @@ showing band index, energy, and k-point index.
 
 from __future__ import annotations
 
-import io
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
+from matplotlib.lines import Line2D
 
+from vibeview.energy_window import (
+    EnergyWindow,
+    apply_axis_range,
+    auto_energy_window,
+    resolve_window,
+)
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._mpl import agg_pyplot, figure_to_png
+from vibeview.renderers._plotly import chart_layout, fermi_line, figure_to_html, segment_lines
+from vibeview.renderers.palette import ACCENT_RED, SERIES, SPIN, TICK_GREY
+from vibeview.units import band_axis_unit
 
 if TYPE_CHECKING:
     from vibeview.qvf import BandsData, QVFReader, Section
-
-matplotlib.use("Agg")
 
 
 def _label_text(label: object) -> str:
@@ -32,7 +38,9 @@ def _label_text(label: object) -> str:
     return str(label)
 
 
-def _band_axis_ticks(kpath: dict, n_kpts: int) -> tuple[list[int], list[str], list[int]]:
+def band_axis_ticks(
+    kpath: dict[str, Any], n_kpts: int
+) -> tuple[list[int], list[str], list[int]]:
     """Return x tick positions, labels, and segment-boundary positions.
 
     QVF writers may either provide explicit ``start`` / ``end`` indices
@@ -97,6 +105,7 @@ class BandsRenderer(BaseRenderer):
     def __init__(self, section: Section, reader: QVFReader) -> None:
         super().__init__(section, reader)
         self._data: BandsData | None = None
+        self._projections: tuple[np.ndarray | None, list[str]] | None = None
 
     def load(self) -> BandsData:
         if self._data is None:
@@ -111,58 +120,74 @@ class BandsRenderer(BaseRenderer):
         the list of channel labels.  Returns ``(None, [])`` when the
         section has no projections member.
         """
-        section = self.reader.get_section(self.section_id)
-        proj_member = section.members.get("projections")
-        if proj_member is None:
-            return None, []
-        try:
-            proj = self.reader._read_binary_member(self.section_id, "projections")
-        except Exception:
-            return None, []
-        channels = list(
-            (self.reader._read_json_member(self.section_id, "kpath") or {}).get("channels", [])
-        )
-        return proj, channels
+        if self._projections is None:
+            try:
+                self._projections = self.reader.read_bands_projections(self.section_id)
+            except Exception:
+                self._projections = (None, [])
+        return self._projections
 
-    def render_to_bytes(self) -> bytes:
-        """Render the band structure to a PNG byte string (matplotlib)."""
+    def _fermi(self) -> float | None:
+        """The Fermi reference in eV, or ``None`` when the file carries none.
+
+        ``fermi == 0.0`` is the writer's no-Fermi-level sentinel (see
+        ``dos.py`` ``_bands_dos_figure``) — don't draw a spurious E_F line
+        or relabel the axis for a file that carries no Fermi energy.
+        """
+        fermi = self.load().fermi
+        return None if fermi == 0.0 else fermi
+
+    def default_energy_window(self) -> EnergyWindow | None:
+        """The valence window this band structure would open at (#26).
+
+        ``None`` when the axis should keep its full autoscale — including
+        whenever the file carries no Fermi reference, since the window is
+        defined relative to E_F.
+        """
+        fermi = self._fermi()
+        if fermi is None:
+            return None
+        return auto_energy_window(self.load().eigenvalues - float(fermi))
+
+    def render_to_bytes(
+        self,
+        *,
+        energy_window: EnergyWindow | None = None,
+        auto_window: bool = True,
+        energy_unit: str = "ev",
+    ) -> bytes:
+        """Render the band structure to a PNG byte string (matplotlib).
+
+        ``energy_window`` limits the energy axis to ``(min, max)`` in eV
+        relative to E_F. Left unset, the chart opens on
+        :meth:`default_energy_window`; pass ``auto_window=False`` for the
+        full autoscale. ``energy_unit`` is the axis unit, as in
+        :meth:`render_to_html` (#58); the eigenvalues and the window stay
+        in eV.
+        """
         data = self.load()
+        unit, factor = band_axis_unit(energy_unit)
         kpath = data.kpath
         eigenvalues = data.eigenvalues
-        fermi = data.fermi
-        if fermi == 0.0:
-            # The writer's no-Fermi-level sentinel (see dos.py
-            # _bands_dos_figure) — don't draw a spurious E_F line or
-            # relabel the axis for files that carry no Fermi energy.
-            fermi = None
+        fermi = self._fermi()
+        window = resolve_window(
+            energy_window, auto=auto_window, compute=self.default_energy_window
+        )
 
         n_spin, n_kpts, n_bands = eigenvalues.shape
 
-        fig, ax = plt.subplots(figsize=(8, 5))
+        fig, ax = agg_pyplot().subplots(figsize=(8, 5))
         x = np.arange(n_kpts)
         shift = fermi if fermi is not None else 0.0
 
         projections, channels = self._load_projections()
-        has_fat = projections is not None and len(channels) > 0
-
-        if has_fat:
+        if projections is not None and len(channels) > 0:
             n_channels = len(channels)
             if projections.ndim == 4 and projections.shape[0] == n_spin:
                 proj_spin = projections
             else:
                 proj_spin = np.expand_dims(projections, 0)
-            channel_palette = [
-                "#3366CC",
-                "#CC3333",
-                "#66AA55",
-                "#CC8833",
-                "#AA66CC",
-                "#33AAAA",
-                "#CCCC33",
-                "#CC6699",
-                "#33CC66",
-                "#9966CC",
-            ]
+            channel_palette = SERIES
             for spin in range(n_spin):
                 eig = eigenvalues[spin]
                 sp = min(spin, proj_spin.shape[0] - 1)
@@ -178,7 +203,7 @@ class BandsRenderer(BaseRenderer):
                             colour = channel_palette[ch % len(channel_palette)]
                             ax.plot(
                                 x[seg_start:k],
-                                band_e[seg_start:k] - shift,
+                                (band_e[seg_start:k] - shift) * factor,
                                 color=colour,
                                 linewidth=1.0,
                                 alpha=0.8,
@@ -188,7 +213,7 @@ class BandsRenderer(BaseRenderer):
             legend_patches = []
             legend_labels = []
             for ci in range(min(n_channels, len(channel_palette))):
-                legend_patches.append(plt.Line2D([0], [0], color=channel_palette[ci], linewidth=2))
+                legend_patches.append(Line2D([0], [0], color=channel_palette[ci], linewidth=2))
                 legend_labels.append(channels[ci])
             ax.legend(
                 legend_patches,
@@ -199,44 +224,50 @@ class BandsRenderer(BaseRenderer):
                 framealpha=0.5,
             )
         else:
-            colors = ["#3366CC", "#CC8833", "#66AA55", "#AA66CC"]
+            colors = SPIN
             for spin in range(n_spin):
                 for b in range(n_bands):
                     ax.plot(
                         x,
-                        eigenvalues[spin, :, b] - shift,
+                        (eigenvalues[spin, :, b] - shift) * factor,
                         color=colors[spin % len(colors)],
                         linewidth=1.0,
                         alpha=0.8,
                     )
 
         if fermi is not None:
-            ax.axhline(y=0.0, color="#CC3333", linestyle="--", linewidth=1.0, alpha=0.7)
+            ax.axhline(y=0.0, color=ACCENT_RED, linestyle="--", linewidth=1.0, alpha=0.7)
 
-        tick_positions, tick_labels, boundaries = _band_axis_ticks(kpath, n_kpts)
+        tick_positions, tick_labels, boundaries = band_axis_ticks(kpath, n_kpts)
         for start in boundaries:
-            ax.axvline(x=start, color="#999999", linestyle=":", linewidth=0.5)
+            ax.axvline(x=start, color=TICK_GREY, linestyle=":", linewidth=0.5)
         if tick_positions:
             ax.set_xticks(tick_positions)
             ax.set_xticklabels(tick_labels, fontsize=10)
+
+        if window is not None:
+            ax.set_ylim(window[0] * factor, window[1] * factor)
 
         # Eigenvalues are ALWAYS stored in eV (writer multiplies by
         # _HARTREE_TO_EV), so never label them "a.u." — the old `if fermi`
         # truthiness test mislabeled a fermi==0.0 file as atomic units while
         # simultaneously drawing the E_F=0 line (audit finding A4-02).
-        ax.set_ylabel("E − E_F (eV)" if fermi is not None else "Energy (eV)")
+        ax.set_ylabel(f"E − E_F ({unit})" if fermi is not None else f"Energy ({unit})")
         ax.set_xlabel("k-point")
         ax.set_title(data.kpath.get("title", "Band Structure"))
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=120)
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
+        return figure_to_png(fig)
 
-    def render_to_html(self, include_plotlyjs: str | bool = "cdn") -> str:
+    def render_to_html(
+        self,
+        include_plotlyjs: str | bool = "cdn",
+        *,
+        energy_window: EnergyWindow | None = None,
+        auto_window: bool = True,
+        energy_unit: str = "ev",
+    ) -> str:
         """Render the band structure as an interactive Plotly HTML div.
 
         Features:
@@ -244,16 +275,25 @@ class BandsRenderer(BaseRenderer):
         - Fermi level reference line
         - Segment boundary markers and labels
         - Pan and zoom
+        - An energy window on the y axis (#26)
+
+        ``energy_window`` limits the energy axis to ``(min, max)`` in eV
+        relative to E_F. Left unset, the chart opens on
+        :meth:`default_energy_window`; pass ``auto_window=False`` for the
+        full autoscale. Either way the axis stays interactive — the window
+        is a starting view, and the reader can zoom out of it.
+
+        ``energy_unit`` (a ``vibeview.units.ENERGY_UNITS`` key) is the axis
+        unit (#58); the stored eigenvalues and the window stay in eV.
         """
         data = self.load()
+        unit, factor = band_axis_unit(energy_unit)
         kpath = data.kpath
         eigenvalues = data.eigenvalues
-        fermi = data.fermi
-        if fermi == 0.0:
-            # The writer's no-Fermi-level sentinel (see dos.py
-            # _bands_dos_figure) — don't draw a spurious E_F line or
-            # relabel the axis for files that carry no Fermi energy.
-            fermi = None
+        fermi = self._fermi()
+        window = resolve_window(
+            energy_window, auto=auto_window, compute=self.default_energy_window
+        )
 
         n_spin, n_kpts, n_bands = eigenvalues.shape
         shift = fermi if fermi is not None else 0.0
@@ -263,37 +303,14 @@ class BandsRenderer(BaseRenderer):
         # ── Fat bands (projection-weighted) or plain bands ──────────
         projections, channels = self._load_projections()
         has_fat = projections is not None and len(channels) > 0
-
-        if has_fat:
+        if projections is not None and len(channels) > 0:
             n_channels = len(channels)
             # Handle spin dimension if present.
             if projections.ndim == 4 and projections.shape[0] == n_spin:
                 proj_spin = projections  # [n_spin, n_kpts, n_bands, n_channels]
             else:
                 proj_spin = np.expand_dims(projections, 0)  # [1, n_kpts, n_bands, n_channels]
-            # Colour palette for up to 20 channels (distinct hues).
-            channel_palette = [
-                "#3366CC",
-                "#CC3333",
-                "#66AA55",
-                "#CC8833",
-                "#AA66CC",
-                "#33AAAA",
-                "#CCCC33",
-                "#CC6699",
-                "#33CC66",
-                "#9966CC",
-                "#CC6633",
-                "#3399CC",
-                "#99CC33",
-                "#CC3399",
-                "#66CCAA",
-                "#CCAA33",
-                "#336699",
-                "#993366",
-                "#669933",
-                "#996633",
-            ]
+            channel_palette = SERIES
             for spin in range(n_spin):
                 eig = eigenvalues[spin]  # [n_kpts, n_bands]
                 sp = min(spin, proj_spin.shape[0] - 1)
@@ -312,7 +329,7 @@ class BandsRenderer(BaseRenderer):
                             ch_label = channels[ch] if ch < n_channels else f"ch{ch}"
                             name = f"{ch_label} (B{b + 1})"
                             x_seg = list(range(seg_start, k))
-                            y_seg = band_e[seg_start:k] - shift
+                            y_seg = (band_e[seg_start:k] - shift) * factor
                             fig.add_trace(
                                 go.Scatter(
                                     x=x_seg,
@@ -341,7 +358,7 @@ class BandsRenderer(BaseRenderer):
                 )
         else:
             # Plain monochromatic bands.
-            colors = ["#3366CC", "#CC8833", "#66AA55", "#AA66CC"]
+            colors = SPIN
             for spin in range(n_spin):
                 spin_label = f"spin {spin + 1}"
                 for b in range(n_bands):
@@ -349,7 +366,7 @@ class BandsRenderer(BaseRenderer):
                     fig.add_trace(
                         go.Scatter(
                             x=list(range(n_kpts)),
-                            y=eigenvalues[spin, :, b] - shift,
+                            y=(eigenvalues[spin, :, b] - shift) * factor,
                             mode="lines",
                             line={"color": colors[spin % len(colors)], "width": 1},
                             name=name,
@@ -360,38 +377,20 @@ class BandsRenderer(BaseRenderer):
                         )
                     )
 
-        # Fermi line
         if fermi is not None:
-            fig.add_hline(
-                y=0.0,
-                line={"color": "#CC3333", "width": 1, "dash": "dash"},
-                annotation_text="E<sub>F</sub>",
-                annotation_position="top right",
-            )
+            fermi_line(fig)
 
         # Segment boundaries and labels
-        tick_vals, tick_text, boundaries = _band_axis_ticks(kpath, n_kpts)
-        for start in boundaries:
-            fig.add_vline(
-                x=start,
-                line={"color": "#999999", "width": 0.5, "dash": "dot"},
-            )
+        tick_vals, tick_text, boundaries = band_axis_ticks(kpath, n_kpts)
+        segment_lines(fig, boundaries)
 
-        y_label = "E − E_F (eV)" if fermi is not None else "Energy (eV)"
-        fig.update_layout(
+        y_label = f"E − E_F ({unit})" if fermi is not None else f"Energy ({unit})"
+        chart_layout(
+            fig,
             title=data.kpath.get("title", "Band Structure"),
-            xaxis={"title": "k-point", "tickvals": tick_vals, "ticktext": tick_text}
-            if tick_vals
-            else {},
-            yaxis={"title": y_label},
-            template="plotly_dark",
-            hovermode="closest",
-            height=450,
-            margin={"l": 60, "r": 20, "t": 50, "b": 50},
-            showlegend=has_fat,
-            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5)
-            if has_fat
-            else {},
+            x_title="k-point",
+            xaxis={"tickvals": tick_vals, "ticktext": tick_text} if tick_vals else None,
+            yaxis=apply_axis_range({"title": y_label}, window, factor),
+            legend="bottom" if has_fat else "none",
         )
-
-        return fig.to_html(full_html=False, include_plotlyjs=include_plotlyjs)
+        return figure_to_html(fig, include_plotlyjs=include_plotlyjs)

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
-import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
+from tests._qvf_builders import build_qvf, vibe_qc_source
 from vibeview.kinds import SUPPORTED_KINDS
 from vibeview.qvf import QVFReader
 from vibeview.renderers import get_renderer
@@ -20,71 +20,13 @@ def _make_qvf_with_sections(
     *,
     extra: dict[str, dict] | None = None,
 ) -> Path:
-    """Create a .qvf with given sections.
+    """A .qvf from ``(section_id, kind, members)`` tuples, in a temporary file.
 
-    Each tuple: ``(section_id, kind, members)``. Each entry in
-    ``members`` is keyed by member name; the value is either:
-
-    * ``(format, path, data)`` — historical 3-tuple.
-    * ``(format, path, data, dtype, shape)`` — 5-tuple for binary
-      members (the strict canonical schema requires ``dtype`` and
-      ``shape`` on every binary member).
-    * ``dict`` with explicit ``path``, ``format``, ``sha256`` (+
-      optional ``dtype``, ``shape``) — pass-through.
-
-    ``extra`` (optional) is keyed by section id and merged into each
-    section dict (used for ``operand_a``/``operand_b``,
-    ``trajectory_ref``, etc.).
+    Member specs are those of :func:`tests._qvf_builders.build_qvf`; ``extra``
+    is keyed by section id and merged into each section dict (used for
+    ``operand_a``/``operand_b``, ``trajectory_ref``, etc.).
     """
-    sections: list[dict] = []
-    files: dict[str, bytes] = {}
-
-    for sid, kind, members in sections_data:
-        sec_members: dict[str, dict] = {}
-        for mname, spec in members.items():
-            if isinstance(spec, dict):
-                # Optional `_bytes` key lets a dict-spec member also
-                # ship its payload into the zip (used for citations,
-                # where the canonical schema rejects dtype/shape so
-                # the 3-tuple auto-fill can't be used).
-                entry = dict(spec)
-                payload = entry.pop("_bytes", None)
-                sec_members[mname] = entry
-                if payload is not None:
-                    files[entry["path"]] = payload
-                continue
-            if len(spec) == 3:
-                fmt, mpath, mdata = spec
-                dtype = shape = None
-            else:
-                fmt, mpath, mdata, dtype, shape = spec
-            shash = hashlib.sha256(mdata).hexdigest()
-            entry: dict = {"path": mpath, "format": fmt, "sha256": shash}
-            if fmt == "binary":
-                # Strict schema: every binary member needs dtype + shape.
-                # Default to a 1-D byte array if unspecified (fine for tests
-                # that don't reshape the data).
-                entry["dtype"] = dtype or "uint8"
-                entry["shape"] = list(shape) if shape is not None else [len(mdata)]
-            sec_members[mname] = entry
-            files[mpath] = mdata
-        section: dict = {"id": sid, "kind": kind, "members": sec_members}
-        if extra and sid in extra:
-            section.update(extra[sid])
-        sections.append(section)
-
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "vibe-qc", "version": "0.9.0", "calculation": "test"},
-        "sections": sections,
-    }
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        for path, data in files.items():
-            zf.writestr(path, data)
-    return Path(tmp.name)
+    return build_qvf(None, sections_data, extra=extra, source=vibe_qc_source("0.9.0", "test"))
 
 
 class TestRendererDispatch:
@@ -1143,3 +1085,121 @@ class TestRendererDispatch:
                 assert renderer is not None, f"Kind {kind!r} returned None renderer"
             finally:
                 path.unlink()
+
+
+class TestWavefunctionRenderer:
+    def test_frontier_indices(self):
+        from vibeview.renderers.wavefunction import _block_frontier
+
+        occs = [2.0, 2.0, 1.0, 0.0, 0.0]
+        homo, lumo = _block_frontier("canonical", occs, 5, natural_confirmed=False)
+        assert homo == 2
+        assert lumo == 3
+
+    def test_frontier_indices_no_occ(self):
+        from vibeview.renderers.wavefunction import _block_frontier
+
+        homo, lumo = _block_frontier("canonical", None, 5, natural_confirmed=False)
+        assert homo == -1
+        assert lumo == -1
+
+    def test_frontier_indices_empty(self):
+        from vibeview.renderers.wavefunction import _block_frontier
+
+        homo, lumo = _block_frontier("canonical", [], 5, natural_confirmed=False)
+        assert homo == -1
+        assert lumo == -1
+
+    def test_frontier_indices_partially_occupied(self):
+        from vibeview.renderers.wavefunction import _block_frontier
+
+        # All MOs occupied (up to n_mo-1)
+        homo, lumo = _block_frontier("canonical", [2.0, 2.0, 2.0], 3, natural_confirmed=False)
+        assert homo == 2
+        assert lumo == -1  # no virtuals
+
+    def test_frontier_indices_all_virtual(self):
+        from vibeview.renderers.wavefunction import _block_frontier
+
+        # No occupied MOs
+        homo, lumo = _block_frontier("canonical", [0.0, 0.0, 0.0], 3, natural_confirmed=False)
+        assert homo == -1
+        assert lumo == 0  # first virtual is LUMO
+
+    def test_mo_row_title(self):
+        from vibeview.renderers.wavefunction import _mo_row_title
+
+        title = _mo_row_title("restricted", 5, -0.314, 2.0, "a1", "HOMO")
+        assert "#5" in title
+        assert "HOMO" in title
+        assert "a1" in title
+
+    def test_mo_row_title_no_sym_label(self):
+        from vibeview.renderers.wavefunction import _mo_row_title
+
+        title = _mo_row_title("alpha", 3, -0.200, 1.0, "", "LUMO")
+        assert "#3" in title
+        assert "LUMO" in title
+
+    def test_spin_short_labels(self):
+        from vibeview.renderers.wavefunction import _SPIN_SHORT
+
+        assert _SPIN_SHORT["restricted"] == ""
+        assert _SPIN_SHORT["alpha"] == "\u03b1"
+        assert _SPIN_SHORT["beta"] == "\u03b2"
+
+
+class TestDOSRenderer:
+    def test_dos_import(self):
+        from vibeview.renderers.dos import DOSRenderer
+
+        assert DOSRenderer is not None
+
+    def test_dos_renderer_class(self):
+        from vibeview.renderers import BaseRenderer
+        from vibeview.renderers.dos import DOSRenderer
+
+        assert issubclass(DOSRenderer, BaseRenderer)
+
+
+class TestStructureRenderer:
+    def test_bond_order_color_returns_hex_string(self):
+        from vibeview.renderers.structure import _bond_order_color
+
+        c = _bond_order_color(0.5)
+        assert c.startswith("#"), f"Expected hex color, got {c!r}"
+        c = _bond_order_color(1.5)
+        assert c.startswith("#")
+        c = _bond_order_color(2.5)
+        assert c.startswith("#")
+
+    def test_cpk_radius_positive(self):
+        from vibeview.renderers.structure import cpk_radius
+
+        assert cpk_radius(6) > 0  # Carbon
+        assert cpk_radius(1) > 0  # Hydrogen
+        assert cpk_radius(26) > 0  # Iron
+
+    def test_cpk_radius_with_scale(self):
+        from vibeview.renderers.structure import cpk_radius
+
+        r1 = cpk_radius(6)
+        r2 = cpk_radius(6, scale=2.0)
+        assert r2 == pytest.approx(r1 * 2.0)
+
+    def test_cpk_color_returns_hex_string(self):
+        from vibeview.renderers.structure import cpk_color
+
+        c = cpk_color(6)
+        assert c.startswith("#"), f"Expected hex color, got {c!r}"
+
+    def test_cpk_color_unknown_element(self):
+        from vibeview.renderers.structure import _DEFAULT_COLOR, cpk_color
+
+        c = cpk_color(999)
+        assert c == _DEFAULT_COLOR
+
+    def test_default_color_constant(self):
+        from vibeview.renderers.structure import _DEFAULT_COLOR
+
+        assert _DEFAULT_COLOR.startswith("#")
