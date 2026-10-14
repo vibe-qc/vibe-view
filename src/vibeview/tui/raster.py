@@ -24,6 +24,7 @@ shading, and :func:`shade` assumes it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -31,7 +32,12 @@ import numpy as np
 # Geometry closer than this to the camera plane is dropped rather than
 # projected: 1/z explodes and a single atom behind the eye would otherwise
 # smear across the whole canvas.
-_NEAR = 0.05
+#: Camera-frame depth below which nothing is projected; the scene fitter
+#: keeps every point beyond it.
+NEAR_PLANE = 0.05
+#: Projection scale factor (a screen half-extent in world units at unit
+#: depth), the one default for the camera and every draw call.
+DEFAULT_FOV = 1.5
 
 # Samples processed per vectorized chunk. Bounds peak memory at a few tens
 # of MB regardless of how large a mesh or how zoomed-in a sphere gets.
@@ -60,7 +66,8 @@ def rotation_matrix(rx: float, ry: float, rz: float) -> np.ndarray:
     mx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
     my = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
     mz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
-    return mz @ my @ mx
+    matrix: np.ndarray = mz @ my @ mx
+    return matrix
 
 
 def shade(normals: np.ndarray, colors: np.ndarray) -> np.ndarray:
@@ -73,7 +80,20 @@ def shade(normals: np.ndarray, colors: np.ndarray) -> np.ndarray:
     intensity = np.minimum(1.0, _AMBIENT + _DIFFUSE * n_dot_l)
     specular = _SPECULAR * np.power(n_dot_h, _SHININESS)
     lit = colors * intensity[:, None] + 255.0 * specular[:, None]
-    return np.clip(lit, 0.0, 255.0).astype(np.uint8)
+    shaded: np.ndarray = np.clip(lit, 0.0, 255.0).astype(np.uint8)
+    return shaded
+
+
+# The default view: Euler angles in degrees (what `vibe-view show --rotate`
+# takes) and the same in radians. The CLI default and the terminal's
+# built-in default used to be written separately, -14,-31 degrees against
+# -0.25,-0.55 radians, and differed by about half a degree (#38-52).
+DEFAULT_ROTATION_DEG: tuple[float, float, float] = (-14.0, -31.0, 0.0)
+DEFAULT_ROTATION: tuple[float, float, float] = (
+    math.radians(DEFAULT_ROTATION_DEG[0]),
+    math.radians(DEFAULT_ROTATION_DEG[1]),
+    math.radians(DEFAULT_ROTATION_DEG[2]),
+)
 
 
 @dataclass
@@ -84,16 +104,16 @@ class Camera:
     half-extent of ``fov`` world units at unit depth.
     """
 
-    rotation: np.ndarray = field(default_factory=lambda: rotation_matrix(-0.25, -0.55, 0.0))
+    rotation: np.ndarray = field(default_factory=lambda: rotation_matrix(*DEFAULT_ROTATION))
     distance: float = 12.0
     pan: tuple[float, float] = (0.0, 0.0)
-    fov: float = 1.5
+    fov: float = DEFAULT_FOV
     center: np.ndarray = field(default_factory=lambda: np.zeros(3))
 
     def to_camera(self, points: np.ndarray) -> np.ndarray:
         """World (N,3) angstroms to camera-frame (N,3)."""
         pts = np.atleast_2d(np.asarray(points, dtype=np.float64))
-        out = (self.rotation @ (pts - self.center).T).T
+        out: np.ndarray = (self.rotation @ (pts - self.center).T).T
         out[:, 0] += self.pan[0]
         out[:, 1] += self.pan[1]
         out[:, 2] += self.distance
@@ -148,7 +168,7 @@ class Canvas:
         """
         pts = np.atleast_2d(np.asarray(cam_points, dtype=np.float64))
         z = pts[:, 2]
-        safe = np.where(z > _NEAR, z, np.nan)
+        safe = np.where(z > NEAR_PLANE, z, np.nan)
         xy = np.empty((len(pts), 2), dtype=np.float64)
         xy[:, 0] = self.width / 2.0 + pts[:, 0] * fov / safe * self.scale
         xy[:, 1] = self.height / 2.0 - pts[:, 1] * fov / safe * self.scale
@@ -162,8 +182,14 @@ class Canvas:
         py: np.ndarray,
         pz: np.ndarray,
         rgb: np.ndarray,
+        opacity: float = 1.0,
     ) -> None:
         """Depth-test and write a batch of shaded samples.
+
+        With ``opacity < 1`` the samples are blended over what is already in
+        the pixel (not over the background) and leave the depth buffer
+        untouched, so a translucent surface neither hides the geometry
+        behind it nor blocks what is drawn behind it later (#38-45).
 
         Samples may collide — several within this batch landing on one pixel,
         or a batch pixel landing on something already drawn. Both are resolved
@@ -200,6 +226,13 @@ class Canvas:
         if not nearer.any():
             return
         py, px, pz, rgb = py[nearer], px[nearer], pz[nearer], rgb[nearer]
+        if opacity < 1.0:
+            alpha = float(max(0.0, opacity))
+            under = self.pixels[py, px].astype(np.float64)
+            blended = rgb.astype(np.float64) * alpha + under * (1.0 - alpha)
+            self.pixels[py, px] = np.clip(np.round(blended), 0, 255).astype(np.uint8)
+            self.covered[py, px] = True
+            return
         self.zbuf[py, px] = pz
         self.pixels[py, px] = rgb
         self.covered[py, px] = True
@@ -211,7 +244,7 @@ class Canvas:
         centers: np.ndarray,
         radii: np.ndarray,
         colors: np.ndarray,
-        fov: float = 1.5,
+        fov: float = DEFAULT_FOV,
     ) -> None:
         """Shaded spheres from camera-frame centres and world-space radii.
 
@@ -230,10 +263,10 @@ class Canvas:
         colors = np.asarray(colors, dtype=np.float64).reshape(-1, 3)
 
         xy, z = self.project(centers, fov)
-        pr = radii * fov / np.where(z > _NEAR, z, np.nan) * self.scale
+        pr = radii * fov / np.where(z > NEAR_PLANE, z, np.nan) * self.scale
         # Sub-pixel spheres would rasterize to nothing; clamp so a distant
         # atom stays a visible dot instead of silently vanishing.
-        visible = np.isfinite(pr) & (z > _NEAR)
+        visible = np.isfinite(pr) & (z > NEAR_PLANE)
         if not visible.any():
             return
         pr = np.clip(pr[visible], 0.6, max(self.width, self.height))
@@ -249,10 +282,19 @@ class Canvas:
                 int(bucket), sx[sel], sy[sel], sz[sel], pr[sel], rw[sel], rgb[sel]
             )
 
-    def _sphere_bucket(self, radius_px, sx, sy, sz, pr, rw, rgb) -> None:
+    def _sphere_bucket(
+        self,
+        radius_px: int,
+        sx: np.ndarray,
+        sy: np.ndarray,
+        sz: np.ndarray,
+        pr: np.ndarray,
+        rw: np.ndarray,
+        rgb: np.ndarray,
+    ) -> None:
         span = np.arange(-radius_px - 1, radius_px + 2, dtype=np.float64)
-        ox, oy = np.meshgrid(span, span, indexing="xy")
-        ox, oy = ox.ravel(), oy.ravel()
+        grid_x, grid_y = np.meshgrid(span, span, indexing="xy")
+        ox, oy = grid_x.ravel(), grid_y.ravel()
         n_samples = len(ox)
         if n_samples == 0:
             return
@@ -287,7 +329,7 @@ class Canvas:
         radius: float,
         colors_a: np.ndarray,
         colors_b: np.ndarray,
-        fov: float = 1.5,
+        fov: float = DEFAULT_FOV,
     ) -> None:
         """Shaded bond cylinders, split half-and-half between two colours.
 
@@ -305,8 +347,8 @@ class Canvas:
         xy1, z1 = self.project(starts, fov)
         xy2, z2 = self.project(ends, fov)
         ok = (
-            (z1 > _NEAR)
-            & (z2 > _NEAR)
+            (z1 > NEAR_PLANE)
+            & (z2 > NEAR_PLANE)
             & np.isfinite(xy1).all(axis=1)
             & np.isfinite(xy2).all(axis=1)
         )
@@ -374,7 +416,7 @@ class Canvas:
         faces: np.ndarray,
         normals: np.ndarray,
         color: tuple[int, int, int],
-        fov: float = 1.5,
+        fov: float = DEFAULT_FOV,
         opacity: float = 1.0,
     ) -> None:
         """Rasterize a camera-frame triangle mesh (isosurfaces, ribbons).
@@ -397,7 +439,7 @@ class Canvas:
         normals = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
 
         xy, z = self.project(vertices, fov)
-        good = (z > _NEAR) & np.isfinite(xy).all(axis=1)
+        good = (z > NEAR_PLANE) & np.isfinite(xy).all(axis=1)
         face_ok = good[faces].all(axis=1)
         faces = faces[face_ok]
         if len(faces) == 0:
@@ -408,6 +450,12 @@ class Canvas:
         fn = np.stack(
             [normals[faces[:, 0]], normals[faces[:, 1]], normals[faces[:, 2]]], axis=1
         )  # (F,3,3)
+
+        # A triangle wider than the per-edge sample cap left pinholes (a 95 px
+        # triangle missed more than half its pixels, #38-46). Split big ones
+        # at their edge midpoints until every piece fits under the cap, so
+        # the cap still bounds the work per sample batch.
+        s, fz, fn = _subdivide_large(s, fz, fn, _MAX_SPAN_PX)
 
         extent = s.max(axis=1) - s.min(axis=1)
         span = np.maximum(extent[:, 0], extent[:, 1])
@@ -423,7 +471,15 @@ class Canvas:
             sel = buckets == bucket
             self._mesh_bucket(int(bucket), s[sel], fz[sel], fn[sel], base_rgb, opacity)
 
-    def _mesh_bucket(self, n_edge, s, fz, fn, base_rgb, opacity) -> None:
+    def _mesh_bucket(
+        self,
+        n_edge: int,
+        s: np.ndarray,
+        fz: np.ndarray,
+        fn: np.ndarray,
+        base_rgb: np.ndarray,
+        opacity: float,
+    ) -> None:
         steps = np.linspace(0.0, 1.0, max(2, n_edge))
         uu, vv = np.meshgrid(steps, steps, indexing="ij")
         keep = (uu + vv) <= 1.0 + 1e-9
@@ -457,19 +513,16 @@ class Canvas:
 
             rgb = np.broadcast_to(base_rgb, (normals.shape[0], 3))
             shaded = shade(normals, rgb)
-            if opacity < 1.0:
-                shaded = (
-                    shaded.astype(np.float64) * opacity
-                    + self.background.astype(np.float64) * (1.0 - opacity)
-                ).astype(np.uint8)
-            self.composite(np.round(gx).ravel(), np.round(gy).ravel(), gz.ravel(), shaded)
+            self.composite(
+                np.round(gx).ravel(), np.round(gy).ravel(), gz.ravel(), shaded, opacity
+            )
 
     def draw_lines(
         self,
         starts: np.ndarray,
         ends: np.ndarray,
         color: tuple[int, int, int],
-        fov: float = 1.5,
+        fov: float = DEFAULT_FOV,
         width: float = 1.0,
     ) -> None:
         """Flat-shaded 3D line segments (cell edges, axis indicators)."""
@@ -481,8 +534,8 @@ class Canvas:
         xy1, z1 = self.project(starts, fov)
         xy2, z2 = self.project(ends, fov)
         ok = (
-            (z1 > _NEAR)
-            & (z2 > _NEAR)
+            (z1 > NEAR_PLANE)
+            & (z2 > NEAR_PLANE)
             & np.isfinite(xy1).all(axis=1)
             & np.isfinite(xy2).all(axis=1)
         )
@@ -508,17 +561,46 @@ class Canvas:
                     np.round(gx + ox).ravel(), np.round(gy + oy).ravel(), gz.ravel(), rgb_flat
                 )
 
-    def draw_pixels(
-        self,
-        xs: np.ndarray,
-        ys: np.ndarray,
-        color: tuple[int, int, int],
-    ) -> None:
-        """Paint flat 2D screen pixels at the near plane (plot overlays)."""
-        xs = np.asarray(xs).ravel()
-        ys = np.asarray(ys).ravel()
-        if xs.size == 0:
-            return
-        depth = np.full(xs.size, -1.0)
-        rgb = np.broadcast_to(np.array(color, dtype=np.uint8), (xs.size, 3))
-        self.composite(xs, ys, depth, rgb)
+
+
+# Largest screen-space triangle span (px) sampled directly: the per-edge
+# sample cap is 48, and ceil(span) + 2 samples must fit under it.
+_MAX_SPAN_PX = 46.0
+
+
+def _subdivide_large(
+    s: np.ndarray, fz: np.ndarray, fn: np.ndarray, max_span: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Split screen triangles wider than ``max_span`` into four, repeatedly.
+
+    ``s`` (F,3,2) screen xy, ``fz`` (F,3) depth, ``fn`` (F,3,3) normals; the
+    midpoints interpolate all three linearly, as the samplers do.
+    """
+    for _ in range(16):  # 4**16 pieces is far beyond any real viewport
+        extent = s.max(axis=1) - s.min(axis=1)
+        big = np.maximum(extent[:, 0], extent[:, 1]) > max_span
+        if not big.any():
+            break
+        keep_s, keep_z, keep_n = s[~big], fz[~big], fn[~big]
+        bs, bz, bn = s[big], fz[big], fn[big]
+
+        def mids(a: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            return (a[:, 0] + a[:, 1]) / 2, (a[:, 1] + a[:, 2]) / 2, (a[:, 2] + a[:, 0]) / 2
+
+        def split(a: np.ndarray) -> np.ndarray:
+            m01, m12, m20 = mids(a)
+            v0, v1, v2 = a[:, 0], a[:, 1], a[:, 2]
+            return np.concatenate(
+                [
+                    np.stack([v0, m01, m20], axis=1),
+                    np.stack([m01, v1, m12], axis=1),
+                    np.stack([m20, m12, v2], axis=1),
+                    np.stack([m01, m12, m20], axis=1),
+                ]
+            )
+
+        s = np.concatenate([keep_s, split(bs)])
+        fz = np.concatenate([keep_z, split(bz)])
+        fn = np.concatenate([keep_n, split(bn)])
+    return s, fz, fn
+

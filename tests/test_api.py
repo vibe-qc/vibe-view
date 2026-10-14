@@ -41,8 +41,10 @@ def _make_structure_qvf() -> Path:
         ],
         "provenance": {"method": "RHF", "scf_converged": True},
     }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         zf.writestr("sections/structure.json", structure)
     return Path(tmp.name)
@@ -235,8 +237,8 @@ class TestDiffZeroEnergy:
             ra.close()
             rb.close()
         assert d["delta_e_eh"] == 1.0
-        assert d["delta_e_kcal_mol"] == pytest.approx(627.509)
-        assert d["delta_e_ev"] == pytest.approx(27.2114)
+        assert d["delta_e_kcal_mol"] == pytest.approx(627.509474, rel=1e-12)
+        assert d["delta_e_ev"] == pytest.approx(27.211386245988, rel=1e-12)
 
 
 class TestCaptureClosesReader:

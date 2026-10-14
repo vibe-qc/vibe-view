@@ -16,6 +16,16 @@ import numpy as np
 import pytest
 
 
+def _scene_hooks(plotter):
+    """vibeview.app's hooks record for ``plotter``, looked up at call time:
+    another test module reloads vibeview.app, and a name imported at
+    collection would then read the old module's registry."""
+    from vibeview.app import _scene_hooks as hooks
+
+    return hooks(plotter)
+
+
+
 def _app():
     from vibeview.app import create_app
     from vibeview.converters import xyz_to_qvf
@@ -156,7 +166,7 @@ class TestNewFileGetsItsCameraPushed:
         def boom():
             raise RuntimeError("client gone")
 
-        p._vibe_view_push_camera = boom
+        _scene_hooks(p).push_camera = boom
         _push_camera(p)  # best-effort: a dead client must not break a reload
 
     def test_switching_files_pushes_the_camera(self, tmp_path):
@@ -177,9 +187,9 @@ class TestNewFileGetsItsCameraPushed:
         import vibeview.app as appmod
 
         original = appmod._push_camera
-        appmod._push_camera = lambda plotter: calls.append(1)
+        appmod._helpers._push_camera = lambda plotter: calls.append(1)
         try:
             app.controller.switch_file(1)
         finally:
-            appmod._push_camera = original
+            appmod._helpers._push_camera = original
         assert calls, "switching files never pushed a camera to the client"

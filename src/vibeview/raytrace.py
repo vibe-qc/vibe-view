@@ -22,8 +22,9 @@ afterwards, so the live viewport is untouched.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Quality presets
@@ -186,7 +187,7 @@ class RaytraceEngine:
     raises ``RuntimeError`` with a clear message if OSPRay is absent.
     """
 
-    def __init__(self, plotter) -> None:
+    def __init__(self, plotter: Any) -> None:
         self._plotter = plotter
         self._vtk = self._import_vtk()
 
@@ -381,7 +382,7 @@ class RaytraceEngine:
     # -- Internal helpers ----------------------------------------------------
 
     @staticmethod
-    def _import_vtk():
+    def _import_vtk() -> Any:
         """Import VTK, raising a clear message if absent."""
         try:
             import vtk
@@ -417,7 +418,7 @@ class RaytraceEngine:
         # are a future enhancement).
         node.SetBackgroundMode(1, renderer)  # 0=environment, 1=backplate
 
-    def _setup_lights(self, renderer) -> None:
+    def _setup_lights(self, renderer: Any) -> None:
         """Create OSPRay-compatible lights for the scene."""
         vtk = self._vtk
         env = self._environment
@@ -426,7 +427,11 @@ class RaytraceEngine:
         renderer.RemoveAllLights()
 
         # Helper to add a directional OSPRay light.
-        def _add_light(direction, intensity, color=(1.0, 1.0, 1.0)):
+        def _add_light(
+            direction: Sequence[float],
+            intensity: float,
+            color: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        ) -> None:
             light = vtk.vtkLight()
             light.SetLightTypeToHeadlight()  # directional
             light.SetPosition(direction[0], direction[1], direction[2])
@@ -440,7 +445,7 @@ class RaytraceEngine:
         _add_light(env.fill_dir, env.fill_intensity, (0.7, 0.8, 1.0))
         _add_light(env.rim_dir, env.rim_intensity, (0.9, 0.85, 0.8))
 
-    def _apply_materials(self, renderer) -> None:
+    def _apply_materials(self, renderer: Any) -> None:
         """Apply PBR materials to every actor in the scene.
 
         Uses VTK's OSPRay material library.  Each actor gets a material
@@ -499,7 +504,7 @@ class RaytraceEngine:
         vtk.vtkOSPRayRendererNode.SetMaterialLibrary(materials, renderer)
         renderer._vibe_ospray_mats = materials  # keep alive
 
-    def _configure_dof(self, renderer) -> None:
+    def _configure_dof(self, renderer: Any) -> None:
         """Set up OSPRay depth-of-field."""
         vtk = self._vtk
         node = vtk.vtkOSPRayRendererNode
@@ -507,9 +512,9 @@ class RaytraceEngine:
         node.SetFocalDistance(self._dof_focal_distance, renderer)
         node.SetAperture(self._dof_aperture, renderer)
 
-    def _capture_lights(self, renderer) -> list:
+    def _capture_lights(self, renderer: Any) -> list[Any]:
         """Snapshot the current light kit so we can restore it."""
-        lights = []
+        lights: list[Any] = []
         light_collection = renderer.GetLights()
         light_collection.InitTraversal()
         for _ in range(light_collection.GetNumberOfItems()):
@@ -518,7 +523,7 @@ class RaytraceEngine:
                 lights.append(light)
         return lights
 
-    def _restore_lights(self, renderer, lights: list) -> None:
+    def _restore_lights(self, renderer: Any, lights: list[Any]) -> None:
         """Put back the original lights."""
         renderer.RemoveAllLights()
         for light in lights:
@@ -536,7 +541,7 @@ class RaytraceEngine:
 
 
 def render_high_quality(
-    plotter,
+    plotter: Any,
     output_path: str,
     *,
     quality: str = "high",
