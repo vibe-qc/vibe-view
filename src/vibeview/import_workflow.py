@@ -11,6 +11,7 @@ from pathlib import Path
 
 from vibeview.converters import convert_to_qvf, detect_format
 from vibeview.importers import get_importer
+from vibeview.orca_dataset import is_orca_auxiliary_path, orca_dataset_entry, orca_dataset_key
 from vibeview.qvf import QVFReader
 from vibeview.trexio_import import is_trexio_directory
 
@@ -100,6 +101,7 @@ def collect_import_inputs(
     conservative and include only paths a built-in or plugin claims.
     """
     files: list[Path] = []
+    automatic_seen: set[Path] = set()
     saw_directory = False
     requested_importer = get_importer(format_name) if format_name is not None else None
     for raw in inputs:
@@ -126,11 +128,26 @@ def collect_import_inputs(
                 detected = detect_format(candidate)
                 if detected is None:
                     continue
+                if detected == "orca" and (
+                    is_orca_auxiliary_path(candidate)
+                    or (
+                        candidate.suffix.lower() in (".out", ".inp")
+                        and orca_dataset_key(candidate) is None
+                    )
+                ):
+                    continue
                 if format_name is not None:
                     normalized = detected.removeprefix("plugin:")
                     requested = format_name.removeprefix("plugin:")
                     if normalized != requested:
                         continue
+                if detected == "orca":
+                    key = orca_dataset_key(candidate)
+                    if key is not None:
+                        if key in automatic_seen:
+                            continue
+                        automatic_seen.add(key)
+                        candidate = orca_dataset_entry(candidate)
                 files.append(candidate)
         elif path.is_file():
             if format_name is None and detect_format(path) is None:
@@ -144,8 +161,10 @@ def collect_import_inputs(
     unique: list[Path] = []
     seen: set[Path] = set()
     for path in files:
-        if path not in seen:
-            seen.add(path)
+        key = orca_dataset_key(path) if format_name in (None, "orca") else None
+        identity = key or path
+        if identity not in seen:
+            seen.add(identity)
             unique.append(path)
     if not unique:
         suffix = f" for format {format_name!r}" if format_name else ""
@@ -170,9 +189,11 @@ def plan_imports(
 
     if not multiple:
         source = sources[0]
-        destination = (output or source.with_suffix(".qvf")).resolve()
+        key = orca_dataset_key(source) if format_name in (None, "orca") else None
+        stem = key.name if key is not None else source.stem
+        destination = (output or source.with_name(f"{stem}.qvf")).resolve()
         if destination.is_dir():
-            destination = destination / f"{source.stem}.qvf"
+            destination = destination / f"{stem}.qvf"
         if destination.suffix.lower() != ".qvf":
             destination = destination.with_suffix(".qvf")
         if destination == source:
@@ -190,7 +211,8 @@ def plan_imports(
     plans: list[ImportPlan] = []
     used: set[str] = set()
     for source in sources:
-        stem = source.stem or source.name
+        key = orca_dataset_key(source) if format_name in (None, "orca") else None
+        stem = key.name if key is not None else source.stem or source.name
         candidate = f"{stem}.qvf"
         sequence = 2
         while candidate.casefold() in used:

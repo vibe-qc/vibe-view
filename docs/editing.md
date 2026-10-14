@@ -1,8 +1,9 @@
 # Building and editing structures
 
 The browser and desktop surfaces are an editor as well as a viewer. You can
-change a structure atom by atom, grow it from fragments, build one from a
-name or a SMILES string, replicate a cell or cut a slab, and hand the result
+change a structure atom by atom, grow it from fragments, sketch one in
+vibe-sketch or build it from a name or a SMILES string, replicate a cell or
+cut a slab, and hand the result
 to a calculation: exported as an input script, or submitted to a queue
 without leaving the window.
 
@@ -25,17 +26,30 @@ the viewport starts taking clicks as edits:
   <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>. Every edit is
   one undo step.
 
-Bonds are recomputed from covalent radii after each edit. Edits compound in
+Bonds are recomputed after each edit with the same covalent-radius rule the
+viewer draws with, so connectivity does not change on the first edit, and a
+periodic structure keeps its bonds through the cell faces. The edited
+structure is drawn the way the unedited one is, in the representation and at
+the replication you chose. Edits compound in
 place: the geometry you export or submit is the geometry as edited, and the
 original archive on disk is not touched.
+
+An edit replaces the atom list, so the file's biomolecular metadata does not
+carry over to the edited geometry: residue and chain names, B-factors, and
+any producer-supplied residues, chains or secondary structure describe the
+original atoms and are dropped. The views built on that metadata (cartoon
+and backbone, colouring by chain, secondary structure or B-factor) have
+nothing to draw from until the archive is reloaded.
 
 Edit mode and measure mode are mutually exclusive; <kbd>Esc</kbd> leaves
 either.
 
 ## Fragments and hydrogens
 
-The **Fragment Library** attaches a group to the selected atom, or places it
-at the molecule's centre when nothing is selected:
+The **Fragment Library** attaches a group to the last selected atom, one
+bond length (1.5 Å) out from it, on the side facing away from the molecule's
+centre. With nothing selected, the group is set down beside the structure,
+2.5 Å past its largest x coordinate, so it never lands inside the molecule:
 
 | Fragment | Group |
 |---|---|
@@ -58,20 +72,75 @@ whole file from the command line:
 vibe-view h-add structure.qvf -o structure_h.qvf
 ```
 
+## Sketching a molecule in vibe-sketch
+
+vibe-sketch is the family's 2D structure and reaction sketcher. When it is installed beside the viewer, **Sketch in
+vibe-sketch** at the top of the **Build molecule** dialog opens it in your
+browser. The command palette (Ctrl/Cmd+K) has the same action, as
+*Sketch a molecule in vibe-sketch*. Draw the molecule, then choose **Send to
+vibe-view** in the sketcher. The structure opens here as a new file and the
+status bar says how many atoms it has. Send again after an edit and the new
+version opens as another file, so you can compare it with the earlier one.
+
+The sketcher runs on this machine at `http://127.0.0.1:8766/`, or the next
+free port, and keeps running while the viewer is open. Clicking **Sketch**
+again brings its page back rather than starting a second copy. Closing the
+viewer also stops the sketcher, so save a drawing you want to keep in
+vibe-sketch first.
+
+vibe-sketch is the optional `[sketch]` extra. It is published on no package
+index yet, so install it from a vibe-sketch checkout first. The extra is
+then satisfied by what is already there:
+
+```sh
+python -m pip install <path-to-vibe-sketch>
+python -m pip install -e '.[sketch]'   # from the vibe-view checkout
+```
+
+vibe-sketch needs Python 3.12 or newer. Without it the Sketch button stays
+in the dialog, and clicking it puts the install command in the status bar.
+`vibe-view doctor` lists the same command under `sketch`.
+
+### The hand-off between the two programs
+
+This is the contract vibe-sketch implements for *Send to vibe-view*
+(vibe-view #77, vibe-sketch #1). It lives in `vibeview.sketch`:
+
+* vibe-view starts `python -m vibesketch serve --host 127.0.0.1 --port PORT
+  --open` with its own interpreter. The environment variable
+  `VIBEVIEW_SKETCH_HANDOFF` names a private directory created for this
+  sketcher. When the variable is set, the sketcher knows a viewer is waiting.
+* *Send to vibe-view* writes the structure as a `.qvf` or `.xyz` file, then
+  writes a record into that directory: a JSON object
+  `{"schema": "vibe-view-sketch-handoff/1", "path": "<absolute path>"}`. The
+  record is written under a name that does not end in `.json` and then
+  renamed to `*.json`, so the viewer never reads half of it.
+* About once a second, vibe-view reads new records in name order and deletes
+  each one after reading it. It reads the structure into memory, so a later
+  send that overwrites the same file does not change what is already open. A
+  record that breaks the contract, or names a file that cannot be read, is
+  reported in the status bar and opens nothing.
+* When the viewer exits, it stops the sketcher and removes the directory. A
+  missing directory tells the sketcher that the viewer is gone.
+
 ## Building from a name or a SMILES string
 
-The **Build molecule** dialog takes either:
+Below the Sketch button, the **Build molecule** dialog takes either:
 
 * **A molecule name.** Geometries come from the curated structure database
-  of the `vibeqc_naming` package, which ships with vibe-qc. When that
-  package is not importable in the viewer's environment the dialog says so;
-  a standalone viewer install does not have it.
+  of the `vibeqc_naming` package, which ships with vibe-qc. A standalone
+  viewer install does not have it, so the name field is left out of the
+  dialog. The toolbar button still opens the dialog when vibe-sketch is
+  installed.
 * **A SMILES string.** Needs the `[smiles]` extra (RDKit). The geometry is
   an RDKit ETKDG embedding with no force-field cleanup: a chemically
   sensible starting point, not an optimised structure.
 
 The **Structure Library** card remembers what you built, and lets you pin
-favourites to reuse.
+favourites to reuse. It shows a thumbnail of the molecule you pick, and
+each pinned and recent chip carries a small picture of its molecule. The
+pictures are drawn in the background from the library's geometry once a
+name is picked, pinned or used, so they appear a moment after the name.
 
 From Python the SMILES route is a function that returns an in-memory
 archive, so it can be handed straight to the viewer:
@@ -117,6 +186,18 @@ vibe-view supercell si.qvf --nx 2 --ny 2 --nz 2 -o si_2x2x2.qvf
 The crystal-builder helpers behind it are importable for scripts: a
 space-group search, conversion between a lattice matrix and cell parameters,
 Miller-plane slab cutting with a vacuum gap, and supercell replication.
+`miller_slab` works for any orientation of a nonsingular cell: it builds the (hkl)
+surface cell from two lattice vectors that lie in the plane and one that steps
+a single interplanar spacing along the normal, repeats the parent cell's atoms
+`n_layers` times along that step, and adds `2 * vacuum` to the cell length
+along the normal. The atoms are not shifted to center them in that padding,
+so the gaps on either side need not be equal. The in-plane vectors and the
+atoms stay in the parent crystal's Cartesian frame, so the slab overlays the
+bulk it was cut from. The determinant-one surface basis preserves the input
+cell's handedness. `n_layers`
+counts repetitions of the cell, so a conventional fcc cell gives one atomic
+plane per layer for (111) and two for (001); indices with a common factor,
+such as (002), name the same plane family as their reduced form.
 
 ```python
 from vibeview.crystal_builder import (
@@ -126,7 +207,7 @@ from vibeview.crystal_builder import (
 search_space_groups("Fm-3m")                          # [{'number': 225, ...}]
 cell = cell_from_abc(5.43, 5.43, 5.43, 90, 90, 90)
 a, b, c, alpha, beta, gamma = abc_from_cell(cell)
-new_cell, slab_atoms = miller_slab(cell, atoms, hkl=(0, 0, 1), n_layers=3, vacuum=15.0)
+new_cell, slab_atoms = miller_slab(cell, atoms, hkl=(1, 1, 1), n_layers=3, vacuum=15.0)
 super_cell, super_atoms = replicate_cell(cell, atoms, nx=2, ny=2, nz=2)
 ```
 
@@ -137,6 +218,10 @@ parallelogram and never a box around the vacuum.
 
 ### The Calculation Parameters panel
 
+Select **Calculation engine → ORCA** for basic molecular ORCA preparation,
+input preview, `.inp` download and vq submission. The [ORCA walkthrough](orca.md#prepare-save-and-submit-an-orca-input)
+shows each step. The settings below describe the **vibe-qc** engine.
+
 With a structure active, the right drawer shows **Calculation Parameters**:
 method (RHF, UHF, RKS, UKS, RMP2, UMP2), functional (PBE, PBE0, B3LYP, BLYP,
 BP86, TPSS, M06-2X, ωB97X-D, CAM-B3LYP, LDA, r²SCAN, HSE06), basis set
@@ -145,7 +230,9 @@ the calculation type: single point, geometry optimisation, frequencies, all
 three, or a periodic single point for a periodic structure.
 
 **Export vibe-qc input (.py)** writes a vibe-qc input script with those
-settings and the geometry as edited. The same generator is behind
+settings and the geometry as edited. Charge and multiplicity go on the
+`Molecule` or `PeriodicSystem`, where vibe-qc reads them; the runner call
+carries the method, basis and outputs. The same generator is behind
 `vibe-view export FILE -f py`, which additionally reuses the archive's own
 provenance so the regenerated script reproduces the original calculation,
 and carries the lattice so a periodic file exports a periodic system rather
@@ -181,7 +268,7 @@ input resolves to nothing rather than running.
 
 None of this writes to the archive you opened. To keep an edited structure:
 
-* **Export** it from the toolbar as XYZ, CIF, CML, JSON or a Python input,
+* **Export** it from the toolbar as XYZ, CIF, CML or a Python input,
   or as a mesh or scene; see [Figures without a display](headless.md#export)
   for the formats.
 * **Save a session** to keep views of it; see

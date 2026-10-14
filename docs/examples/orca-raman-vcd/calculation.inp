@@ -1,0 +1,11 @@
+! PBE def2-SVP TightSCF TightOpt AnFreq
+%pal nprocs 1 end
+%maxcore 1000
+%elprop Polar 1 end
+%freq doVCD true end
+* xyz 0 1
+O -0.725 0.000 0.000
+O  0.725 0.000 0.000
+H -1.020 0.920 0.000
+H  1.020 -0.300 0.870
+*

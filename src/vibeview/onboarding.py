@@ -57,10 +57,13 @@ _OPTIONAL_REQUIREMENTS: dict[str, tuple[_ModuleRequirement, ...]] = {
         _ModuleRequirement("IPython", "ipython"),
         _ModuleRequirement("ipywidgets", "ipywidgets"),
     ),
-    # The import package is `vq`; the distribution is `vq` too (vibe-queue is
-    # the repository name, not a package). Drives the queue panel in
+    # The import package is `vq`; the distribution is `vibe-queue` (renamed
+    # from `vq` in vibe-queue 0.26.10). Drives the queue panel in
     # `vibe-view open` and the `vibe-view from-vq` fetch path.
-    "queue": (_ModuleRequirement("vq", "vq"),),
+    "queue": (_ModuleRequirement("vq", "vibe-queue"),),
+    # vibe-sketch, the 2D sketcher behind the Build molecule dialog's
+    # Sketch button (#77). Import package and distribution are `vibesketch`.
+    "sketch": (_ModuleRequirement("vibesketch", "vibesketch"),),
 }
 
 _CAPABILITY_EXTRAS = {
@@ -72,6 +75,7 @@ _CAPABILITY_EXTRAS = {
     "smiles": "smiles",
     "jupyter": "jupyter",
     "queue": "queue",
+    "sketch": "sketch",
 }
 
 # Extras whose requirement cannot be resolved from a package index yet, so the
@@ -82,6 +86,11 @@ _CAPABILITY_NOTES = {
         "vq is not published on a package index; install it from a "
         "vibe-queue checkout first (pip install <path-to-vibe-queue>), "
         "after which this extra resolves against it. vq needs Python 3.12+"
+    ),
+    "sketch": (
+        "vibesketch is not published on a package index; install it from a "
+        "vibe-sketch checkout first (pip install <path-to-vibe-sketch>), "
+        "after which this extra resolves against it. vibesketch needs Python 3.12+"
     ),
 }
 
@@ -233,15 +242,6 @@ def copy_examples(destination: Path, *, force: bool = False) -> list[Path]:
     return written
 
 
-def _desktop_source_path() -> Path:
-    from vibeview.install_hints import source_project_dir
-
-    project = source_project_dir()
-    if project is not None:
-        return project / "electron"
-    return Path(__file__).resolve().parent.parent.parent / "electron"
-
-
 def doctor_report() -> dict[str, Any]:
     """Collect JSON-serializable installation diagnostics.
 
@@ -259,7 +259,7 @@ def doctor_report() -> dict[str, Any]:
     core_available = python_supported and all(row["available"] for row in core_packages)
     core_available = core_available and all(resources_report.values())
 
-    from vibeview.install_hints import install_hint
+    from vibeview.install_hints import electron_dir, install_hint
 
     capabilities: dict[str, dict[str, Any]] = {
         "core": {
@@ -282,7 +282,7 @@ def doctor_report() -> dict[str, Any]:
             "note": _CAPABILITY_NOTES.get(name),
         }
 
-    electron_source = _desktop_source_path().is_dir()
+    electron_source = electron_dir().is_dir()
     desktop_missing: list[str] = []
     if not electron_source:
         desktop_missing.append("source-checkout electron directory")

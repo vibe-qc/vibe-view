@@ -50,24 +50,30 @@ def _atom_properties(reader: QVFReader, section: Section) -> tuple[list[str], li
     except Exception:  # noqa: BLE001 — symbols are a convenience, not required
         symbols = None
 
-    mulliken = data.mulliken_charges
-    loewdin = data.loewdin_charges
-    hirshfeld = data.hirshfeld_charges
+    properties = [
+        ("mulliken", data.mulliken_charges),
+        ("loewdin", data.loewdin_charges),
+        ("hirshfeld", data.hirshfeld_charges),
+    ]
+    if data.iao_charges is not None:
+        properties.append(("iao", data.iao_charges))
+    if data.spin_populations is not None:
+        properties.append(("spin_population", data.spin_populations))
     n = max(
-        len(mulliken) if mulliken is not None else 0,
-        len(loewdin) if loewdin is not None else 0,
-        len(hirshfeld) if hirshfeld is not None else 0,
+        (len(values) for _name, values in properties if values is not None),
+        default=0,
     )
     rows = []
     for i in range(n):
         rows.append([
             i + 1,
             symbols[i] if symbols and i < len(symbols) else "",
-            None if mulliken is None else round(float(mulliken[i]), 4),
-            None if loewdin is None else round(float(loewdin[i]), 4),
-            None if hirshfeld is None else round(float(hirshfeld[i]), 4),
+            *[
+                None if values is None else round(float(values[i]), 4)
+                for _name, values in properties
+            ],
         ])
-    return ["atom", "element", "mulliken", "loewdin", "hirshfeld"], rows
+    return ["atom", "element", *[name for name, _values in properties]], rows
 
 
 def _mo_table(reader: QVFReader, section: Section) -> tuple[list[str], list[list[Any]]]:
