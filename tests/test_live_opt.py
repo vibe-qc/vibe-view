@@ -638,6 +638,43 @@ def _install_recording_live_opt(monkeypatch):
     return RecordingService, created
 
 
+def test_fire_picker_and_displacement_invalidate_previous_callbacks(water_qvf, monkeypatch):
+    from vibeview.app import create_app
+    from vibeview.qvf import QVFReader
+
+    Service, plotters = _install_recording_live_opt(monkeypatch)
+    with QVFReader(water_qvf) as reader:
+        try:
+            server = create_app(reader)
+            state, ctrl = server.state, server.controller
+            state.edit_mode = True
+            state.live_opt_available = True
+            ctrl.toggle_live_opt(True)
+            service = Service.instances[-1]
+            old_callbacks = service.callbacks[-1]
+            assert service.scheduled[-1]["optimizer"] == "lbfgs"
+            ctrl.set_live_opt_optimizer("fire")
+            assert service.scheduled[-1]["optimizer"] == "fire"
+            assert service.scheduled[-1]["max_steps"] == 200
+            fire_callbacks = service.callbacks[-1]
+            ctrl.edit_displace()
+            perturbed = np.array([a.position for a in reader.read_structure().atoms])
+            for callbacks in (old_callbacks, fire_callbacks):
+                callbacks["on_step"]({
+                    "step": 1, "energy": 0, "gmax": 0,
+                    "positions": (perturbed + 1).tolist(),
+                })
+                callbacks["on_done"](True, 1)
+            np.testing.assert_array_equal(
+                [a.position for a in reader.read_structure().atoms], perturbed
+            )
+            assert not state.live_opt_enabled
+            assert len(state.edit_history) == 1
+        finally:
+            for plotter in plotters:
+                plotter.close()
+
+
 def test_reader_switch_reschedule_rejects_every_late_prior_run_callback(
     showcase_qvf,
     monkeypatch,

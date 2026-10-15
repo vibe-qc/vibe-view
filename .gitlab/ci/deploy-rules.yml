@@ -1,0 +1,11 @@
+# Loaded only when the external deployment job is configured. Keep the
+# deployment script/environment there; override only this product's rules.
+# Only release refs may publish; web keeps an optional manual publish there.
+docs-deploy:
+  rules:
+    - if: '$CI_COMMIT_BRANCH != "release"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_BRANCH == "release"'

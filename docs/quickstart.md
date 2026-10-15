@@ -1,6 +1,16 @@
 # Quickstart
 
-Five minutes, no calculation of your own, no vibe-qc.
+Open a molecule, inspect what is in its archive, and save a result. This
+walkthrough uses a bundled water geometry, so you do not need a calculation
+of your own or a vibe-qc installation.
+
+**Outcome:** `vibe-view-demo.qvf`, an interactive view, a terminal view, and
+optional exports. The demo contains geometry only: it has no calculated
+energy, electron density, orbitals or spectrum.
+
+Already have ORCA results? Follow [Using vibe-view with ORCA](orca.md) for a
+complete calculation workflow, from the original files to orbital and spectrum
+inspection and a portable QVF archive.
 
 ## 1. Clone and install
 
@@ -54,7 +64,7 @@ environment. `demo` is the one that works on a bare viewer install.
 ## 4. Look at it
 
 ```sh
-vibe-view demo --open        # write it and launch the browser in one step
+vibe-view open vibe-view-demo.qvf     # open the file created in step 3
 ```
 
 
@@ -64,6 +74,12 @@ vibe-view demo --open        # write it and launch the browser in one step
 
 The built-in demo after opening Structure and choosing the light background.
 ```
+
+You should see one oxygen and two hydrogens. Drag to rotate, use the wheel
+to zoom, and press **r** to reset the camera. The viewer runs until you press
+**Ctrl+C** in its terminal; closing the browser tab alone does not stop it.
+Use another terminal for the inspection commands below, or stop the viewer
+first.
 
 Or pick the surface that suits where you are:
 
@@ -91,8 +107,12 @@ The same water structure rendered by `vibe-view show`, directly from its termina
 vibe-view info vibe-view-demo.qvf              # metadata and section sizes
 vibe-view info vibe-view-demo.qvf --json       # ... for a script
 vibe-view validate vibe-view-demo.qvf          # SHA-256 integrity check of every section
-vibe-view table vibe-view-demo.qvf             # dump tabular sections
+vibe-view table vibe-view-demo.qvf             # list available scientific tables
 ```
+
+`info` should list one `structure` section. `validate` should succeed.
+`table` reports no tabulatable sections: the geometry demo has no vibration,
+charge or orbital table. That is expected, not an incomplete installation.
 
 ## Already have data?
 
@@ -105,7 +125,7 @@ Pick the shortest route:
 | Use a native window from the source checkout | `vibe-view desktop INPUT` |
 | See which loose formats this installation supports | `vibe-view formats` |
 | Convert a loose file into a persistent QVF | `vibe-view import INPUT` |
-| Render a figure with no display at all | `vibe-view capture INPUT -o figure.png` |
+| Render an archive with no display | `vibe-view capture FILE.qvf -o figure.png` |
 | Compare two calculations | `vibe-view diff a.qvf b.qvf` or `vibe-view compare a.qvf b.qvf` |
 
 `vibe-view open` accepts loose structure files directly — you do not have to
@@ -113,13 +133,15 @@ convert first. Use `import` when you want a persistent QVF to keep.
 
 ## A figure, headlessly
 
-No display server needed; this is the core install, and it is what a CI job or
-a batch pipeline would run.
+PNG capture needs an offscreen OpenGL context. Check that the host supports
+it before rendering. If it fails, the terminal view above still works; see
+[headless setup](headless.md#setting-up-a-headless-host).
 
 ```sh
+vibe-view capture-selftest
 vibe-view capture vibe-view-demo.qvf -o structure.png
 vibe-view batch *.qvf --volumes -o gallery/
-vibe-view export vibe-view-demo.qvf -o molecule.html      # standalone 3-D page
+vibe-view export vibe-view-demo.qvf -f html -o molecule.html      # standalone 3-D page
 ```
 
 ## From Python
@@ -128,7 +150,8 @@ vibe-view export vibe-view-demo.qvf -o molecule.html      # standalone 3-D page
 from vibeview import info, validate, capture_structure, render_terminal
 
 data = info("vibe-view-demo.qvf")
-print(data["scf_energy_eh"])
+print(data["sections"])              # the structure section
+print(validate("vibe-view-demo.qvf")["valid"])
 
 capture_structure("vibe-view-demo.qvf", "structure.png")
 
@@ -141,6 +164,8 @@ The full surface is in the [Python SDK reference](python_api.md).
 
 ## Where to go next
 
+* [From input to a shareable result](workflows.md) — a complete, reproducible
+  import, inspection and export workflow.
 * [A tour of the viewer](walkthrough.md) — panel by panel, with screenshots.
 * [What vibe-view can show you](capabilities.md) — every section kind and the
   surface that renders it.

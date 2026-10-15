@@ -3,11 +3,12 @@
 Lazy extraction: the grid descriptor is read eagerly, but the .dat
 blob is read from the zip only when the user activates the section
 in the UI. Supports adjustable isovalue, colormap, opacity, and
-component selection for orbital sections.
+a stored section's ``component`` label (see :func:`stored_volume_field`).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -22,9 +23,51 @@ if TYPE_CHECKING:
 # QVF v1 contract (design § 1.3a): grid origin + voxel_vectors are in
 # bohr; structure atoms + lattice_vectors are in Å. PyVista renders
 # everything in one world-coordinate system, so we convert grid
-# geometry to Å at the renderer boundary. CODATA 2018; must match
-# vibeqc.output.formats.qvf._BOHR_TO_ANGSTROM.
-_BOHR_TO_ANGSTROM = 0.529177210903
+# geometry to Å at the renderer boundary using the shared CODATA 2018 factor.
+
+
+#: Names a field component can be selected by, shared with the wavefunction
+#: renderer's picker. ``abs`` is the hint spelling some producers write for
+#: ``magnitude``.
+COMPONENTS = ("real", "imag", "magnitude", "density")
+_COMPONENT_ALIASES = {"abs": "magnitude"}
+
+
+def apply_component(data: np.ndarray, component: str) -> np.ndarray:
+    """``data`` reduced to one of :data:`COMPONENTS`; an unknown name is a no-op."""
+    name = _COMPONENT_ALIASES.get(component, component)
+    if name == "real":
+        return data.real if np.iscomplexobj(data) else data
+    if name == "imag":
+        return data.imag if np.iscomplexobj(data) else np.zeros_like(data)
+    if name == "magnitude":
+        return np.abs(data)
+    if name == "density":
+        return np.abs(data) ** 2
+    return data
+
+
+def stored_volume_field(data: np.ndarray, component: str | None) -> np.ndarray:
+    """The field a stored ``volume.*`` array holds, ready to contour.
+
+    A section's ``component`` is a **label only**: QVF §4.1 calls it a hint,
+    and §4.2 allows only real binary dtypes. The producer writes the array
+    already reduced -- vibe-qc ``qvf_mo_data`` stores |ψ| for ``abs`` and ψ²
+    for ``density`` -- so a real array is returned unchanged whatever its
+    label. Reducing it again contoured ψ⁴ for ``density`` and nothing for
+    ``imag`` (#49, maintainer decision 2026-09-26). Every path that renders
+    a stored section -- browser, terminal and captures -- reads through here.
+
+    A complex array is not valid QVF v1. Should one arrive anyway, it is
+    reduced by the label (:func:`apply_component`), or to its real part when
+    the label is missing or unknown, so it can still be contoured. Choosing a
+    component is otherwise a viewer action on orbitals the viewer computes
+    itself from a ``wavefunction.gto`` section.
+    """
+    if not np.iscomplexobj(data):
+        return data
+    name = _COMPONENT_ALIASES.get(component or "", component or "")
+    return apply_component(data, name if name in COMPONENTS else "real")
 
 
 def _circular_centroid_index(weight_1d: np.ndarray) -> tuple[float | None, float]:
@@ -34,9 +77,13 @@ def _circular_centroid_index(weight_1d: np.ndarray) -> tuple[float | None, float
 
     A periodic axis has no "ends", so a plain weighted mean is wrong for a
     feature straddling index 0/n. Treat index ``k`` as an angle
-    ``2πk/n`` and take the circular mean. ``R`` measures how peaked the
-    profile is: ``R≈1`` for a sharp localized blob, ``R≈0`` for a
-    delocalized (uniform) field where "centering" is meaningless.
+    ``2πk/n`` and take the circular mean; ``R`` is the mean resultant
+    length, which measures how peaked the profile is: ``R≈1`` for a sharp
+    localized blob, ``R≈0`` for a delocalized (uniform) field where
+    "centering" is meaningless. Both are the standard estimators of
+    directional statistics: Mardia & Jupp, *Directional Statistics*
+    (Wiley, 2000), § 2.2; Fisher, *Statistical Analysis of Circular Data*
+    (Cambridge, 1993), § 2.3.
     """
     n = len(weight_1d)
     total = float(weight_1d.sum())
@@ -52,8 +99,8 @@ def _circular_centroid_index(weight_1d: np.ndarray) -> tuple[float | None, float
 
 def wrap_grid_to_center(
     data: np.ndarray,
-    grid: "GridData",
-    pbc,
+    grid: GridData,
+    pbc: Sequence[bool],
     lattice_vectors: np.ndarray,
     *,
     min_resultant: float = 0.05,
@@ -75,10 +122,30 @@ def wrap_grid_to_center(
     """
     if lattice_vectors is None:
         return data, False
-    vox_ang = grid.voxel_vectors * _BOHR_TO_ANGSTROM
-    out = data
+    shifts = _grid_center_shifts(
+        data,
+        grid,
+        pbc,
+        lattice_vectors,
+        voxel_scale=grid.to_angstrom,
+        min_resultant=min_resultant,
+    )
+    return (np.roll(data, shifts, axis=(0, 1, 2)), True) if any(shifts) else (data, False)
+
+
+def _grid_center_shifts(
+    data: np.ndarray,
+    grid: GridData,
+    pbc: Sequence[bool],
+    lattice_vectors: np.ndarray,
+    *,
+    voxel_scale: float,
+    min_resultant: float = 0.05,
+) -> tuple[int, int, int]:
+    """Index shifts chosen from the primary field, with cell lengths in Å."""
+    vox_ang = grid.voxel_vectors * voxel_scale
     absd = np.abs(data)
-    rolled = False
+    shifts = [0, 0, 0]
     for ax in range(3):
         if not bool(pbc[ax]):
             continue
@@ -93,10 +160,56 @@ def wrap_grid_to_center(
             continue  # delocalized — nothing to centre
         shift = int(round(n / 2.0 - centroid))
         if shift % n != 0:
-            out = np.roll(out, shift, axis=ax)
             absd = np.roll(absd, shift, axis=ax)
-            rolled = True
-    return out, rolled
+            shifts[ax] = shift
+    return shifts[0], shifts[1], shifts[2]
+
+
+def is_orthogonal_grid(grid: GridData, tolerance: float = 1e-10) -> bool:
+    """True when every voxel vector lies along its own axis."""
+    vectors = np.asarray(grid.voxel_vectors, dtype=float)
+    return all(
+        abs(float(vectors[i, j])) <= tolerance for i in range(3) for j in range(3) if i != j
+    )
+
+
+def orthogonal_image(
+    grid: GridData, point_arrays: Mapping[str, np.ndarray]
+) -> pv.ImageData | None:
+    """The grid as a ``pv.ImageData`` in ångström, or None when it is skewed.
+
+    One construction for the isosurface contour and the direct-volume payload
+    (``renderers.volume_render``), so both place a stored grid the same way.
+    ``pv.ImageData`` needs non-negative spacing: a voxel vector that points
+    against its axis (a flipped-axis cube) is a valid QVF grid, so the arrays
+    are flipped along that axis and the origin moves to the low corner, which
+    leaves the geometry unchanged. Each array must match ``grid.shape``; they
+    land as point data in Fortran order, as VTK indexes a grid.
+    """
+    if not is_orthogonal_grid(grid):
+        return None
+    scale = grid.to_angstrom
+    voxel_vecs = grid.voxel_vectors * scale
+    origin = grid.origin * scale
+    dims = tuple(int(n) for n in grid.shape)
+    spacing = [float(voxel_vecs[i, i]) for i in range(3)]
+    origin_xyz = [float(origin[i]) for i in range(3)]
+    flip_axes: list[int] = []
+    for i in range(3):
+        if spacing[i] < 0.0:
+            origin_xyz[i] += (dims[i] - 1) * spacing[i]
+            spacing[i] = -spacing[i]
+            flip_axes.append(i)
+    arrays = dict(point_arrays)
+    if flip_axes:
+        arrays = {name: np.flip(array, axis=tuple(flip_axes)) for name, array in arrays.items()}
+    # PyVista renamed UniformGrid → ImageData and dims → dimensions in 0.40;
+    # the project pins pyvista>=0.44. Dimensions match the data shape
+    # (point-centred values); pv.contour() reads point_data.
+    image = pv.ImageData(dimensions=dims, spacing=tuple(spacing), origin=tuple(origin_xyz))
+    for name, array in arrays.items():
+        image.point_data[name] = np.asarray(array).ravel(order="F")
+    return image
 
 
 def build_isosurface_mesh(
@@ -104,11 +217,11 @@ def build_isosurface_mesh(
     grid: GridData,
     isovalue: float,
     *,
-    grid_units: str = "bohr",
     replication: tuple[int, int, int] = (1, 1, 1),
     lattice_vectors: np.ndarray | None = None,
     wrap_to_center: bool = False,
-    pbc=None,
+    pbc: Sequence[bool] | None = None,
+    extra_point_arrays: Mapping[str, np.ndarray] | None = None,
 ) -> pv.PolyData | None:
     """Marching-cubes isosurface for a scalar field on a grid.
 
@@ -116,63 +229,44 @@ def build_isosurface_mesh(
     reaction-path volume animation (W1). Stored QVF volumes carry origin +
     voxel_vectors in **bohr**, while fields sampled on demand by
     :class:`~vibeview.renderers.wavefunction.WavefunctionRenderer` already
-    use angstroms. ``grid_units`` makes that boundary explicit so both land
-    in the same Å world frame as the atoms. Returns the contour PolyData, or
-    None if ``data`` is None.
+    use angstroms; ``grid.units`` says which, and both land in the same Å
+    world frame as the atoms. Returns the contour PolyData, or None if
+    ``data`` is None. ``extra_point_arrays`` carries scalar fields on
+    the same grid through contour interpolation, orientation and replication.
+    Each must match ``grid.shape``; ``values`` is reserved for the primary
+    field. Input arrays and the mapping are not modified.
     """
     if data is None:
         return None
 
-    # Minimum-image recentre (cyclic-cluster / periodic wrap): roll a
-    # face-straddling feature whole into the cell before contouring.
+    # Stored volumes need bohr -> Å; evaluated wavefunction fields have
+    # already crossed that boundary. Lattice and camera coordinates are Å.
+    scale = grid.to_angstrom
+    point_arrays = {"values": data}
+    for name, array in (extra_point_arrays or {}).items():
+        if name == "values":
+            raise ValueError("extra_point_arrays cannot replace the primary 'values' field")
+        if array.shape != tuple(grid.shape):
+            raise ValueError(f"extra point array {name!r} must have shape {grid.shape}")
+        point_arrays[name] = array
+
+    # Choose one periodic permutation from the primary field, then apply it
+    # to every array so sampled colours still refer to the same grid points.
     if wrap_to_center and pbc is not None and lattice_vectors is not None:
-        data, _ = wrap_grid_to_center(data, grid, pbc, lattice_vectors)
+        shifts = _grid_center_shifts(data, grid, pbc, lattice_vectors, voxel_scale=scale)
+        if any(shifts):
+            point_arrays = {
+                name: np.roll(array, shifts, axis=(0, 1, 2)) for name, array in point_arrays.items()
+            }
 
     nx, ny, nz = grid.shape
-
-    if grid_units not in {"bohr", "angstrom"}:
-        raise ValueError("grid_units must be 'bohr' or 'angstrom'")
-    # Stored volumes need bohr -> Å; evaluated wavefunction fields have
-    # already crossed that boundary. Structure, bond, lattice and camera
-    # coordinates are all Å. See the QVF design § 1.3a.
-    scale = _BOHR_TO_ANGSTROM if grid_units == "bohr" else 1.0
     voxel_vecs = grid.voxel_vectors * scale
     origin = grid.origin * scale
 
-    is_orthogonal = True
-    for i in range(3):
-        for j in range(3):
-            if i != j and abs(voxel_vecs[i, j]) > 1e-10:
-                is_orthogonal = False
-                break
-
-    if is_orthogonal:
-        # pv.ImageData requires non-negative spacing. A grid whose voxel
-        # vector points opposite its axis (negative diagonal — a flipped-axis
-        # cube) is a valid QVF grid; flip the data along that axis and move the
-        # origin to the low corner so the geometry is unchanged while the
-        # spacing is positive (otherwise pv.ImageData raises ValueError).
-        spacing = [float(voxel_vecs[i, i]) for i in range(3)]
-        origin_xyz = [float(origin[i]) for i in range(3)]
-        dims = (nx, ny, nz)
-        flip_axes: list[int] = []
-        for i in range(3):
-            if spacing[i] < 0.0:
-                origin_xyz[i] += (dims[i] - 1) * spacing[i]
-                spacing[i] = -spacing[i]
-                flip_axes.append(i)
-        oriented = np.flip(data, axis=tuple(flip_axes)) if flip_axes else data
-        # PyVista renamed UniformGrid → ImageData and dims →
-        # dimensions in 0.40. The project pins pyvista>=0.44, so we
-        # use the current names. Dimensions match the data shape
-        # (point-centred values); pv.contour() reads point_data.
-        mesh = pv.ImageData(
-            dimensions=dims,
-            spacing=tuple(spacing),
-            origin=tuple(origin_xyz),
-        )
-        mesh.point_data["values"] = oriented.ravel(order="F")
-        contour = mesh.contour(isosurfaces=[isovalue], scalars="values")
+    mesh: pv.ImageData | pv.StructuredGrid
+    image = orthogonal_image(grid, point_arrays)
+    if image is not None:
+        mesh = image
     else:
         ii, jj, kk = np.meshgrid(
             np.arange(nx, dtype=np.float64),
@@ -183,25 +277,22 @@ def build_isosurface_mesh(
         pts_x = origin[0] + ii * voxel_vecs[0, 0] + jj * voxel_vecs[1, 0] + kk * voxel_vecs[2, 0]
         pts_y = origin[1] + ii * voxel_vecs[0, 1] + jj * voxel_vecs[1, 1] + kk * voxel_vecs[2, 1]
         pts_z = origin[2] + ii * voxel_vecs[0, 2] + jj * voxel_vecs[1, 2] + kk * voxel_vecs[2, 2]
-        sgrid = pv.StructuredGrid(pts_x, pts_y, pts_z)
-        sgrid.point_data["values"] = data.ravel(order="F")
-        contour = sgrid.contour(isosurfaces=[isovalue], scalars="values")
+        mesh = pv.StructuredGrid(pts_x, pts_y, pts_z)
+        for name, array in point_arrays.items():
+            mesh.point_data[name] = array.ravel(order="F")
+    contour: pv.PolyData = mesh.contour(isosurfaces=[isovalue], scalars="values")
 
     # ── Periodic replication ────────────────────────────────────
     # Slab and polymer lattices can carry synthesized bookkeeping vectors on
     # non-periodic axes. Replicating a surface along one of those directions
     # detaches it from the atoms into vacuum, while structure rendering stays
     # in the physical dimensions. Apply the same PBC mask when it is known.
-    effective_replication = tuple(max(1, int(r)) for r in replication)
+    counts = [max(1, int(r)) for r in replication]
     if pbc is not None:
-        effective_replication = tuple(
-            count if bool(flag) else 1
-            for count, flag in zip(effective_replication, pbc, strict=True)
-        )
+        counts = [count if bool(flag) else 1 for count, flag in zip(counts, pbc, strict=True)]
+    effective_replication = (counts[0], counts[1], counts[2])
     if lattice_vectors is not None and any(r > 1 for r in effective_replication):
-        contour = _replicate_mesh(
-            contour, lattice_vectors, effective_replication
-        )
+        contour = _replicate_mesh(contour, lattice_vectors, effective_replication)
 
     return contour
 
@@ -228,7 +319,11 @@ class VolumeRenderer(BaseRenderer):
         The .dat blob can be tens of MB — this is why it's lazy.
         """
         if self._data is None:
-            self._data = self.reader.read_volume_data(self.section_id)
+            # The stored array as-is: ``component`` is a label, not an
+            # instruction (see stored_volume_field).
+            self._data = stored_volume_field(
+                self.reader.read_volume_data(self.section_id), self.section.component
+            )
             self._loaded = True
         return self._data
 
@@ -252,7 +347,7 @@ class VolumeRenderer(BaseRenderer):
         replication: tuple[int, int, int] = (1, 1, 1),
         lattice_vectors: np.ndarray | None = None,
         wrap_to_center: bool = False,
-        pbc=None,
+        pbc: Sequence[bool] | None = None,
     ) -> pv.PolyData | None:
         """Build an isosurface mesh from the volumetric data.
 
@@ -285,10 +380,6 @@ class VolumeRenderer(BaseRenderer):
         if data is None:
             return None
 
-        # Handle component selection for orbital sections
-        if self.kind == "volume.orbital" and self.component:
-            data = self._apply_component(data, self.component)
-
         return build_isosurface_mesh(
             data,
             grid,
@@ -301,17 +392,14 @@ class VolumeRenderer(BaseRenderer):
 
     @staticmethod
     def _apply_component(data: np.ndarray, component: str) -> np.ndarray:
-        """Transform complex orbital data based on component selection."""
-        if component == "real":
-            return data.real if np.iscomplexobj(data) else data
-        elif component == "imag":
-            return data.imag if np.iscomplexobj(data) else np.zeros_like(data)
-        elif component == "abs":
-            return np.abs(data)
-        elif component == "density":
-            return np.abs(data) ** 2
-        else:
-            return data
+        """Select a component of a (possibly complex) field by name.
+
+        The names are :data:`COMPONENTS`; a producer's ``abs`` hint is
+        accepted as ``magnitude``. An unknown name leaves the data alone.
+        Not for stored sections, whose ``component`` is a label only
+        (:func:`stored_volume_field`).
+        """
+        return apply_component(data, component)
 
 
 def _replicate_mesh(
@@ -345,120 +433,118 @@ def _replicate_mesh(
 
     if len(replicas) == 1:
         return replicas[0]
-    return replicas[0].merge(replicas[1:])
+    merged: pv.PolyData = replicas[0].merge(replicas[1:])
+    return merged
+
+
+class PeriodicGridAlignmentError(ValueError):
+    """The sampled field cannot tile exactly on its existing voxel grid."""
+
+
+def replicate_mesh_for_periodic(
+    mesh: pv.PolyData | None,
+    lattice_vectors: np.ndarray,
+    replication: tuple[int, int, int],
+) -> pv.PolyData | None:
+    """Copy a contoured surface by exact lattice translations, centred on zero.
+
+    Counts are additional cells on each side, matching the periodic grid
+    helper. Coordinates and lattice vectors are both in angstroms. This
+    preserves the original surface but does not join its boundary seams.
+    """
+    if mesh is None or mesh.n_points == 0:
+        return mesh
+    counts = tuple(max(0, count) for count in replication)
+    if not any(counts):
+        return mesh
+    total = (2 * counts[0] + 1, 2 * counts[1] + 1, 2 * counts[2] + 1)
+    copies = _replicate_mesh(mesh, lattice_vectors, total)
+    # _replicate_mesh may share its input in the no-op case; never alter it.
+    centred = copies.copy()
+    centred.points -= np.asarray(counts) @ lattice_vectors
+    return centred
 
 
 def replicate_volume_for_periodic(
     data: np.ndarray,
-    grid: "GridData",
+    grid: GridData,
     lattice_vectors: np.ndarray,
     replication: tuple[int, int, int] = (1, 1, 1),
-) -> tuple[np.ndarray, "GridData"]:
-    """Replicate a volume grid across unit cell translations.
+) -> tuple[np.ndarray, GridData]:
+    """Tile exact periodic samples without changing their world coordinates.
 
-    For periodic systems, orbital isosurfaces should repeat across
-    adjacent unit cells. This function tiles the scalar field so that
-    a single marching-cubes pass produces a seamless supercell isosurface
-    — in contrast to :func:`_replicate_mesh`, which duplicates the
-    already-contoured mesh and can leave visible seams at cell boundaries.
+    Grid coordinates are in bohr and lattice vectors in angstroms. Each
+    replication count adds that many cells on *both* sides of the original.
+    Active lattice vectors must translate by an integral number of samples
+    along their corresponding grid axis. Grids may be skewed or reversed.
+    Overlapping copies must agree exactly; gaps cannot be invented.
 
-    Parameters
-    ----------
-    data : np.ndarray
-        The scalar field data, shaped ``grid.shape``.
-    grid : GridData
-        The original grid descriptor (origin + voxel_vectors in **bohr**).
-    lattice_vectors : np.ndarray
-        [3, 3] lattice vectors in **angstroms**.
-    replication : (nx, ny, nz)
-        Number of additional cells in each direction, so the total
-        supercell is (2*nx+1) × (2*ny+1) × (2*nz+1) cells.
-
-    Returns
-    -------
-    tuple[np.ndarray, GridData]
-        ``(replicated_data, new_grid)``. The new grid has its origin
-        shifted to account for the added cells on the negative side.
+    Raises :class:`PeriodicGridAlignmentError` if exact tiling is impossible.
+    Callers can contour the original field and use
+    :func:`replicate_mesh_for_periodic` instead, retaining physical lattice
+    translations without claiming continuous field samples across seams.
+    Neither the input scalar array nor the grid descriptor is modified.
     """
-    nx, ny, nz = replication
-    nx = max(0, nx)
-    ny = max(0, ny)
-    nz = max(0, nz)
-
-    if nx == 0 and ny == 0 and nz == 0:
+    counts = np.maximum(replication, 0)
+    if not np.any(counts):
         return data, grid
 
-    # Convert lattice vectors from Å to bohr — the grid works in bohr.
-    lat_bohr = np.asarray(lattice_vectors, dtype=float) / _BOHR_TO_ANGSTROM
+    lat_grid = np.asarray(lattice_vectors, dtype=float) / grid.to_angstrom
     voxel = np.asarray(grid.voxel_vectors, dtype=float)
     shape = np.asarray(grid.shape, dtype=int)
     origin = np.asarray(grid.origin, dtype=float)
+    try:
+        translations = lat_grid @ np.linalg.inv(voxel)
+    except np.linalg.LinAlgError as exc:
+        raise PeriodicGridAlignmentError("singular voxel grid") from exc
+    steps = np.zeros(3, dtype=int)
+    for axis in range(3):
+        if counts[axis] == 0:
+            continue
+        row = translations[axis]
+        if not np.all(np.isfinite(row)):
+            raise PeriodicGridAlignmentError("non-finite lattice translation")
+        rounded = round(float(row[axis]))
+        expected = np.zeros(3)
+        expected[axis] = rounded
+        # The tolerance only absorbs coordinate conversion roundoff, in
+        # sample-index units. It must not round fractional physical periods.
+        if not np.allclose(row, expected, atol=1e-8, rtol=0):
+            raise PeriodicGridAlignmentError("lattice is not aligned to integral voxel steps")
+        step = abs(rounded)
+        steps[axis] = step
+        if step == 0:
+            counts[axis] = 0
+        elif step > shape[axis]:
+            raise PeriodicGridAlignmentError("lattice translation leaves unsampled gaps")
+        elif step < shape[axis]:
+            lower = [slice(None)] * 3
+            upper = [slice(None)] * 3
+            lower[axis] = slice(None, -step)
+            upper[axis] = slice(step, None)
+            if not np.array_equal(data[tuple(lower)], data[tuple(upper)]):
+                raise PeriodicGridAlignmentError("overlapping periodic samples disagree")
 
-    # Estimate how many grid points span one unit cell:
-    #   cell_extent = lattice_vectors_bohr @ inv(voxel_vectors)
-    # gives the offset in grid-index space for a single cell translation.
-    # Take the diagonal for orthogonal / near-orthogonal grids; the
-    # full matrix handles non-orthogonal cells when needed.
-    cell_extent = np.abs(lat_bohr @ np.linalg.inv(voxel))
-    cell_shape_diag = np.ceil(np.diag(cell_extent)).astype(int)
-    cx, cy, cz = int(cell_shape_diag[0]), int(cell_shape_diag[1]), int(cell_shape_diag[2])
-
-    # New grid dimensions: original plus extra cells on each side.
-    new_shape = (
-        shape[0] + 2 * nx * cx,
-        shape[1] + 2 * ny * cy,
-        shape[2] + 2 * nz * cz,
-    )
-    new_data = np.zeros(new_shape, dtype=data.dtype)
-
-    # Place the original data in the centre of the supercell.
-    x0 = nx * cx
-    y0 = ny * cy
-    z0 = nz * cz
-    new_data[x0 : x0 + shape[0], y0 : y0 + shape[1], z0 : z0 + shape[2]] = data
-
-    # Tile from centre outward in all directions.
-    # For each cell index (cix, ciy, ciz), copy the entire original data
-    # into the supercell at the translated position, clipping to bounds.
-    for cix in range(-nx, nx + 1):
-        for ciy in range(-ny, ny + 1):
-            for ciz in range(-nz, nz + 1):
-                dst_x = x0 + cix * cx
-                dst_y = y0 + ciy * cy
-                dst_z = z0 + ciz * cz
-
-                # Compute overlap of the translated cell with the new grid.
-                dx_start = max(0, dst_x)
-                dx_end = min(new_shape[0], dst_x + shape[0])
-                dy_start = max(0, dst_y)
-                dy_end = min(new_shape[1], dst_y + shape[1])
-                dz_start = max(0, dst_z)
-                dz_end = min(new_shape[2], dst_z + shape[2])
-
-                if dx_end <= dx_start or dy_end <= dy_start or dz_end <= dz_start:
-                    continue
-
-                # Corresponding source region in the original data.
-                sx_start = dx_start - dst_x
-                sx_end = dx_end - dst_x
-                sy_start = dy_start - dst_y
-                sy_end = dy_end - dst_y
-                sz_start = dz_start - dst_z
-                sz_end = dz_end - dst_z
-
-                new_data[dx_start:dx_end, dy_start:dy_end, dz_start:dz_end] = data[
-                    sx_start:sx_end, sy_start:sy_end, sz_start:sz_end
-                ]
-
-    # Shift origin to account for the cells added on the negative side.
-    new_origin = origin - np.array([nx * cx, ny * cy, nz * cz]) * np.diag(voxel)
+    if not np.any(counts):
+        return data, grid
+    offsets = counts * steps
+    new_shape = shape + 2 * offsets
+    # Validated steps cover the complete output; consistent overlaps can be
+    # copied in any order without overwriting an original sample's value.
+    new_data = np.empty(tuple(new_shape), dtype=data.dtype)
+    for ix in range(2 * counts[0] + 1):
+        for iy in range(2 * counts[1] + 1):
+            for iz in range(2 * counts[2] + 1):
+                start = np.array([ix, iy, iz]) * steps
+                region = tuple(slice(int(a), int(a + n)) for a, n in zip(start, shape, strict=True))
+                new_data[region] = data
 
     from vibeview.qvf import GridData as _GridData
 
     new_grid = _GridData(
-        origin=new_origin,
+        origin=origin - offsets @ voxel,
         voxel_vectors=voxel.copy(),
-        shape=tuple(int(s) for s in new_shape),
+        shape=(int(new_shape[0]), int(new_shape[1]), int(new_shape[2])),
+        units=grid.units,
     )
-
     return new_data, new_grid

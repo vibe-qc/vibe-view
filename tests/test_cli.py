@@ -14,7 +14,8 @@ import pytest
 from click.testing import CliRunner
 
 from tests._qvf_corpus import qvf_corpus_dir, requires_qvf_corpus
-from vibeview.cli import _port_in_use, main
+from vibeview.cli import main
+from vibeview.netutil import port_open
 
 _CORPUS = qvf_corpus_dir()
 _SLAB_2D_QVF = (
@@ -189,17 +190,17 @@ class TestPortCollision:
     """`vibe-view open` on an occupied port must fail loudly, not race the
     announce thread into opening the browser against a stale server."""
 
-    def test_port_in_use_true_when_listening(self) -> None:
+    def test_port_open_true_when_listening(self) -> None:
         s, port = _listening_socket()
         try:
-            assert _port_in_use("127.0.0.1", port) is True
+            assert port_open("127.0.0.1", port) is True
         finally:
             s.close()
 
-    def test_port_in_use_false_when_free(self) -> None:
+    def test_port_open_false_when_free(self) -> None:
         s, port = _listening_socket()
         s.close()  # release it — now nothing is listening
-        assert _port_in_use("127.0.0.1", port) is False
+        assert port_open("127.0.0.1", port) is False
 
     def test_open_aborts_on_busy_port(self) -> None:
         s, port = _listening_socket()
@@ -582,3 +583,143 @@ class TestCommandRegistry:
         funcs = re.findall(r"^def (\w+)\(", source, flags=re.MULTILINE)
         dupes = sorted({f for f in funcs if funcs.count(f) > 1})
         assert not dupes, f"module-level functions defined more than once: {dupes}"
+
+
+class TestCLIIntegration:
+    def test_cli_help_runs(self):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert result.exit_code == 0
+        assert "open" in result.output
+        assert "compare" in result.output
+
+    def test_cli_version(self):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--version"])
+        assert result.exit_code == 0
+
+    def test_cli_open_requires_file(self):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        # "open" requires at least one file argument
+        result = runner.invoke(main, ["open", "/nonexistent.qvf"])
+        # Should error on missing file
+        assert result.exit_code != 0
+
+    def test_cli_open_help(self):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["open", "--help"])
+        assert result.exit_code == 0
+        assert "--port" in result.output
+        assert "--no-browser" in result.output
+
+
+class TestCLIEdgeCases:
+    def test_export_xyz_on_sample(self, sample_qvf, tmp_path):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        out = tmp_path / "out.xyz"
+        result = runner.invoke(main, ["export", str(sample_qvf), "-f", "xyz", "-o", str(out)])
+        assert result.exit_code == 0
+        assert out.exists()
+
+    def test_export_svg_on_sample(self, sample_qvf, tmp_path):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        out = tmp_path / "out.svg"
+        result = runner.invoke(main, ["export", str(sample_qvf), "-f", "svg", "-o", str(out)])
+        assert result.exit_code == 0
+        assert out.exists()
+
+    def test_export_json_on_sample(self, sample_qvf, tmp_path):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        out = tmp_path / "out.json"
+        result = runner.invoke(main, ["export", str(sample_qvf), "-f", "json", "-o", str(out)])
+        assert result.exit_code == 0
+        assert out.exists()
+        data = json.loads(out.read_text())
+        assert "sections" in data
+
+    def test_info_json_on_sample(self, sample_qvf):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["info", str(sample_qvf), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "program" in data
+
+    def test_diff_json_on_sample(self, sample_qvf):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["diff", str(sample_qvf), str(sample_qvf), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "file_a" in data
+
+    def test_info_on_sample(self, sample_qvf):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["info", str(sample_qvf)])
+        assert result.exit_code == 0
+
+    def test_table_on_sample(self, sample_qvf):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["table", str(sample_qvf)])
+        # May exit 0 if no tabulatable sections or lists them
+        assert result.exit_code in (0, 1)
+
+    def test_validate_on_sample(self, sample_qvf):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(sample_qvf)])
+        assert result.exit_code in (0, 1)
+
+    def test_diff_on_sample(self, sample_qvf):
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["diff", str(sample_qvf), str(sample_qvf)])
+        assert result.exit_code == 0

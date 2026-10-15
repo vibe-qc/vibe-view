@@ -129,3 +129,37 @@ def test_value_errors_on_degenerate_inputs() -> None:
     # Symbol-length mismatch in align_by_species.
     with pytest.raises(ValueError):
         align_by_species(["H", "H"], good, ["H"] * 4, good)
+
+
+class TestAlignModule:
+    def test_rmsd_identical(self):
+        from vibeview.align import rmsd
+
+        pos = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+        assert rmsd(pos, pos) == pytest.approx(0.0)
+
+    def test_rmsd_shifted(self):
+        from vibeview.align import rmsd
+
+        # This rmsd() is index-wise, no superposition — shifted != identical
+        pos_a = np.array([[0, 0, 0], [1, 0, 0]], dtype=float)
+        pos_b = np.array([[1, 0, 0], [2, 0, 0]], dtype=float)
+        r = rmsd(pos_a, pos_b)
+        # Each atom pair offset by (1,0,0) -> per-pair squared dist = 1.0
+        assert r == pytest.approx(1.0)
+
+    def test_rmsd_different(self):
+        from vibeview.align import rmsd
+
+        pos_a = np.array([[0, 0, 0], [1, 0, 0]], dtype=float)
+        pos_b = np.array([[0, 0, 0], [0, 1, 0]], dtype=float)
+        r = rmsd(pos_a, pos_b)
+        assert r > 0.0
+
+    def test_rmsd_shape_mismatch_raises(self):
+        from vibeview.align import rmsd
+
+        pos_a = np.array([[0, 0, 0], [1, 0, 0]], dtype=float)
+        pos_b = np.array([[0, 0, 0]], dtype=float)
+        with pytest.raises(ValueError):
+            rmsd(pos_a, pos_b)

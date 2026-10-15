@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeview"
-version = "2.17.1"
+version = "2.20.14"
 description = "GPU-accelerated interactive 3D viewer for quantum-chemistry structures and results"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Visualization",
@@ -83,29 +84,38 @@ tui = ["textual>=1.0"]
 # that most users opening a common structure or QVF file never need.
 ase = ["ase>=3.22"]
 # Official reader for TREXIO HDF5 files and text-backend directories.
-trexio = ["trexio>=2.5"]
+# trexio publishes no wheel for Python 3.14 and its sdist needs pkg-config and
+# the HDF5 headers, so the extra installs nothing there until it does; the
+# tests that need it skip (tests/test_trexio_import.py).
+trexio = ["trexio>=2.5; python_version < '3.14'"]
 # Build a 3D structure from a SMILES string (`Build from SMILES`). RDKit is
 # BSD-3-Clause and optional: it is a large wheel that routine file viewing does
 # not need.
 smiles = ["rdkit>=2023.3"]
+# POV-Ray and Blender are external programs, not Python packages: the
+# exporters write a .pov scene or a Blender script with the core install.
+# Like `capture`, these two install nothing and exist so an install profile
+# can name the capability; docs/installation.md lists them as such.
 povray = []
 blender = []
 jupyter = ["ipython", "ipywidgets"]
+# The About dialog adds CPU and RAM use when psutil is importable
+# (vibeview.app); without it the line is simply left out.
+sysinfo = ["psutil>=5.9"]
 # Queue integration: the `vq` panel in `vibe-view open` and `vibe-view fetch`
 # import vq.{listing,fetch,status,submit,overview} lazily. Optional because
 # viewing a .qvf file needs nothing from the queue -- but the imports were
 # previously undeclared, which only worked while both packages shared one
 # checkout-local venv.
 #
-# The requirement must name the DISTRIBUTION, which is `vq` (vibe-queue's own
-# pyproject.toml says `name = "vq"`, currently 0.25.7). It read `vibe-queue`
-# until 2026-09-08, which is the monorepo *directory* name and not a package
-# that exists anywhere -- so `pip install vibeview[queue]` failed to resolve
-# even with the real vibe-queue checkout already installed. If vibe-queue
-# ever publishes under a different name, rename there first and follow here;
-# the two have to agree.
+# The requirement must name the DISTRIBUTION, which is `vibe-queue` since
+# vibe-queue 0.26.10 (through 0.26.9 it was `vq`; the import package and the
+# `vq` command are still `vq`). A current vibe-queue install does not satisfy
+# a `vq` requirement, so the extra follows the rename. If vibe-queue ever
+# publishes under a different name, rename there first and follow here; the
+# two have to agree.
 #
-# NOT included in `all`: vq is not published on any index, so a
+# NOT included in `all`: vibe-queue is not published on any index, so a
 # `pip install vibeview[all]` that pulled it would fail to resolve. Install
 # it from a vibe-queue checkout, then `pip install vibeview[queue]` is
 # satisfied by what is already there. Add it to `all` once published.
@@ -114,13 +124,29 @@ jupyter = ["ipython", "ipywidgets"]
 # this extra cannot resolve on 3.11 at all. That is vq's constraint to relax,
 # not ours to work around -- but it is why the resolver error on 3.11 differs
 # from the one on 3.12.
-queue = ["vq>=0.25"]
+queue = ["vibe-queue>=0.26.10"]
+# Sketch a molecule in vibe-sketch, the family's 2D structure sketcher (#77).
+# The viewer starts it as a child process and opens what it sends back
+# (vibeview.sketch documents the hand-off). The distribution and import
+# package are both `vibesketch`. Like `queue`, NOT in `all`: vibe-sketch is
+# published on no index, so install it from a vibe-sketch checkout first; it
+# also needs Python >= 3.12, above vibe-view's own floor.
+sketch = ["vibesketch>=0.1"]
 # Tests drive the interactive app (create_app / trame), so pull the viewer.
 # scipy: the live-opt worker's L-BFGS-B loop (normally supplied by the
 # vibe-qc install, which is absent on the vibe-view CI gate).
-test = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[jupyter]", "pytest>=8", "scipy>=1.11"]
-all = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[smiles]", "ipython", "ipywidgets", "psutil"]
-dev = ["ruff", "mypy"]
+# pyyaml: tests/test_ci_rules.py parses .gitlab-ci.yml. trame happens to
+# require it too, but a guard that works by accident is a guard that goes
+# inert the day that changes -- so it is declared here, where it is used.
+# smiles: without RDKit in the gate, the SMILES converter's present-RDKit
+# half ran in no lane at all (#56).
+test = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[smiles]", "vibeview[jupyter]", "pytest>=8", "scipy>=1.11", "pyyaml>=6"]
+# Every runtime extra with requirements, by name only, so each capability
+# is declared once (tests/test_extras.py). Not `queue`: see above.
+all = ["vibeview[viewer]", "vibeview[tui]", "vibeview[ase]", "vibeview[trexio]", "vibeview[smiles]", "vibeview[jupyter]", "vibeview[sysinfo]"]
+# Static-analysis behavior is part of the gate; upgrade tools explicitly.
+# tests/test_extras.py keeps CI consuming these exact versions through [dev].
+dev = ["ruff==0.16.8", "mypy==2.3.1"]
 # Release-artifact tooling. scripts/build_release_artifacts.py builds the wheel
 # and sdist twice, normalises the sdist metadata setuptools leaves host-
 # dependent, verifies byte-for-byte reproducibility and runs `twine check`.
@@ -130,6 +156,25 @@ dev = ["ruff", "mypy"]
 # The distribution names are kept in step with the script's own
 # RELEASE_BUILD_TOOLS by tests/test_release_artifacts.py.
 release = ["build>=1.2,<2", "twine>=6,<7"]
+# Documentation site: scripts/build_site.sh and docs/Makefile render docs/ with
+# Sphinx, and neither says how sphinx-build reached PATH because until now the
+# only answer was ".gitlab-ci.yml, retyped by hand".
+#
+# `pip install -e '.[docs]'` is the whole setup. The editable install is what
+# makes autodoc import the real package, so numpy/click/pydantic/jsonschema
+# come from [project.dependencies] rather than from a second set of floors
+# that would silently keep the old values when a core pin moves. The pins here
+# are the toolchain's own, and tests/test_docs_toolchain.py keeps them in step
+# with docs/conf.py's extensions and with the CI job that installs them.
+docs = [
+    "vibeview",
+    "sphinx>=7.4",
+    "myst-parser>=4.0",
+    "linkify-it-py>=2",
+    "furo>=2024.5",
+    "sphinx-copybutton>=0.5",
+    "sphinx-design>=0.6",
+]
 
 [project.urls]
 # the archived monorepo is the pre-split monorepo, frozen as an archive since 2026-09
@@ -154,12 +199,203 @@ vibeview = [
 where = ["src"]
 
 [tool.mypy]
-python_version = "3.11"
+# NOT 3.11, this project's support floor: numpy ships `type` statements in its
+# bundled stubs, mypy rejects that syntax below 3.12, and the resulting stub
+# syntax error aborts the run before a single module of ours is checked. 3.12
+# is the lowest version the installed numpy parses at, so the check stays as
+# close to the floor as the dependency allows. The CI image is 3.13, and the
+# `test` job is what proves runtime behaviour on it.
+python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 warn_return_any = true
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
+
+# Bare `mypy` checks the complete source inventory below under full strict,
+# matching CI. tests/test_type_ramp.py rejects missing or duplicate targets.
+# Imported modules outside the explicit inventory still supply their types;
+# follow_imports="silent" suppresses their own diagnostics. Tests are not gated.
+follow_imports = "silent"
+files = [
+    "scripts/_private_state.py",
+    "scripts/build_release_artifacts.py",
+    "scripts/check_qvf_conformance.py",
+    "scripts/fold_changelog.py",
+    "scripts/smoke_installed_wheel.py",
+    "src/vibeview/__init__.py",
+    "src/vibeview/__main__.py",
+    "src/vibeview/_fmt.py",
+    "src/vibeview/align.py",
+    "src/vibeview/animation.py",
+    "src/vibeview/api.py",
+    "src/vibeview/archive.py",
+    "src/vibeview/app/__init__.py",
+    "src/vibeview/app/helpers.py",
+    "src/vibeview/app/runtime.py",
+    "src/vibeview/app/bootstrap.py",
+    "src/vibeview/app/bindings.py",
+    "src/vibeview/app/display.py",
+    "src/vibeview/app/editing.py",
+    "src/vibeview/app/atom_drag.py",
+    "src/vibeview/app/exports.py",
+    "src/vibeview/app/files.py",
+    "src/vibeview/app/lifecycle.py",
+    "src/vibeview/app/playback.py",
+    "src/vibeview/app/preferences.py",
+    "src/vibeview/app/queue.py",
+    "src/vibeview/app/sessions.py",
+    "src/vibeview/app/wavefunction.py",
+    "src/vibeview/app/controls.py",
+    "src/vibeview/app/layout.py",
+    "src/vibeview/app/scene.py",
+    "src/vibeview/app/sidebar.py",
+    "src/vibeview/app/state.py",
+    "src/vibeview/app/tf_editor.py",
+    "src/vibeview/banner.py",
+    "src/vibeview/batch.py",
+    "src/vibeview/batch_compare.py",
+    "src/vibeview/blender_export.py",
+    "src/vibeview/bonds.py",
+    "src/vibeview/build_tools.py",
+    "src/vibeview/capture.py",
+    "src/vibeview/cli.py",
+    "src/vibeview/cli_common.py",
+    "src/vibeview/codenames.py",
+    "src/vibeview/config.py",
+    "src/vibeview/converters.py",
+    "src/vibeview/crystal_builder.py",
+    "src/vibeview/dashboard.py",
+    "src/vibeview/elements.py",
+    "src/vibeview/geometry_text.py",
+    "src/vibeview/headless.py",
+    "src/vibeview/export_cml.py",
+    "src/vibeview/export_html.py",
+    "src/vibeview/export_pdf.py",
+    "src/vibeview/export_svg.py",
+    "src/vibeview/feature_requests.py",
+    "src/vibeview/figure2d.py",
+    "src/vibeview/file_watcher.py",
+    "src/vibeview/import_workflow.py",
+    "src/vibeview/importers.py",
+    "src/vibeview/input_generator.py",
+    "src/vibeview/orca_input.py",
+    "src/vibeview/input_parser.py",
+    "src/vibeview/install_hints.py",
+    "src/vibeview/jupyter.py",
+    "src/vibeview/kinds.py",
+    "src/vibeview/launcher.py",
+    "src/vibeview/live_opt.py",
+    "src/vibeview/material_presets.py",
+    "src/vibeview/netutil.py",
+    "src/vibeview/onboarding.py",
+    "src/vibeview/orca_import.py",
+    "src/vibeview/orca_dataset.py",
+    "src/vibeview/orca_hessian.py",
+    "src/vibeview/orca_orbitals.py",
+    "src/vibeview/orca_properties.py",
+    "src/vibeview/orca_text.py",
+    "src/vibeview/paths.py",
+    "src/vibeview/plotter_compat.py",
+    "src/vibeview/povray_export.py",
+    "src/vibeview/profiler.py",
+    "src/vibeview/qvf.py",
+    "src/vibeview/qvf_writer.py",
+    "src/vibeview/raytrace.py",
+    "src/vibeview/recent.py",
+    "src/vibeview/relocalize.py",
+    "src/vibeview/renderers/__init__.py",
+    "src/vibeview/renderers/_html.py",
+    "src/vibeview/renderers/_coerce.py",
+    "src/vibeview/renderers/_frames.py",
+    "src/vibeview/renderers/_mpl.py",
+    "src/vibeview/renderers/_plotly.py",
+    "src/vibeview/renderers/atom_properties.py",
+    "src/vibeview/renderers/bands.py",
+    "src/vibeview/renderers/bond_orders.py",
+    "src/vibeview/renderers/cell.py",
+    "src/vibeview/renderers/citations.py",
+    "src/vibeview/renderers/coop.py",
+    "src/vibeview/renderers/dos.py",
+    "src/vibeview/energy_window.py",
+    "src/vibeview/renderers/eos.py",
+    "src/vibeview/renderers/epr.py",
+    "src/vibeview/renderers/fermi.py",
+    "src/vibeview/renderers/job_spec.py",
+    "src/vibeview/renderers/nci.py",
+    "src/vibeview/renderers/nmr.py",
+    "src/vibeview/renderers/palette.py",
+    "src/vibeview/renderers/periodic_wavefunction.py",
+    "src/vibeview/renderers/phonon.py",
+    "src/vibeview/renderers/preview.py",
+    "src/vibeview/renderers/qtaim.py",
+    "src/vibeview/renderers/reaction.py",
+    "src/vibeview/renderers/reaction_scheme.py",
+    "src/vibeview/renderers/run_record.py",
+    "src/vibeview/renderers/scan_surface.py",
+    "src/vibeview/renderers/scf_history.py",
+    "src/vibeview/renderers/spectra.py",
+    "src/vibeview/renderers/structure.py",
+    "src/vibeview/renderers/symmetry.py",
+    "src/vibeview/renderers/trajectory.py",
+    "src/vibeview/renderers/vibrations.py",
+    "src/vibeview/renderers/volume.py",
+    "src/vibeview/renderers/volume_render.py",
+    "src/vibeview/renderers/wannier.py",
+    "src/vibeview/renderers/wavefunction.py",
+    "src/vibeview/serve.py",
+    "src/vibeview/settings.py",
+    "src/vibeview/sketch.py",
+    "src/vibeview/symmetry.py",
+    "src/vibeview/tables.py",
+    "src/vibeview/trexio_import.py",
+    "src/vibeview/tui/__init__.py",
+    "src/vibeview/tui/app.py",
+    "src/vibeview/tui/braille.py",
+    "src/vibeview/tui/panes.py",
+    "src/vibeview/tui/plots.py",
+    "src/vibeview/tui/raster.py",
+    "src/vibeview/tui/scene.py",
+    "src/vibeview/tui/show.py",
+    "src/vibeview/units.py",
+    "src/vibeview/vibration_amplitude.py",
+    "src/vibeview/viewer_defaults.py",
+    "src/vibeview/worker_client.py",
+]
+
+# Third-party packages that ship no type information, and the companion
+# packages vibe-view imports lazily and does not depend on. Without these
+# every run stops at ~78 import errors before checking anything of ours.
+#
+# Stub distributions exist for a few of these (types-psutil, types-PyYAML,
+# types-jsonschema). Adding them to `[dev]` would be an improvement; it is
+# three more pins and belongs in its own change, not in the one that turns
+# the gate on.
+[[tool.mypy.overrides]]
+module = [
+    "ase",
+    "ase.*",
+    "IPython",
+    "IPython.*",
+    "jsonschema.*",
+    "plotly.*",
+    "psutil",
+    "rdkit.*",
+    "scipy.*",
+    "trame.*",
+    "trame_vtk.*",
+    "trame_vuetify.*",
+    "trexio",
+    "vtk",
+    "wslink.*",
+    "yaml",
+    # Companion packages: present only when vibe-qc / vibe-queue is installed
+    # beside the viewer, which is never the case on this repository's gate.
+    "vibeqc.*",
+    "vibeqc_naming",
+    "vq.*",
+]
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
@@ -170,3 +406,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# --strict-markers: a misspelt marker is an error, not a silent no-op.
+# Benchmarks assert wall-clock budgets, which depend on the machine, so the
+# gate deselects them; `pytest -m benchmark` runs them (a later -m wins).
+addopts = ["--strict-markers", "-m", "not benchmark"]
+markers = [
+    "benchmark: wall-clock performance budget; excluded from the default run, select with -m benchmark",
+]

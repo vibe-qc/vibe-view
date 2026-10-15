@@ -1,4 +1,4 @@
-"""Kind registry — the four-rule partial-support contract (§2.5 of the design doc).
+"""Kind registry — the four-rule partial-support contract.
 
 Rule 1
     Supported kinds are declared explicitly in a single constant.
@@ -58,8 +58,18 @@ SUPPORTED_KINDS: frozenset[str] = frozenset(
         "dos.cohp",
         "run.record",
         "job.spec",
+        # Descriptive kinds (qvf 0.2): a scheme relating the structures, and a
+        # picture of the archive. Both show in the details panel; neither is
+        # chemistry the 3D scene draws.
+        "reaction.scheme",
+        "preview",
     }
 )
+
+#: Supported kinds that describe the archive rather than hold computed data:
+#: the qvf reference writers and vibe-sketch emit them, the vibe-qc writer
+#: does not (tests/test_kind_drift.py).
+DESCRIPTIVE_KINDS: frozenset[str] = frozenset({"reaction.scheme", "preview"})
 
 # ── Deferred kinds: written + schema-defined, viewer renderer pending ──────
 # Kinds the writer emits (and the shared QVF schema validates) but the viewer
@@ -75,9 +85,9 @@ SUPPORTED_KINDS: frozenset[str] = frozenset(
 # instead of tripping the drift guard. Pinned by tests/test_kind_drift.py.
 DEFERRED_KINDS: frozenset[str] = frozenset()
 
-# Kinds whose binary .dat blob is lazy-loaded (read from zip only on
-# first UI activation, not at file-open time).
-LAZY_KINDS: frozenset[str] = frozenset(
+# Volumetric kinds: a scalar field on a grid, drawn as an isosurface. The
+# reader decodes their binary payload on first use, not at file-open time.
+VOLUME_KINDS: frozenset[str] = frozenset(
     {
         "volume.density",
         "volume.orbital",
@@ -91,13 +101,35 @@ LAZY_KINDS: frozenset[str] = frozenset(
     }
 )
 
+# Kinds with no panel of their own whose content the structure view draws:
+# the reader folds a standalone ``bonds`` section into ``read_structure`` and
+# the structure renderer draws it. Reported as rendered "via structure", and
+# never a reason to refuse a ``critical`` section.
+RENDERED_VIA_STRUCTURE: frozenset[str] = frozenset({"bonds"})
+
+
+# Stored volume kinds that are signed real fields and draw a +/- lobe pair.
+# One list for the browser and the terminal, which used to decide by kind in
+# one and by "any negative value" in the other (#38-18).
+SIGNED_VOLUME_KINDS: frozenset[str] = frozenset(
+    {
+        "volume.difference",
+        "volume.spin",
+        "volume.orbital",
+        "volume.potential",
+        "basis.ao",
+    }
+)
+
 
 def classify_section(kind: str) -> tuple[str, str | None]:
     """Return ``(status, detail)`` for a section kind.
 
-    status is one of: ``"rendered"``, ``"skipped"``, ``"error"``.
-    detail is ``None`` for rendered sections, or a human-readable
-    reason string for skipped/error sections.
+    ``status`` is ``"rendered"`` or ``"skipped"``; a section that fails to
+    read is reported as ``"error"`` by the caller, which knows about the
+    archive, not by this kind-only lookup. ``detail`` is None for a kind with
+    its own panel, ``"via structure"`` for :data:`RENDERED_VIA_STRUCTURE`,
+    and the human-readable reason for a skipped kind.
 
     ── Rule 2 + 3: unknown kinds and vendor namespaces.
     """
@@ -108,7 +140,7 @@ def classify_section(kind: str) -> tuple[str, str | None]:
     # the structure renderer draws it. Report it as rendered-via-structure so
     # the banner doesn't mislead the user into thinking their explicit bonds
     # were dropped (audit findings A6-01 / A3-03).
-    if kind == "bonds":
+    if kind in RENDERED_VIA_STRUCTURE:
         return ("rendered", "via structure")
     # Rule 2 (deferred subset): a kind the writer emits and the schema accepts
     # but the viewer has no renderer for yet. Honest, distinct from the generic
@@ -123,8 +155,3 @@ def classify_section(kind: str) -> tuple[str, str | None]:
         vendor = parts[1] if len(parts) > 1 else "unknown"
         return ("skipped", f"vendor namespace ({vendor})")
     return ("skipped", "unsupported")
-
-
-def is_lazy_kind(kind: str) -> bool:
-    """Return True if this kind's binary data should be lazy-loaded."""
-    return kind in LAZY_KINDS
