@@ -61,7 +61,9 @@ def test_braille_cell_colour_is_the_mean_of_covered_pixels_only():
 def test_empty_cell_is_blank_not_a_dotless_braille_glyph():
     pixels = np.zeros((8, 4, 3), dtype=np.uint8)
     covered = np.zeros((8, 4), dtype=bool)
-    text = braille.to_plain(pixels, covered)
+    grid = braille.CellGrid(*braille.cell_size(pixels.shape[1], pixels.shape[0]))
+    grid.blit(pixels, covered)
+    text = grid.to_plain()
     assert text.strip() == ""
 
 

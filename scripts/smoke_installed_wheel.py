@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     source_root = args.source_root.resolve()
 
     import vibeview
-    from vibeview import cli
+    from vibeview.install_hints import electron_dir as _electron_dir
 
     package_path = Path(vibeview.__file__).resolve()
     if package_path.is_relative_to(source_root):
@@ -59,10 +59,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     package_files = importlib.resources.files("vibeview")
-    for schema_name in ("schema.json", "schema_v2.json"):
-        schema = json.loads(package_files.joinpath(schema_name).read_text(encoding="utf-8"))
-        if not isinstance(schema, dict) or "$schema" not in schema:
-            raise RuntimeError(f"packaged {schema_name} is not a JSON Schema")
+    schema = json.loads(package_files.joinpath("schema.json").read_text(encoding="utf-8"))
+    if not isinstance(schema, dict) or "$schema" not in schema:
+        raise RuntimeError("packaged schema.json is not a JSON Schema")
     examples = package_files.joinpath("resources", "examples")
     readme_resource = examples.joinpath("README.txt")
     xyz_resource = examples.joinpath("water.xyz")
@@ -159,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     # The Electron application remains source-checkout-only in this milestone.
     # Assert that boundary explicitly so CI cannot be mistaken for a packaged
     # desktop-app launch test.
-    electron_dir = cli._electron_dir()
+    electron_dir = _electron_dir()
     if electron_dir.exists():
         raise RuntimeError(
             f"unexpected Electron source directory beside installed wheel: {electron_dir}"

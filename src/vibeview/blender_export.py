@@ -19,90 +19,43 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+from vibeview.bonds import bond_endpoints, structure_bonds
+from vibeview.elements import COVALENT_RADII, CPK_HEX, cpk_hex
+from vibeview.renderers import palette
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
 
 
-# ── CPK colours (R, G, B) ───────────────────────────────────────────────
-CPK_COLORS: dict[int, tuple[float, float, float]] = {
-    1: (1.000, 1.000, 1.000),  # H
-    3: (0.800, 0.502, 0.992),  # Li
-    6: (0.200, 0.200, 0.200),  # C
-    7: (0.188, 0.314, 0.973),  # N
-    8: (0.941, 0.000, 0.000),  # O
-    9: (0.565, 0.878, 0.314),  # F
-    11: (0.671, 0.361, 0.949),  # Na
-    12: (0.541, 1.000, 0.000),  # Mg
-    15: (1.000, 0.502, 0.000),  # P
-    16: (1.000, 0.800, 0.200),  # S
-    17: (0.122, 0.941, 0.122),  # Cl
-    19: (0.561, 0.251, 0.831),  # K
-    20: (0.239, 1.000, 0.000),  # Ca
-    26: (0.878, 0.400, 0.200),  # Fe
-    29: (0.784, 0.502, 0.200),  # Cu
-    30: (0.490, 0.502, 0.690),  # Zn
-    35: (0.651, 0.161, 0.161),  # Br
-    53: (0.580, 0.000, 0.580),  # I
-}
-
-_COVALENT_RADII: dict[int, float] = {
-    1: 0.31,
-    6: 0.76,
-    7: 0.71,
-    8: 0.66,
-    9: 0.57,
-    15: 1.07,
-    16: 1.05,
-    17: 1.02,
-    35: 1.20,
-    53: 1.39,
-}
-
-_ELEMENT_SYMBOLS = [
-    "",
-    "H",
-    "He",
-    "Li",
-    "Be",
-    "B",
-    "C",
-    "N",
-    "O",
-    "F",
-    "Ne",
-    "Na",
-    "Mg",
-    "Al",
-    "Si",
-    "P",
-    "S",
-    "Cl",
-    "Ar",
-    "K",
-    "Ca",
-    "Sc",
-    "Ti",
-    "V",
-    "Cr",
-    "Mn",
-    "Fe",
-    "Co",
-    "Ni",
-    "Cu",
-    "Zn",
-]
-
-_Z_TO_SYMBOL = {i: s for i, s in enumerate(_ELEMENT_SYMBOLS) if s}
-_SYMBOL_TO_Z = {s: i for i, s in enumerate(_ELEMENT_SYMBOLS) if s}
-
-
 # ── Blender scene templates ─────────────────────────────────────────────
+
+
+def covalent_radius_or_none(z: int) -> float | None:
+    """The viewer's covalent radius, or None so the script keeps its own fallback."""
+    return COVALENT_RADII.get(z)
+
+
+def _cpk_rgb_floats(z: int) -> tuple[float, float, float] | None:
+    """The viewer's CPK colour as Blender's 0-1 floats, or None when unknown."""
+    if z not in CPK_HEX:
+        return None
+    r, g, b = palette.rgb(cpk_hex(z))
+    return (round(r / 255, 3), round(g / 255, 3), round(b / 255, 3))
+
+
+def _element_table(z_list: list[int], lookup: Any) -> dict[int, Any]:
+    """``{z: lookup(z)}`` for the distinct elements present, skipping unknowns."""
+    table = {}
+    for z in sorted(set(int(z) for z in z_list)):
+        value = lookup(z)
+        if value is not None:
+            table[z] = value
+    return table
 
 
 def _blender_header(style: str, width: int = 1920, height: int = 1080) -> str:
@@ -196,6 +149,8 @@ Z_LIST = {z_json}
 SYMBOLS = {symbols_json}
 LATTICE_VECTORS = {lattice_json}
 HAS_PBC = {pbc_json}
+RADII_JSON = {radii_json}
+CPK_JSON = {cpk_json}
 """
 
 
@@ -221,24 +176,11 @@ symbols = json.loads(SYMBOLS)
 lattice_vectors = json.loads(LATTICE_VECTORS)
 pbc = json.loads(HAS_PBC)  # per-axis [a, b, c] periodicity, not a scalar flag
 
-# ── Covalent radii for sizing ──
-COVALENT_RADII = {{
-    1: 0.31, 6: 0.76, 7: 0.71, 8: 0.66, 9: 0.57,
-    15: 1.07, 16: 1.05, 17: 1.02, 35: 1.20, 53: 1.39,
-}}
+# ── Covalent radii for sizing (vibe-view's table, for the elements present) ──
+COVALENT_RADII = {{int(k): v for k, v in json.loads(RADII_JSON).items()}}
 
-# ── CPK Colors ──
-CPK_COLORS = {{
-    1: (1.0, 1.0, 1.0), 3: (0.8, 0.502, 0.992),
-    6: (0.2, 0.2, 0.2), 7: (0.188, 0.314, 0.973),
-    8: (0.941, 0.0, 0.0), 9: (0.565, 0.878, 0.314),
-    11: (0.671, 0.361, 0.949), 12: (0.541, 1.0, 0.0),
-    15: (1.0, 0.502, 0.0), 16: (1.0, 0.8, 0.2),
-    17: (0.122, 0.941, 0.122), 19: (0.561, 0.251, 0.831),
-    20: (0.239, 1.0, 0.0), 26: (0.878, 0.4, 0.2),
-    29: (0.784, 0.502, 0.2), 30: (0.49, 0.502, 0.69),
-    35: (0.651, 0.161, 0.161), 53: (0.58, 0.0, 0.58),
-}}
+# ── CPK colours (vibe-view's table, for the elements present) ──
+CPK_COLORS = {{int(k): tuple(v) for k, v in json.loads(CPK_JSON).items()}}
 
 # ── Create atoms ──
 atom_radius = {radii_factor}
@@ -273,7 +215,8 @@ if bond_data:
         if i >= len(atom_data) or j >= len(atom_data):
             continue
         p1 = mathutils.Vector(atom_data[i])
-        p2 = mathutils.Vector(atom_data[j])
+        # A bond through a periodic cell face carries the end it reaches.
+        p2 = mathutils.Vector(b[2] if len(b) > 2 else atom_data[j])
         mid = (p1 + p2) / 2
         direction = p2 - p1
         length = direction.length
@@ -383,7 +326,7 @@ print("Ready! Render with: bpy.ops.render.render(write_still=True)")
 
 
 def export_blender_script(
-    reader: "QVFReader",
+    reader: QVFReader,
     output_path: str,
     *,
     style: str = "ball_and_stick",
@@ -426,14 +369,19 @@ def export_blender_script(
         centroid = np.mean(positions, axis=0)
         positions = (np.array(positions) - centroid).tolist()
 
-    # Detect bonds (or use explicit ones)
+    # Bonds: the viewer's connectivity. An in-cell bond is ``[i, j]``; a bond
+    # through a periodic cell face carries the (centred) Cartesian end it
+    # reaches, ``[i, j, [x, y, z]]``, and is drawn to that image (#40-19).
+    bonds: list[list[object]] = []
     if style != "space_filling":
-        if sdata.bonds is not None:
-            bonds = [[b[0], b[1]] for b in sdata.bonds]
-        else:
-            bonds = _detect_bonds(positions, z_list)
-    else:
-        bonds = []
+        centred = np.asarray(positions, dtype=float).reshape(-1, 3)
+        for bond in structure_bonds(sdata):
+            i, j, _order, image = bond
+            if any(image):
+                _start, end = bond_endpoints(centred, bond, sdata.lattice_vectors)
+                bonds.append([i, j, [float(v) for v in end]])
+            else:
+                bonds.append([i, j])
 
     # Lattice / PBC info. The full 3x3 is emitted even for dim<3 (grid and cube
     # extents still need it), but the per-axis `pbc` flags travel with it so the
@@ -460,6 +408,8 @@ def export_blender_script(
             symbols_json=json.dumps(json.dumps(symbols)),
             lattice_json=json.dumps(json.dumps(lattice)),
             pbc_json=json.dumps(json.dumps(pbc)),
+            radii_json=json.dumps(json.dumps(_element_table(z_list, covalent_radius_or_none))),
+            cpk_json=json.dumps(json.dumps(_element_table(z_list, _cpk_rgb_floats))),
         ),
         _blender_body(style),
     ]
@@ -467,25 +417,6 @@ def export_blender_script(
     script = "\n".join(parts)
     Path(output_path).write_text(script)
     return script
-
-
-def _detect_bonds(
-    positions: list[list[float]],
-    z_list: list[int],
-    tolerance: float = 1.2,
-) -> list[list[int]]:
-    """Detect bonds between atoms based on covalent radii."""
-    pos = np.asarray(positions, dtype=float)
-    radii = [_COVALENT_RADII.get(z, 0.8) for z in z_list]
-    n = len(z_list)
-    bonds = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = float(np.linalg.norm(pos[i] - pos[j]))
-            threshold = (radii[i] + radii[j]) * tolerance
-            if 0.4 < d < threshold:
-                bonds.append([i, j])
-    return bonds
 
 
 # ── Convenience wrapper ─────────────────────────────────────────────────
@@ -515,8 +446,9 @@ def export_from_qvf(
     """
     from vibeview.qvf import QVFReader
 
-    reader = QVFReader(qvf_path)
-    stem = Path(qvf_path).stem
-    py_path = Path(output_dir) / f"{stem}_blender.py"
-    export_blender_script(reader, str(py_path), style=style)
+    # Owned here and closed on every exit (#39-18).
+    with QVFReader(qvf_path) as reader:
+        stem = Path(qvf_path).stem
+        py_path = Path(output_dir) / f"{stem}_blender.py"
+        export_blender_script(reader, str(py_path), style=style)
     return str(py_path)

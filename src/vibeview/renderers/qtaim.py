@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pyvista as pv
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._coerce import as_float, as_vector
+from vibeview.renderers._html import cell, empty_panel, note, panel_document
+from vibeview.renderers.palette import GUIDE_GREY
 
 if TYPE_CHECKING:
     from vibeview.qvf import QTAIMData, QVFReader, Section
@@ -51,6 +55,31 @@ def _interaction_label(laplacian: float | None) -> str:
     return "shared-shell" if laplacian < 0.0 else "closed-shell"
 
 
+@dataclass(frozen=True)
+class CriticalPointUnits:
+    """How a producer writes ``rho`` and ``laplacian``, as HTML fragments."""
+
+    rho_html: str
+    laplacian_html: str
+
+
+# Producers whose critical-point units are documented. vibe-qc's
+# ``vibeqc.qtaim.CriticalPoint`` writes rho in e/Å³ and the Laplacian in
+# e/Å⁵; QVF itself leaves both unspecified.
+_KNOWN_UNITS: dict[str, CriticalPointUnits] = {
+    "vibe-qc": CriticalPointUnits("e/&#8491;<sup>3</sup>", "e/&#8491;<sup>5</sup>"),
+}
+
+
+def critical_point_units(program: str) -> CriticalPointUnits | None:
+    """Units a producer is known to use for its critical points, else None.
+
+    ``program`` is the manifest's ``source.program``; vibe-qc writes it as
+    ``vibe-qc`` and the package name ``vibeqc`` is accepted too.
+    """
+    return _KNOWN_UNITS.get(program.strip().lower().replace("vibeqc", "vibe-qc"))
+
+
 class QTAIMRenderer(BaseRenderer):
     """Renders QTAIM critical points + bond paths in the 3D viewport."""
 
@@ -73,35 +102,43 @@ class QTAIMRenderer(BaseRenderer):
         n_paths = 0
 
         # ── Critical-point spheres ──────────────────────────────────
+        # One glyph actor per (type, colour) class instead of one actor per
+        # point: a topology with hundreds of critical points used to add
+        # hundreds of actors to the scene.
+        classes: dict[tuple[str, str], list[np.ndarray]] = {}
         for pt in data.points:
             cp_type = str(pt.get("type", "bcp"))
-            pos = pt.get("position")
+            pos = as_vector(pt.get("position"))
             if pos is None or len(pos) != 3:
                 continue
-            colour = _CP_COLOURS.get(cp_type, "#888888")
-            radius = _CP_RADIUS.get(cp_type, 0.12)
+            colour = _CP_COLOURS.get(cp_type, GUIDE_GREY)
             # A BCP's Laplacian sign is the interaction type; show it rather
             # than colouring every BCP the same orange.
-            if cp_type == "bcp" and pt.get("laplacian") is not None:
-                colour = (
-                    _SHARED_SHELL_COLOUR
-                    if float(pt["laplacian"]) < 0.0
-                    else _CLOSED_SHELL_COLOUR
-                )
-            sphere = pv.Sphere(center=pos, radius=radius, theta_resolution=8, phi_resolution=8)
+            laplacian = as_float(pt.get("laplacian"))
+            if cp_type == "bcp" and laplacian is not None:
+                colour = _SHARED_SHELL_COLOUR if laplacian < 0.0 else _CLOSED_SHELL_COLOUR
+            classes.setdefault((cp_type, colour), []).append(np.asarray(pos, dtype=float))
+            n_pts += 1
+        for (cp_type, colour), centres in classes.items():
+            radius = _CP_RADIUS.get(cp_type, 0.12)
+            cloud = pv.PolyData(np.vstack(centres))
+            glyphs = cloud.glyph(
+                geom=pv.Sphere(radius=radius, theta_resolution=8, phi_resolution=8),
+                scale=False,
+                orient=False,
+            )
             plotter.add_mesh(
-                sphere,
+                glyphs,
                 color=colour,
-                name=f"qtaim_cp_{n_pts}",
+                name=f"qtaim_cp_{cp_type}_{colour.lstrip('#').lower()}",
                 show_scalar_bar=False,
             )
-            n_pts += 1
 
         # ── Bond-path polylines ─────────────────────────────────────
         if data.bond_paths:
             for bp in data.bond_paths:
                 path = bp.get("path")
-                if not path or len(path) < 2:
+                if not isinstance(path, list | tuple) or len(path) < 2:
                     continue
                 pts = np.array(path, dtype=float)
                 # Create a polyline from the vertices.
@@ -127,20 +164,15 @@ class QTAIMRenderer(BaseRenderer):
         status = f"QTAIM: {n_pts} critical points"
         if n_paths:
             status += f", {n_paths} bond paths"
-        n_shared = sum(
-            1
+        bcp_laplacians = [
+            value
             for p in data.points
             if str(p.get("type")) == "bcp"
-            and p.get("laplacian") is not None
-            and float(p["laplacian"]) < 0.0
-        )
-        n_closed = sum(
-            1
-            for p in data.points
-            if str(p.get("type")) == "bcp"
-            and p.get("laplacian") is not None
-            and float(p["laplacian"]) >= 0.0
-        )
+            for value in [as_float(p.get("laplacian"))]
+            if value is not None
+        ]
+        n_shared = len([value for value in bcp_laplacians if value < 0.0])
+        n_closed = len(bcp_laplacians) - n_shared
         if n_shared or n_closed:
             status += f" ({n_shared} shared-shell, {n_closed} closed-shell)"
         return status
@@ -160,10 +192,23 @@ class QTAIMRenderer(BaseRenderer):
           cylindrically symmetric bond, appreciable where a pi system or a
           strained bond breaks that symmetry.
 
-        Units follow the producer (``vibeqc.qtaim.CriticalPoint``): rho in
-        e/A^3, Laplacian in e/A^5, ellipticity dimensionless.
+        The QVF specification (§ 5.7) fixes the point fields but not their
+        units, so the header names a unit only for a producer whose
+        convention is known (see :func:`critical_point_units`) and otherwise
+        says that the numbers are as the producer wrote them.
         """
         data = self.load()
+        units = critical_point_units(self.reader.source.program)
+        if units is None:
+            rho_head, laplacian_head = "&rho;", "&nabla;<sup>2</sup>&rho;"
+            caveat = note(
+                "Units as written by the producer "
+                f"({self.reader.source.program}); QVF does not fix them."
+            )
+        else:
+            rho_head = f"&rho; ({units.rho_html})"
+            laplacian_head = f"&nabla;<sup>2</sup>&rho; ({units.laplacian_html})"
+            caveat = ""
 
         def _atom(index: int) -> str:
             if symbols is not None and 0 <= index < len(symbols):
@@ -174,18 +219,16 @@ class QTAIMRenderer(BaseRenderer):
         for point in data.points:
             if str(point.get("type")) != "bcp":
                 continue
-            pair = point.get("atom_pair")
+            pair = as_vector(point.get("atom_pair"))
             label = (
                 f"{_atom(int(pair[0]))}–{_atom(int(pair[1]))}"
-                if pair and len(pair) == 2
+                if pair is not None and len(pair) == 2
                 else "—"
             )
-            rho = point.get("rho")
-            laplacian = point.get("laplacian")
-            ellipticity = point.get("ellipticity")
-            verdict = _interaction_label(
-                None if laplacian is None else float(laplacian)
-            )
+            rho = as_float(point.get("rho"))
+            laplacian = as_float(point.get("laplacian"))
+            ellipticity = as_float(point.get("ellipticity"))
+            verdict = _interaction_label(laplacian)
             colour = (
                 _SHARED_SHELL_COLOUR
                 if verdict == "shared-shell"
@@ -193,33 +236,22 @@ class QTAIMRenderer(BaseRenderer):
             )
             rows.append(
                 "<tr>"
-                f"<td style='text-align:left'>{label}</td>"
-                f"<td>{'' if rho is None else f'{float(rho):.4f}'}</td>"
-                f"<td>{'' if laplacian is None else f'{float(laplacian):+.4f}'}</td>"
-                f"<td>{'' if ellipticity is None else f'{float(ellipticity):.3f}'}</td>"
-                f"<td style='text-align:left;color:{colour}'>{verdict}</td>"
+                f"<td>{cell(label)}</td>"
+                f"<td>{'' if rho is None else f'{rho:.4f}'}</td>"
+                f"<td>{'' if laplacian is None else f'{laplacian:+.4f}'}</td>"
+                f"<td>{'' if ellipticity is None else f'{ellipticity:.3f}'}</td>"
+                f"<td style='text-align:left;color:{colour}'>{cell(verdict)}</td>"
                 "</tr>"
             )
 
         if not rows:
-            body = "<p>No bond critical points in this section.</p>"
-        else:
-            body = (
-                "<table><thead><tr>"
-                "<th style='text-align:left'>Bond</th>"
-                "<th>&rho; (e/&#8491;<sup>3</sup>)</th>"
-                "<th>&nabla;<sup>2</sup>&rho; (e/&#8491;<sup>5</sup>)</th>"
-                "<th>&epsilon;</th>"
-                "<th style='text-align:left'>Interaction</th>"
-                "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
-            )
-
-        return (
-            "<!doctype html><html><head><meta charset='utf-8'><style>"
-            "html,body{margin:0;padding:8px;font-family:system-ui,sans-serif;"
-            "font-size:13px;line-height:1.4;}"
-            "table{border-collapse:collapse;}"
-            "th,td{padding:2px 12px;text-align:right;}"
-            "thead th{border-bottom:1px solid #888;font-weight:600;}"
-            "</style></head><body>" + body + "</body></html>"
+            return empty_panel("No bond critical points in this section.")
+        return panel_document(
+            caveat + "<table class='data'><thead><tr>"
+            "<th>Bond</th>"
+            f"<th>{rho_head}</th>"
+            f"<th>{laplacian_head}</th>"
+            "<th>&epsilon;</th>"
+            "<th>Interaction</th>"
+            "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         )

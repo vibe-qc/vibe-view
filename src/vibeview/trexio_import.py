@@ -8,19 +8,18 @@ not be replaced with a guess based on the name of the producing program.
 
 from __future__ import annotations
 
-import hashlib
 import io
-import json
 import math
 import re
 import tempfile
-import zipfile
 from pathlib import Path
 from typing import IO, Any
 
 import numpy as np
 
-_BOHR_TO_ANGSTROM = 0.529177210903
+from vibeview.qvf_writer import QVFArchiveBuilder
+from vibeview.units import BOHR_TO_ANGSTROM as _BOHR_TO_ANGSTROM
+
 TREXIO_EXTENSIONS = (".trexio", ".h5", ".hdf5")
 
 
@@ -66,8 +65,8 @@ class _Dataset:
         return value
 
 
-def _structure(data: _Dataset) -> dict:
-    from vibeview.converters import _SYMBOL_TO_Z, _Z_TO_SYMBOL
+def _structure(data: _Dataset) -> dict[str, Any]:
+    from vibeview.elements import SYMBOL_TO_Z, Z_TO_SYMBOL
 
     count = data.count("nucleus_num")
     positions = data.array("nucleus_coord", (count, 3)) * _BOHR_TO_ANGSTROM
@@ -88,13 +87,13 @@ def _structure(data: _Dataset) -> dict:
         # effective nuclear charge, which need not be the atomic number.
         match = re.fullmatch(r"([A-Za-z]{1,2})(?:[\d_].*)?", label.strip())
         symbol = match[1].capitalize() if match else ""
-        number = _SYMBOL_TO_Z.get(symbol)
+        number = SYMBOL_TO_Z.get(symbol)
         if number is None:
             charge = float(charges[index]) if charges is not None else None
             if charge is None or charge < 0 or not charge.is_integer():
                 raise ValueError(f"TREXIO nucleus {index} has no identifiable element")
             number = int(charge) + int(core[index])
-            symbol = _Z_TO_SYMBOL.get(number, "X")
+            symbol = Z_TO_SYMBOL.get(number, "X")
         atoms.append(
             {
                 "symbol": symbol,
@@ -117,7 +116,9 @@ def _structure(data: _Dataset) -> dict:
     return structure
 
 
-def _wavefunction(data: _Dataset, atom_count: int, periodic: bool) -> tuple[dict, dict, dict]:
+def _wavefunction(
+    data: _Dataset, atom_count: int, periodic: bool
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     if periodic or data.has("mo_k_point") or data.has("pbc_k_point"):
         raise ValueError("TREXIO periodic/k-point orbitals are not supported; export a cube volume")
     if data.read("basis_type").lower() != "gaussian":
@@ -205,7 +206,7 @@ def _wavefunction(data: _Dataset, atom_count: int, periodic: bool) -> tuple[dict
 
     mo_type = str(data.optional("mo_type", "canonical")).lower()
     kind = "natural" if "natural" in mo_type else "localized" if "local" in mo_type else "canonical"
-    metadata: dict = {"n_ao": n_ao, "orbital_kind": kind}
+    metadata: dict[str, Any] = {"n_ao": n_ao, "orbital_kind": kind}
     if kind == "natural":
         metadata["occupation_semantics"] = "electron_occupation"
     values = {}
@@ -240,29 +241,16 @@ def _wavefunction(data: _Dataset, atom_count: int, periodic: bool) -> tuple[dict
 
 
 def _convert_path(path: Path, api: Any) -> io.BytesIO:
-    members: dict[str, bytes] = {}
-    sections = []
+    builder = QVFArchiveBuilder(
+        program="TREXIO", version=str(api.__version__), calculation=path.stem
+    )
 
-    def add_section(section_id: str, kind: str, payloads: dict) -> None:
-        descriptions = {}
+    def add_section(section_id: str, kind: str, payloads: dict[str, Any]) -> None:
         for name, value in payloads.items():
-            binary = isinstance(value, np.ndarray)
-            member_path = f"sections/{section_id}/{name}.{'bin' if binary else 'json'}"
-            payload = (
-                np.asarray(value, dtype="<f8").tobytes(order="C")
-                if binary
-                else json.dumps(value, allow_nan=False).encode()
-            )
-            description = {
-                "path": member_path,
-                "format": "binary" if binary else "json",
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
-            if binary:
-                description.update(dtype="float64", shape=list(value.shape))
-            descriptions[name] = description
-            members[member_path] = payload
-        sections.append({"id": section_id, "kind": kind, "members": descriptions})
+            if isinstance(value, np.ndarray):
+                builder.add_binary(section_id, kind, name, value, "float64")
+            else:
+                builder.add_json(section_id, kind, name, value)
 
     # Read-only mode also prevents the library from adding metadata to input.
     with api.File(str(path), mode="r", back_end=api.TREXIO_AUTO) as handle:
@@ -287,23 +275,8 @@ def _convert_path(path: Path, api: Any) -> io.BytesIO:
             provenance["n_electrons"] = int(data.read("electron_num"))
         if data.has("nucleus_point_group"):
             provenance["point_group"] = data.read("nucleus_point_group")
-        manifest = {
-            "qvf_version": 1,
-            "source": {
-                "program": "TREXIO",
-                "version": str(api.__version__),
-                "calculation": path.stem,
-            },
-            "sections": sections,
-            "provenance": provenance,
-        }
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("manifest.json", json.dumps(manifest, allow_nan=False))
-        for name, payload in members.items():
-            archive.writestr(name, payload)
-    buffer.seek(0)
-    return buffer
+        builder.set_provenance(provenance)
+    return builder.to_bytesio()
 
 
 def trexio_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
