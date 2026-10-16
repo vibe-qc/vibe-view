@@ -11,6 +11,69 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests._qvf_builders import build_qvf
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_the_run(tmp_path_factory):
+    """Keep the suite out of the real account and out of the system temp dir.
+
+    * ``tempfile`` writes under pytest's own temporary tree, which pytest
+      prunes after a few runs. A ``NamedTemporaryFile(delete=False)`` or
+      ``mkdtemp()`` a test forgets to remove no longer piles up in the system
+      temp directory (#41-27).
+    * ``XDG_CACHE_HOME`` and ``XDG_CONFIG_HOME`` point at scratch
+      directories, so settings, recent files and caches a test writes never
+      reach the ``~/.cache`` and ``~/.config`` of whoever runs it (#41-28).
+      A test that needs the fallback removes them with ``monkeypatch``.
+    """
+    import os
+
+    root = tmp_path_factory.mktemp("isolated")
+    saved_tempdir = tempfile.tempdir
+    saved_env = {name: os.environ.get(name) for name in ("XDG_CACHE_HOME", "XDG_CONFIG_HOME")}
+    (root / "tmp").mkdir()
+    tempfile.tempdir = str(root / "tmp")
+    os.environ["XDG_CACHE_HOME"] = str(root / "cache")
+    os.environ["XDG_CONFIG_HOME"] = str(root / "config")
+    try:
+        yield
+    finally:
+        tempfile.tempdir = saved_tempdir
+        for name, value in saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+_DATA = Path(__file__).parent / "data"
+
+
+@pytest.fixture(autouse=True)
+def _keep_tests_data_clean():
+    """Fail a test that leaves new files under tests/data.
+
+    The directory holds committed fixtures. A browser export writes next to
+    the archive it came from, so a test that opens a fixture in place and
+    exports leaves a stray file behind, which then gets committed. Listing a
+    dozen paths per test is cheap; the strays are removed so they do not
+    outlive the failure.
+    """
+    before = set(_DATA.rglob("*"))
+    yield
+    added = sorted(set(_DATA.rglob("*")) - before)
+    if added:
+        for path in added:
+            if path.is_file():
+                path.unlink()
+        names = ", ".join(str(path.relative_to(_DATA)) for path in added)
+        pytest.fail(
+            f"test left new files in tests/data: {names}. Copy the fixture "
+            "into tmp_path before anything writes next to it.",
+            pytrace=False,
+        )
+
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -96,8 +159,10 @@ def sample_qvf() -> Path:
         "sections/density.dat": density_data.tobytes(),
     }
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         for path, data in files.items():
             zf.writestr(path, data)
@@ -109,72 +174,14 @@ def sample_qvf() -> Path:
 
 # ── synthesized stand-ins for the gitignored example archives ──────────
 #
-# `examples/vibe_view/**` is gitignored (.gitignore:139 and :157), so tests
-# guarded on those archives *skipped* in CI and could only fail on a
-# developer's machine after they had generated the showcase. A regression
+# The generated showcase archives were never tracked (in the monorepo they
+# were gitignored), so tests guarded on those archives *skipped* in CI and
+# could only fail on a developer's machine after they had generated them. A regression
 # shipped through that hole on 2026-07-26. These fixtures synthesize
 # equivalent archives in-process instead: no generated artifact, no vibeqc
 # dependency, and the tests run everywhere.
 
 
-def build_qvf(dest: Path, sections_data, *, extra=None, source=None) -> Path:
-    """Write a .qvf from ``(section_id, kind, members)`` tuples.
-
-    Member specs mirror ``tests/test_renderers.py``:
-    ``(format, path, data)``, ``(format, path, data, dtype, shape)``, or an
-    explicit dict (with optional ``_bytes`` payload) for members the strict
-    schema forbids ``dtype``/``shape`` on, such as ``citations.references``.
-    """
-    sections: list[dict] = []
-    files: dict[str, bytes] = {}
-
-    for sid, kind, members in sections_data:
-        sec_members: dict[str, dict] = {}
-        for mname, spec in members.items():
-            if isinstance(spec, dict):
-                entry = dict(spec)
-                payload = entry.pop("_bytes", None)
-                sec_members[mname] = entry
-                if payload is not None:
-                    files[entry["path"]] = payload
-                continue
-            if len(spec) == 3:
-                fmt, mpath, mdata = spec
-                dtype = shape = None
-            else:
-                fmt, mpath, mdata, dtype, shape = spec
-            entry = {
-                "path": mpath,
-                "format": fmt,
-                "sha256": _sha256(mdata),
-            }
-            if fmt == "binary":
-                entry["dtype"] = dtype or "uint8"
-                entry["shape"] = (
-                    list(shape) if shape is not None else [len(mdata)]
-                )
-            sec_members[mname] = entry
-            files[mpath] = mdata
-        section = {"id": sid, "kind": kind, "members": sec_members}
-        if extra and sid in extra:
-            section.update(extra[sid])
-        sections.append(section)
-
-    manifest = {
-        "qvf_version": 1,
-        "source": source
-        or {
-            "program": "vibe-qc",
-            "version": "0.0.0-test",
-            "calculation": "synthesized fixture",
-        },
-        "sections": sections,
-    }
-    with zipfile.ZipFile(dest, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        for path, data in files.items():
-            zf.writestr(path, data)
-    return dest
 
 
 def _water_structure_bytes() -> bytes:

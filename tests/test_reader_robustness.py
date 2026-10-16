@@ -83,7 +83,7 @@ def test_unknown_canonical_kind_opens_and_is_skipped():
     reader = QVFReader(data)
     kinds = [s.kind for s in reader.sections]
     assert "structure" in kinds and _UNKNOWN_CANONICAL_KIND in kinds  # opened
-    assert "fs" in reader._unknown_kind_ids
+    assert reader.get_section("fs").kind == _UNKNOWN_CANONICAL_KIND
     # surfaced as skipped, not rendered
     assert classify_section(_UNKNOWN_CANONICAL_KIND) == ("skipped", "unsupported")
 

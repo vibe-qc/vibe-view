@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 from unittest import mock
 
 
 class TestConfig:
     def test_config_path(self) -> None:
-        from vibeview.config import _config_path
+        from vibeview.paths import config_path
 
-        path = _config_path()
+        path = config_path()
         assert path.name == "config.toml"
         assert "vibe-view" in str(path)
 

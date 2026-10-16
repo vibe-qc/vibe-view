@@ -42,31 +42,11 @@ copyright = f"{datetime.date.today().year}, {author}"
 
 
 def _read_release() -> str:
-    """Version of the documented tree.
+    """Read the documented source version, independent of the build environment."""
+    import tomllib
 
-    Prefer the installed distribution metadata, so a docs build inside a
-    developer's environment reports what that environment actually has. Fall
-    back to parsing ``pyproject.toml`` from the source tree, which is what
-    the CI docs build uses: it runs in a bare ``python:3.13-slim`` container
-    with only Sphinx installed, and does not install vibeview itself.
-    """
-    try:
-        from importlib.metadata import PackageNotFoundError
-        from importlib.metadata import version as _pkg_version
-
-        try:
-            return _pkg_version("vibeview")
-        except PackageNotFoundError:
-            pass
-    except ImportError:
-        pass
-    try:
-        import tomllib
-
-        with open(_REPO_ROOT / "pyproject.toml", "rb") as f:
-            return str(tomllib.load(f)["project"]["version"])
-    except Exception:
-        return "0.0.0"
+    with open(_REPO_ROOT / "pyproject.toml", "rb") as source:
+        return str(tomllib.load(source)["project"]["version"])
 
 
 release = _read_release()
@@ -112,9 +92,10 @@ myst_heading_anchors = 3
 #
 # The catalogue is canonical in ``vibeview.codenames`` so the CLI banner, the
 # desktop About box and this site share one source of truth. Load that module
-# standalone rather than importing the ``vibeview`` package: the CI docs
-# container installs Sphinx only, and ``import vibeview`` would pull pyvista,
-# plotly and matplotlib for the sake of one dict.
+# standalone rather than importing the ``vibeview`` package: a bare
+# ``sphinx-build`` in a checkout without the ``[docs]`` install must still
+# render the site, and ``import vibeview`` would need the whole runtime for
+# the sake of one dict.
 def _load_codenames_module():
     import importlib.util
 
@@ -227,10 +208,10 @@ exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
-    # Developer tooling that lives in docs/ and is cited from the root
-    # ledgers (HANDOVER.md, AUDIT_2026-*.md) by its docs/ path. Sphinx does
-    # not read .py as source anyway; listing them is documentation of intent
-    # for whoever wonders why they are in here.
+    # Developer tooling that lives in docs/: capture, benchmark and QA
+    # scripts that regenerate the manual's figures. Sphinx does not read .py
+    # as source anyway; listing them is documentation of intent for whoever
+    # wonders why they are in here.
     "bench_*.py",
     "capture_*.py",
     "interact_controls.py",
@@ -251,30 +232,9 @@ suppress_warnings = [
 # want ``make strict`` to catch. Suppress the specific messages instead, the
 # way vibe-qc's conf.py does, so anything NEW still warns.
 #
-# Two groups, both links that resolve on GitLab but not through Sphinx's
-# document graph:
-#
-#  * ``ROADMAP_AVOGADRO_PARITY.md`` is an internal engineering note that
-#    predates this site and cross-links the pre-split monorepo layout.
-#    Rewriting its links would edit a historical document to suit a
-#    renderer.
-#  * ``CHANGELOG.md`` / ``CONTRIBUTING.md`` are ``{include}``d from the
-#    repository root, so their sibling-file links resolve against docs/
-#    rather than the root.
-#
-# Seven targets, eight warnings -- vibe_view_live_reload.md is referenced
-# twice. Every entry names a specific target. If one stops appearing, delete
-# it: a stale entry here silently widens the gate.
-_KNOWN_MISSING_XREFS = (
-    "../../docs/user_guide/vibe_view_vq_jobs.md",
-    "../../docs/user_guide/vibe_view_live_reload.md",
-    "../../docs/user_guide/vibe_view_python_api.md",
-    "electron/PUBLISHING",
-    "README.md#history",
-    "SECURITY.md",
-    "LICENSE",
-)
-
+# Historical source-file links use absolute repository URLs. Keep the exact
+# exception set empty until a specific unavoidable target is documented.
+_KNOWN_MISSING_XREFS = ()
 
 class _SuppressKnownMissingXrefs:
     """Drop the warnings listed in ``_KNOWN_MISSING_XREFS``, and nothing else.

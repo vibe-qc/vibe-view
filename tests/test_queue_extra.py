@@ -3,7 +3,7 @@
 vq (vibe-queue) is the one optional dependency that is not installable from a
 package index, and the extra named a distribution that does not exist until
 2026-09-08 -- so `pip install vibeview[queue]` could not resolve even with a
-vibe-queue checkout already installed. These guard the metadata and the seven
+vibe-queue checkout already installed. These guard the metadata and the eight
 lazy import sites that have to survive its absence.
 """
 
@@ -14,21 +14,26 @@ import importlib.util
 import tomllib
 from pathlib import Path
 
-import pytest
-
 _ROOT = Path(__file__).resolve().parent.parent
 _PYPROJECT = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 _EXTRAS = _PYPROJECT["project"]["optional-dependencies"]
 
 
 def test_the_queue_extra_names_the_distribution_vibe_queue_actually_ships():
-    """vibe-queue's pyproject declares `name = "vq"`; `vibe-queue` is the
-    repository directory, not a package. Requiring the latter makes the extra
-    unresolvable against anything, forever."""
-    assert _EXTRAS["queue"] == ["vq>=0.25"], (
-        "the queue extra must require the `vq` distribution; if vibe-queue "
-        "renames, change it there first and follow here"
+    """vibe-queue renamed its distribution from `vq` to `vibe-queue` in 0.26.10
+    (the import package is still `vq`). A current install does not satisfy a
+    `vq` requirement, so the extra must name `vibe-queue`."""
+    assert _EXTRAS["queue"] == ["vibe-queue>=0.26.10"], (
+        "the queue extra must require the `vibe-queue` distribution; if "
+        "vibe-queue renames, change it there first and follow here"
     )
+
+
+def test_doctor_reads_the_vibe_queue_distribution():
+    from vibeview.onboarding import _OPTIONAL_REQUIREMENTS
+
+    (requirement,) = _OPTIONAL_REQUIREMENTS["queue"]
+    assert (requirement.module, requirement.distribution) == ("vq", "vibe-queue")
 
 
 def test_the_queue_extra_stays_out_of_all():
@@ -36,13 +41,17 @@ def test_the_queue_extra_stays_out_of_all():
     resolve if `all` pulled it. Deliberate -- keep it that way."""
     flat = " ".join(_EXTRAS["all"])
     assert "queue" not in flat and "vq" not in flat.split()
+    assert "vibe-queue" not in flat
 
 
 def test_every_vq_import_site_is_lazy():
     """A module-scope `import vq` would make the whole viewer need the extra."""
+    from tests._sources import source_files
+
     offenders = []
-    for name in ("app.py", "cli.py"):
-        tree = ast.parse((_ROOT / "src" / "vibeview" / name).read_text(encoding="utf-8"))
+    for path in [p for name in ("app.py", "cli.py") for p in source_files(name)]:
+        name = path.name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom) or node.module is None:
                 continue
@@ -73,15 +82,18 @@ def test_a_missing_queue_never_makes_the_install_unhealthy():
     assert report["healthy"] is True, "an optional extra must not gate health"
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("vq") is not None,
-    reason="vq is installed; the missing-extra path cannot run",
-)
-def test_doctor_tells_the_user_how_to_get_the_queue():
+def test_doctor_tells_the_user_how_to_get_the_queue(monkeypatch):
+    """Runs whether or not vq is installed: masking the module forces the
+    missing-extra branch (CONTRIBUTING.md, "Tests for optional dependencies
+    must run in every environment")."""
+    import sys
+
     from vibeview.onboarding import doctor_report
 
+    monkeypatch.setitem(sys.modules, "vq", None)
+
     row = doctor_report()["capabilities"]["queue"]
-    assert row["missing"] == ["vq"]
+    assert row["missing"] == ["vibe-queue"]
     assert "queue" in row["install_hint"]
     # vq is on no index, so the extra alone is not actionable.
     assert row["note"] and "vibe-queue" in row["note"]
@@ -108,10 +120,13 @@ def _vq_import_guards():
     A "site" is the *innermost* ``try`` guarding the import, not every
     enclosing one -- and it is one ``try``, not one import statement: the
     queue overview imports ``vq.config`` and ``vq.overview`` together under a
-    single guard, so eight import statements form seven sites.
+    single guard, so eight import statements form eight sites.
     """
-    for name in ("app.py", "cli.py"):
-        tree = ast.parse((_ROOT / "src" / "vibeview" / name).read_text(encoding="utf-8"))
+    from tests._sources import source_files
+
+    for path in [p for name in ("app.py", "cli.py") for p in source_files(name)]:
+        name = path.name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         parents: dict[ast.AST, ast.AST] = {}
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):
@@ -147,11 +162,11 @@ def _vq_import_guards():
             yield name, lineno, caught
 
 
-def test_all_seven_vq_sites_survive_a_missing_queue():
+def test_all_eight_vq_sites_survive_a_missing_queue():
     """Each guarded site must catch ImportError (or a broader class); an
     unguarded one takes the whole viewer down when the extra is absent."""
     sites = list(_vq_import_guards())
-    assert len(sites) == 7, f"expected 7 guarded vq import sites, found {len(sites)}"
+    assert len(sites) == 8, f"expected 8 guarded vq import sites, found {len(sites)}"
     unguarded = [
         f"{name}:{lineno} catches {caught or 'nothing'}"
         for name, lineno, caught in sites
@@ -163,12 +178,11 @@ def test_all_seven_vq_sites_survive_a_missing_queue():
 def test_every_vq_import_site_has_a_remediation_path():
     """Every other extra surfaces install_hint() when it is missing. The
     queue sites said only "vq is not installed"."""
-    sources = {
-        name: (_ROOT / "src" / "vibeview" / name).read_text(encoding="utf-8")
-        for name in ("app.py", "cli.py")
-    }
+    from tests._sources import read_source
+
+    sources = {name: read_source(name) for name in ("app.py", "cli.py")}
     mentions = sum(src.count("queue_missing_message(") for src in sources.values())
-    assert mentions >= 7, (
+    assert mentions >= 8, (
         f"only {mentions} queue_missing_message call sites; every ImportError "
         "path from a `from vq...` import must tell the user how to fix it"
     )

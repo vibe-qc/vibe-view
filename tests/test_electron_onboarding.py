@@ -44,9 +44,8 @@ def test_desktop_cli_uses_the_recorded_source_checkout(
     monkeypatch, tmp_path: Path
 ) -> None:
     import vibeview.install_hints as hints
-    from vibeview.cli import _electron_dir
 
     project = tmp_path / "vibe view"
     monkeypatch.setattr(hints, "source_project_dir", lambda: project)
 
-    assert _electron_dir() == project / "electron"
+    assert hints.electron_dir() == project / "electron"

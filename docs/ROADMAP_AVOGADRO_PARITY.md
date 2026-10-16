@@ -4,8 +4,8 @@
 > was split out of the monorepo: its last entry is dated 2026-08-25, and
 > everything it marks done shipped in v2.15.2. It is kept for its evidence and
 > reasoning and is no longer updated. Its issue numbers are the monorepo
-> tracker (project 19), not this repository's, and its `../../docs/user_guide/`
-> links point into the pre-split layout. For current status and remaining
+> tracker (project 19), not this repository's, and its former
+> `user_guide` links now point at the matching pages in this repository. For current status and remaining
 > work, see the [Roadmap](roadmap.md).
 
 **Goal:** make vibe-view the definitive builder/viewer for vibe-qc + vq work,
@@ -24,7 +24,7 @@ with the maintainer 2026-07-02 are recorded in [§0](#0-locked-decisions).
   status + log tail; and submit-from-viewer (generate input → `vq` submit with
   name/tag → track). Fixed two bugs that meant listing never worked (host
   `"local"` rejected by `vq.host.is_local_host`; sort on a nonexistent
-  `created_at`). See [`docs/user_guide/vibe_view_vq_jobs.md`](../../docs/user_guide/vibe_view_vq_jobs.md).
+  `created_at`). See [Jobs](jobs.md).
 - **M2 — file-watch hardening + live hot-reload COMPLETE (C1,
   A4-interim)** — `file_watcher.py` rewritten around a content fingerprint
   (per-section manifest digests + whole-file fallback), a settle delay, and
@@ -39,7 +39,7 @@ with the maintainer 2026-07-02 are recorded in [§0](#0-locked-decisions).
   switch/open blanked the 3D scene, and
   `toggle_file_watcher`/`toggle_dark_ui` were trapped inside
   `camera_preset`'s body and never registered until a preset was clicked.
-  See [`docs/user_guide/vibe_view_live_reload.md`](../../docs/user_guide/vibe_view_live_reload.md).
+  See [Browser viewer](browser.md).
 - **M4 — live result streaming COMPLETE (A4, C2–C3)** — the viewer now
   consumes Ask A's streaming checkpoint fields (below). `QVFReader` exposes
   `run_status` / `checkpoint_info` / `section_is_partial`; an app-bar chip
@@ -54,7 +54,7 @@ with the maintainer 2026-07-02 are recorded in [§0](#0-locked-decisions).
   (`checkpoint_qvf=$VQ_WORKDIR/checkpoint.qvf`) so a just-submitted job is
   immediately watchable. Verified end-to-end with trusted-event Playwright
   against a progressive checkpoint producer (`docs/qa_live_stream.py`, 5/5).
-  See [`docs/user_guide/vibe_view_live_reload.md`](../../docs/user_guide/vibe_view_live_reload.md) §
+  See [Browser viewer](browser.md) §
   Streaming a running job.
 - **M3 — live geometry optimization COMPLETE (B1–B2, 2026-07-08)** — the
   Avogadro-signature builder feature, powered by vibe-qc per decision 2:
@@ -515,8 +515,9 @@ milestones.
 - ~~Crystal `miller_slab` d-spacing fix (audit deferred item).~~ **Done
   2026-07-28.** Reciprocal-lattice spacing; thickness and layer selection
   corrected with it; non-c-normal orientations now raise instead of
-  returning a mislabelled box. A general surface cell (two lattice vectors
-  spanning the plane, as ASE's `surface()` does) remains unimplemented.
+  returning a mislabelled box. **General surface cell done 2026-09-18:**
+  two lattice vectors spanning the plane and one stepping along the normal,
+  the construction ASE's `surface()` uses; any orientation of any cell.
 - Fragment/template expansion. **Auto-bonding: the periodic edge case is
   fixed (2026-07-28)** — bonds through cell walls were missed entirely, so
   crystals and slabs rendered with unbonded surfaces. Remaining bonding
@@ -578,7 +579,7 @@ milestones.
 - ~~Cross-platform `.app`/AppImage bundling (currently dev-mode only).~~
   **Mostly built; remaining work is not agent-actionable.** The onboarding
   app, the `mac`/`linux`/`win` electron-builder targets, `build-desktop.sh`
-  and the [publishing runbook](../electron/PUBLISHING.md) are all on `main`,
+  and the [publishing runbook](https://github.com/vibe-qc/vibe-view/blob/main/electron/PUBLISHING.md) are all on `main`,
   and the auto-update feed is live. What is left is gated on things an agent
   must not or cannot do: the feed publish is a **maintainer-run deploy**
   needing an SSH deploy key (deliberately excluded from the version bump —
@@ -588,7 +589,7 @@ milestones.
   Signing stays deferred (no Apple Developer ID).
 - ~~Plugin/script surface documentation for the Python SDK.~~ **DONE
   2026-08-05** —
-  [`docs/user_guide/vibe_view_python_api.md`](../../docs/user_guide/vibe_view_python_api.md)
+  [Python API](python_api.md)
   documents the supported `vibeview.__all__` surface with verified examples,
   and scopes what a real plugin API would require. There is no plugin API
   today; the page says so rather than implying one.

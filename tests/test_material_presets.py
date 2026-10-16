@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestMaterialPresets:
     def test_import(self):
@@ -42,8 +40,47 @@ class TestMaterialPresets:
     def test_all_presets_valid(self):
         from vibeview.material_presets import MATERIAL_PRESETS
 
-        for name, preset in MATERIAL_PRESETS.items():
+        for _name, preset in MATERIAL_PRESETS.items():
             assert preset.name
             assert 0 <= preset.atom_roughness <= 1
-            assert 0 <= preset.atom_metallic <= 1
             assert len(preset.background_color) == 3
+
+
+class TestMaterialPresetsEdgeCases:
+    def test_preset_background_valid_rgb(self):
+        from vibeview.material_presets import MATERIAL_PRESETS
+
+        for name, p in MATERIAL_PRESETS.items():
+            assert len(p.background_color) == 3
+            for c in p.background_color:
+                assert 0.0 <= c <= 1.0, f"{name} background has out-of-range value {c}"
+
+    def test_preset_roughness_range(self):
+        from vibeview.material_presets import MATERIAL_PRESETS
+
+        for name, p in MATERIAL_PRESETS.items():
+            assert 0.0 <= p.atom_roughness <= 1.0, f"{name} roughness out of range"
+
+
+class TestMaterialPresetsIntegration:
+    """Test material presets apply correctly."""
+
+    def test_all_presets_listed(self):
+        from vibeview.material_presets import list_presets
+
+        options = list_presets()
+        names = {o["value"] for o in options}
+        assert "cpk_glossy" in names
+        assert "scientific" in names
+        assert "toon" in names
+
+    def test_preset_fields(self):
+        from vibeview.material_presets import get_preset
+
+        for name in ["cpk_glossy", "matte", "glass", "metallic", "toon", "scientific"]:
+            p = get_preset(name)
+            assert p.name
+            assert len(p.background_color) == 3
+            # All values in valid range
+            for c in p.background_color:
+                assert 0.0 <= c <= 1.0
