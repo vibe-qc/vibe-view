@@ -6,6 +6,11 @@ from pathlib import Path
 
 import pytest
 
+# Every test here drives the Textual app. One module-level gate instead of a
+# call in each test body; [test] includes [tui], so in the gate this never
+# skips.
+pytest.importorskip("textual", reason="the terminal viewer needs the [tui] extra")
+
 # ── the app ───────────────────────────────────────────────────────────────
 
 
@@ -52,7 +57,6 @@ def test_app_starts_and_navigates(sample_qvf):
             await pilot.press("t")
             assert app.show_table
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -72,7 +76,6 @@ def test_app_starts_when_no_color_is_requested(sample_qvf, monkeypatch):
             await pilot.press("tab")
             assert app.current[1] == "volume.density"
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -87,7 +90,6 @@ def test_app_viewport_paints_content(sample_qvf):
             assert grid is not None
             assert grid.filled.any(), "viewport rendered nothing for a structure"
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -105,7 +107,6 @@ def test_app_isovalue_and_replication_keys(sample_qvf):
             await pilot.press("X")
             assert app.replication[0] == 1
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -119,7 +120,6 @@ def test_app_chart_toggle(sample_qvf):
             await pilot.press("g")
             assert app.show_chart is True
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -168,7 +168,6 @@ def test_wavefunction_section_renders_and_selects_orbitals():
             await pilot.press("o")
             assert app._current_scene().meshes == []
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -194,7 +193,6 @@ def test_wavefunction_orbital_table_enter_renders_highlighted_row():
             assert app.wavefunction_surface == "mo:restricted:1"
             assert len(app._current_scene().meshes) == 2
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -215,7 +213,6 @@ def test_wavefunction_orbital_table_first_click_renders_row():
             assert app.wavefunction_surface == "mo:restricted:1"
             assert len(app._current_scene().meshes) == 2
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -245,7 +242,6 @@ def test_help_is_scrollable_and_takes_focus_at_small_terminal_size():
             await pilot.press("down")
             assert app.orbital_table.cursor_row != before_row
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -267,7 +263,6 @@ def test_text_only_section_fills_body_without_blank_graphics_region():
             body_height = app.query_one("#body").region.height
             assert app.text_scroll.region.height >= body_height - 1
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -307,7 +302,6 @@ def test_localized_wavefunction_rows_all_render_without_fake_energies():
                 app._select_wavefunction_surface(f"mo:{row['value']}")
                 assert app._current_scene().meshes
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -363,7 +357,6 @@ def test_unrestricted_wavefunction_routes_beta_mos_and_spin_density():
             assert app.wavefunction_surface == "spin_density"
             assert app._current_scene().meshes
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -409,7 +402,6 @@ def test_natural_transition_weights_do_not_masquerade_as_total_density():
             assert app.wavefunction_surface == before
             assert "transition weights" in app.status_text
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -439,7 +431,6 @@ def test_wavefunction_without_occupations_does_not_offer_density():
             assert app.wavefunction_surface == before
             assert "no occupations" in app.status_text
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -523,7 +514,6 @@ def test_wavefunction_sampling_warning_survives_mesh_cache(monkeypatch):
             app._current_scene()
             assert "24%" in app.status_text and "incomplete" in app.status_text
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -548,7 +538,6 @@ def test_empty_wavefunction_contour_stays_empty_on_cache_hit():
             assert "cached" in app.status_text
             assert not app.status_text.startswith("rendered")
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -581,7 +570,6 @@ def test_wavefunction_contour_failures_are_retried_not_cached(monkeypatch):
             assert "transient contour failure" in app.status_text
             assert calls == 2
 
-    pytest.importorskip("textual")
     _drive(body)
 
 
@@ -627,5 +615,4 @@ def test_hidden_orbital_table_never_steals_structure_arrow_keys():
             await pilot.press("right")
             assert not np.allclose(app.camera.rotation, before)
 
-    pytest.importorskip("textual")
     _drive(body)

@@ -78,7 +78,10 @@ def to_cells(
     return _to_braille_cells(pixels, covered)
 
 
-def _to_braille_cells(pixels, covered):
+Cells = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+
+
+def _to_braille_cells(pixels: np.ndarray, covered: np.ndarray) -> Cells:
     height, width = covered.shape
     rows, cols = height // 4, width // 2
     if rows == 0 or cols == 0:
@@ -104,7 +107,7 @@ def _to_braille_cells(pixels, covered):
     return codepoints, fg, bg, filled
 
 
-def _to_half_cells(pixels):
+def _to_half_cells(pixels: np.ndarray) -> Cells:
     height, width = pixels.shape[:2]
     rows, cols = height // 2, width
     if rows == 0 or cols == 0:
@@ -118,59 +121,6 @@ def _to_half_cells(pixels):
     codepoints = np.full((rows, cols), _UPPER_HALF, dtype=np.int32)
     filled = np.ones((rows, cols), dtype=bool)
     return codepoints, fg, bg, filled
-
-
-def to_ansi(
-    pixels: np.ndarray,
-    covered: np.ndarray,
-    mode: str = "braille",
-    background: tuple[int, int, int] | None = None,
-) -> str:
-    """Render a pixel buffer as an ANSI truecolour string, one line per row.
-
-    Used by the non-interactive ``vibe-view show`` path; the Textual widget
-    builds Rich segments from :func:`to_cells` instead. Adjacent cells
-    sharing a style collapse into one escape sequence, which keeps a full
-    frame to a few kilobytes rather than one sequence per character.
-    """
-    codepoints, fg, bg, filled = to_cells(pixels, covered, mode)
-    rows, cols = codepoints.shape
-    use_bg = mode == "half" or background is not None
-    bg_default = background or (0, 0, 0)
-
-    lines: list[str] = []
-    for r in range(rows):
-        parts: list[str] = []
-        prev: tuple | None = None
-        for c in range(cols):
-            if not filled[r, c] and mode != "half":
-                style: tuple = ("plain",)
-                char = " "
-            else:
-                fr, fg_, fb = (int(v) for v in fg[r, c])
-                if use_bg:
-                    br, bgc, bb = (
-                        (int(v) for v in bg[r, c]) if mode == "half" else bg_default
-                    )
-                    style = ("both", fr, fg_, fb, br, bgc, bb)
-                else:
-                    style = ("fg", fr, fg_, fb)
-                char = chr(int(codepoints[r, c]))
-            if style != prev:
-                if style[0] == "plain":
-                    parts.append("\x1b[0m")
-                elif style[0] == "fg":
-                    parts.append(f"\x1b[38;2;{style[1]};{style[2]};{style[3]}m")
-                else:
-                    parts.append(
-                        f"\x1b[38;2;{style[1]};{style[2]};{style[3]}"
-                        f";48;2;{style[4]};{style[5]};{style[6]}m"
-                    )
-                prev = style
-            parts.append(char)
-        parts.append("\x1b[0m")
-        lines.append("".join(parts))
-    return "\n".join(lines)
 
 
 class CellGrid:
@@ -187,7 +137,11 @@ class CellGrid:
     def __init__(self, cols: int, rows: int, background: tuple[int, int, int] = (0, 0, 0)) -> None:
         self.cols = max(1, int(cols))
         self.rows = max(1, int(rows))
-        self.background = tuple(background)
+        self.background: tuple[int, int, int] = (
+            int(background[0]),
+            int(background[1]),
+            int(background[2]),
+        )
         self.chars = np.full((self.rows, self.cols), " ", dtype="<U1")
         self.fg = np.zeros((self.rows, self.cols, 3), dtype=np.uint8)
         self.bg = np.tile(np.array(background, dtype=np.uint8), (self.rows, self.cols, 1))
@@ -210,7 +164,17 @@ class CellGrid:
             return
         sub = (slice(0, r1 - r0), slice(0, c1 - c0))
         target = (slice(r0, r1), slice(c0, c1))
-        keep = filled[sub] if mode != "half" else np.ones_like(filled[sub])
+        if mode == "half":
+            # A half-block cell is written only where either of its two
+            # pixels holds geometry: blitting an empty buffer used to paint
+            # every cell and erase text already on the grid (#38-47).
+            rows_px = h * 2
+            half_covered = (
+                np.asarray(covered, dtype=bool)[:rows_px, :w].reshape(h, 2, w).any(axis=1)
+            )
+            keep = half_covered[sub]
+        else:
+            keep = filled[sub]
         chars = np.vectorize(chr)(codepoints[sub]) if codepoints[sub].size else codepoints[sub]
 
         dest_chars = self.chars[target]
@@ -253,7 +217,9 @@ class CellGrid:
             if background is not None:
                 self.bg[row, c] = background
 
-    def text_right(self, row: int, col_end: int, value: str, color=(210, 214, 224)) -> None:
+    def text_right(
+        self, row: int, col_end: int, value: str, color: tuple[int, int, int] = (210, 214, 224)
+    ) -> None:
         """Right-align ``value`` so its last character lands on ``col_end``."""
         self.text(row, col_end - len(value) + 1, value, color)
 
@@ -264,30 +230,29 @@ class CellGrid:
 
         Run-length compression matters here: a Textual repaint emits one
         styled segment per run, and a 200-column uncompressed row would be
-        200 segments times 50 rows every frame.
+        200 segments times 50 rows every frame. The run boundaries come from
+        one vectorised comparison of the row's style columns rather than a
+        Python loop over every cell.
         """
+        if self.cols == 0:
+            return []
+        filled = self.filled[row]
+        fg = np.where(filled[:, None], self.fg[row], 0).astype(np.int64)
+        bg = np.where(filled[:, None], self.bg[row], np.asarray(self.background)).astype(np.int64)
+        style = np.concatenate([filled[:, None].astype(np.int64), fg, bg], axis=1)
+        change = np.flatnonzero(np.any(style[1:] != style[:-1], axis=1)) + 1
+        starts = np.concatenate([[0], change])
+        ends = np.concatenate([change, [self.cols]])
+        chars = np.where(filled, self.chars[row], " ")
         runs: list[tuple[str, tuple[int, int, int] | None, tuple[int, int, int]]] = []
-        chars: list[str] = []
-        prev: tuple | None = None
-        for c in range(self.cols):
-            if not self.filled[row, c]:
-                style = (None, self.background)
-                char = " "
+        for start, end in zip(starts, ends, strict=True):
+            text = "".join(chars[start:end].tolist())
+            if filled[start]:
+                fg_run = (int(fg[start, 0]), int(fg[start, 1]), int(fg[start, 2]))
+                bg_run = (int(bg[start, 0]), int(bg[start, 1]), int(bg[start, 2]))
+                runs.append((text, fg_run, bg_run))
             else:
-                style = (
-                    (int(self.fg[row, c, 0]), int(self.fg[row, c, 1]), int(self.fg[row, c, 2])),
-                    (int(self.bg[row, c, 0]), int(self.bg[row, c, 1]), int(self.bg[row, c, 2])),
-                )
-                char = str(self.chars[row, c])
-            if style != prev:
-                if chars and prev is not None:
-                    runs.append(("".join(chars), prev[0], prev[1]))
-                chars = [char]
-                prev = style
-            else:
-                chars.append(char)
-        if chars and prev is not None:
-            runs.append(("".join(chars), prev[0], prev[1]))
+                runs.append((text, None, self.background))
         return runs
 
     def to_ansi(self) -> str:
@@ -295,10 +260,10 @@ class CellGrid:
         lines: list[str] = []
         for r in range(self.rows):
             parts: list[str] = []
-            prev: tuple | None = None
+            prev: tuple[int, ...] | None = None
             for c in range(self.cols):
                 if not self.filled[r, c]:
-                    style: tuple = ()
+                    style: tuple[int, ...] = ()
                     char = " "
                 else:
                     style = (
@@ -330,18 +295,3 @@ class CellGrid:
             "".join(str(self.chars[r, c]) for c in range(self.cols)).rstrip()
             for r in range(self.rows)
         )
-
-
-def to_plain(pixels: np.ndarray, covered: np.ndarray, mode: str = "braille") -> str:
-    """Colourless render — for pipes, CI logs, and doctest-style assertions."""
-    codepoints, _fg, _bg, filled = to_cells(pixels, covered, mode)
-    rows, cols = codepoints.shape
-    lines = []
-    for r in range(rows):
-        lines.append(
-            "".join(
-                chr(int(codepoints[r, c])) if (filled[r, c] or mode == "half") else " "
-                for c in range(cols)
-            ).rstrip()
-        )
-    return "\n".join(lines)

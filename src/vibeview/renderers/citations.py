@@ -9,10 +9,10 @@ manuscript.
 
 from __future__ import annotations
 
-import html
 from typing import TYPE_CHECKING
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._html import note, panel_document, preformatted
 
 if TYPE_CHECKING:
     from vibeview.qvf import CitationsData, QVFReader, Section
@@ -39,22 +39,11 @@ class CitationsRenderer(BaseRenderer):
         """
         data = self.load()
         n_entries = _count_bib_entries(data.bibtex)
-        body = html.escape(data.bibtex)
         plural = "y" if n_entries == 1 else "ies"
-        return (
-            "<!doctype html><html><head><meta charset='utf-8'><style>"
-            "html,body{margin:0;padding:0;height:100%;"
-            "font-family:system-ui,sans-serif;}"
-            "body{display:flex;flex-direction:column;}"
-            ".count{padding:6px 10px;font-size:0.9em;opacity:0.7;"
-            "border-bottom:1px solid #ddd;}"
-            "pre{flex:1 1 auto;overflow:auto;margin:0;padding:8px 12px;"
-            "font-family:ui-monospace,Menlo,monospace;font-size:12px;"
-            "line-height:1.4;white-space:pre-wrap;word-break:break-word;}"
-            "</style></head><body>"
-            f"<div class='count'>{n_entries} bibliography entr{plural}</div>"
-            f"<pre>{body}</pre>"
-            "</body></html>"
+        return panel_document(
+            note(f"{n_entries} bibliography entr{plural}") + preformatted(data.bibtex),
+            # The bibliography is the whole panel: let it use the height.
+            extra_css="pre{max-height:none;}",
         )
 
 

@@ -9,95 +9,304 @@ m = -l, ..., +l, and Cartesian is libint lexicographic.
 ``N_i`` is one factor per shell, derived from the total ``l``, so for
 Cartesian shells the primitives are not individually unit-normalized
 (``<xy|xy> = 1/3`` for a d shell). This reader must not add a
-per-component correction on top of it -- see :func:`_cartesian_factors`.
+per-component correction on top of it -- see :func:`_angular_terms`.
 
 This renderer evaluates orbitals up to l = 3 (s, p, d, f) in either pure
 or Cartesian form. Shells with l > 3 are silently skipped — that loses
 accuracy on high-l basis sets but keeps the viewer usable for the
 overwhelming majority of files.
 
-The output is a dense [nx, ny, nz] float32 volume in Bohr coordinates,
-shipped through the existing `VolumeRenderer` so the rest of the
-isosurface UI just works.
+Every field is evaluated in atomic units and returned as a dense
+``[nx, ny, nz]`` float32 volume on a :class:`~vibeview.qvf.GridData` laid
+out in Å (``units="angstrom"``), so the same isosurface helpers that draw a
+stored ``volume.*`` section draw these.
 """
 
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from vibeview.qvf import GridData
+from vibeview.qvf import LOCALIZED_ORBITAL_KINDS, GridData
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._plotly import DEFAULT_HEIGHT, chart_layout, figure_to_html
+from vibeview.renderers.palette import ACCENT_BLUE, ACCENT_RED
+from vibeview.renderers.volume import apply_component
+from vibeview.units import ANGSTROM_TO_BOHR as _ANGSTROM_TO_BOHR
+from vibeview.units import BOHR_TO_ANGSTROM as _BOHR_TO_ANGSTROM
+from vibeview.units import (
+    HARTREE_TO_EV,
+    energy_factor,
+    energy_from_hartree,
+    energy_label,
+    format_energy,
+)
+from vibeview.units import energy_unit as _energy_unit_key
 
 if TYPE_CHECKING:
-    from vibeview.qvf import BasisShell, QVFReader, Section, WavefunctionGTOData
+    from vibeview.qvf import BasisShell, QVFReader, Section, StructureData, WavefunctionGTOData
 
 
-_ANGSTROM_TO_BOHR = 1.0 / 0.529177210903
-_BOHR_TO_ANGSTROM = 0.529177210903
+
+@dataclass(frozen=True)
+class _MolecularBox:
+    """A sampling box around a molecule: axes in bohr, the grid in Å."""
+
+    xs: np.ndarray
+    ys: np.ndarray
+    zs: np.ndarray
+    step_bohr: np.ndarray
+    grid: GridData
+
+
+def _molecular_grid(
+    positions_bohr: np.ndarray, padding_bohr: float, n_per_dim: int
+) -> _MolecularBox:
+    """The one bounding box every molecular field is sampled on.
+
+    ``n_per_dim`` points per axis over the atoms' bounding box padded by
+    ``padding_bohr``; the returned ``grid`` places those samples in Å.
+    """
+    lo = positions_bohr.min(axis=0) - padding_bohr
+    hi = positions_bohr.max(axis=0) + padding_bohr
+    n = int(n_per_dim)
+    step_bohr = (hi - lo) / max(n - 1, 1)
+    grid = GridData(
+        origin=(lo * _BOHR_TO_ANGSTROM).astype(np.float64),
+        voxel_vectors=np.diag(step_bohr * _BOHR_TO_ANGSTROM).astype(np.float64),
+        shape=(n, n, n),
+        units="angstrom",
+    )
+    return _MolecularBox(
+        np.linspace(lo[0], hi[0], n), np.linspace(lo[1], hi[1], n), np.linspace(lo[2], hi[2], n),
+        step_bohr, grid,
+    )
+
+
+@dataclass(frozen=True)
+class _ShellBlock:
+    """One shell's share of an evaluation, from :meth:`_shell_blocks`."""
+
+    shell: BasisShell
+    ao_index: int
+    deltas: tuple[np.ndarray, np.ndarray, np.ndarray]
+    radial: np.ndarray
+    radial_d: np.ndarray | None
+    radial_dd: np.ndarray | None
+
+
+# Which part of a (possibly complex) orbital value to draw: the shared
+# vocabulary of renderers.volume, minus ``density`` (an orbital's density is
+# a different field, evaluate_density).
+_ORBITAL_COMPONENTS = ("real", "imag", "magnitude")
 
 _OCC_THRESHOLD = 1e-3  # occupation above which an MO counts as occupied
-_OCC_ELECTRON_TOL = 0.05
-_OCC_INTEGER_TOL = 1e-6
+#: Tolerance on the occupation sum against the provenance electron count.
+OCC_ELECTRON_TOL = 0.05
+#: Tolerance for "is an integer" on a canonical occupation.
+OCC_INTEGER_TOL = 1e-6
+_OCC_ELECTRON_TOL = OCC_ELECTRON_TOL
+_OCC_INTEGER_TOL = OCC_INTEGER_TOL
 _SPIN_SHORT = {"restricted": "", "alpha": "α", "beta": "β"}
-_ELECTRON_OCCUPATION = "electron_occupation"
-_TRANSITION_WEIGHT = "transition_weight"
+#: The two meanings a natural-orbital section may declare for ``occupations``.
+ELECTRON_OCCUPATION = "electron_occupation"
+TRANSITION_WEIGHT = "transition_weight"
+_ELECTRON_OCCUPATION = ELECTRON_OCCUPATION
+_TRANSITION_WEIGHT = TRANSITION_WEIGHT
 
 
-def _frontier_indices(occupations, n_mo: int) -> tuple[int, int]:
-    """Return ``(homo_index, lumo_index)`` for one spin block.
+def describe_transition_orbitals(data: object) -> str | None:
+    """One line naming the state a set of natural transition orbitals describes.
 
-    A canonical HOMO/LUMO exists only for integer occupations. Fractional
-    canonical occupations describe smearing or an ensemble, whose frontier
-    is a Fermi level rather than an orbital index. Returns ``(-1, -1)`` when
-    occupations are unavailable or fractional so no row is mislabelled.
+    ``"state 1, 4.123 eV, hole"`` from :class:`vibeview.qvf.TransitionOrbitals`,
+    with what the archive leaves out omitted; None for other orbitals. The
+    browser and the terminal show the same text for an archive that uses the
+    canonical carriers and one that uses the deprecated keys (spec § 5.3).
     """
-    if occupations is None or len(occupations) == 0:
-        return (-1, -1)
-    occ = np.asarray(occupations[:n_mo], dtype=float)
-    if not np.allclose(occ, np.rint(occ), atol=_OCC_INTEGER_TOL):
-        return (-1, -1)
-    occupied = np.nonzero(np.rint(occ) > 0)[0]
-    if occupied.size == 0:
-        return (-1, 0 if n_mo > 0 else -1)
-    homo = int(occupied.max())
-    lumo = homo + 1 if homo + 1 < n_mo else -1
-    return (homo, lumo)
+    nto = getattr(data, "transition_orbitals", None)
+    if nto is None:
+        return None
+    parts = []
+    if nto.state_index is not None:
+        parts.append(f"state {nto.state_index}")
+    if nto.excitation_energy_ev is not None:
+        parts.append(f"{nto.excitation_energy_ev:.3f} eV")
+    if nto.role is not None:
+        parts.append(nto.role)
+    return ", ".join(parts) or "natural transition orbitals"
 
 
-def _natural_frontier_indices(occupations, n_mo: int) -> tuple[int, int]:
-    """HONO/LUNO indices for a confirmed natural-occupation spin block."""
-    if occupations is None or n_mo <= 0:
-        return (-1, -1)
-    counts = np.asarray(occupations[:n_mo], dtype=float)
-    if counts.size == 0:
-        return (-1, -1)
-    occupied = np.flatnonzero(np.rint(counts) > 0)
-    hono = int(occupied[-1]) if occupied.size else -1
-    search_from = hono + 1 if hono >= 0 else 0
-    empty = np.flatnonzero(np.rint(counts[search_from:]) == 0)
-    luno = search_from + int(empty[0]) if empty.size else -1
-    return (hono, luno)
+def natural_value_semantics(data: object) -> str | None:
+    """The declared meaning of a natural set's values, or None when unmarked.
+
+    New archives state it in ``occupation_semantics``. An unmarked natural
+    set is deliberately ``None``: its values may be electron occupations or
+    transition weights, and neither a section id nor their sum can tell.
+    """
+    explicit = getattr(data, "occupation_semantics", None)
+    if isinstance(explicit, str) and explicit in {ELECTRON_OCCUPATION, TRANSITION_WEIGHT}:
+        return explicit
+    return None
+
+
+def frontier_orbitals(
+    occ: np.ndarray | None,
+    n_orbitals: int,
+    orbital_kind: str | None,
+    n_electrons: int | float | None = None,
+    occupation_semantics: str | None = None,
+) -> tuple[int | None, int | None, str | None]:
+    """``(homo, lumo, undefined_reason)`` for one spin block.
+
+    The one frontier rule for the browser picker, the energy diagram and
+    the terminal panes. An orbital is occupied or it is not: canonical
+    sets and natural sets with explicit electron-occupation semantics hold
+    an electron count per MO, and rounding to nearest is the frontier test
+    (robust to a JSON round trip: 1.9999999 is occupied, 0.4 is not).
+
+    Where a canonical set's occupations are not integers, the HOMO and
+    LUMO do not exist: smeared or finite-temperature occupations have a
+    Fermi level, not an orbital index. Natural orbitals are fractionally
+    occupied by construction, and the literature does speak of a highest
+    occupied one: Pulay & Hamilton, J. Chem. Phys. 88, 4926 (1988),
+    doi:10.1063/1.454704, § II, classify UHF natural orbitals by occupancy
+    into doubly occupied, fractionally occupied and virtual with a window
+    they call "somewhat arbitrary"; rounding to nearest is looser and only
+    moves the frontier outward. A natural set names a frontier only when
+    its values are declared electron occupations and, when the provenance
+    records ``n_electrons``, sum to it. Localized orbitals are not energy
+    ordered, so "highest" has no referent for them.
+
+    ``undefined_reason`` says why no frontier is named; the LUMO is the
+    lowest virtual *above* the HOMO, so a non-aufbau hole below a filled
+    level cannot invert the reported gap.
+    """
+    if occ is None or n_orbitals == 0:
+        return None, None, None
+    n = min(len(occ), n_orbitals)
+    if n == 0:
+        return None, None, None
+    if orbital_kind in LOCALIZED_ORBITAL_KINDS:
+        return None, None, "localized orbitals are not energy ordered"
+
+    counts = np.asarray(occ[:n], dtype=float)
+    fractional = not np.allclose(counts, np.rint(counts), atol=OCC_INTEGER_TOL)
+    if orbital_kind == "natural":
+        if occupation_semantics == TRANSITION_WEIGHT:
+            return None, None, (
+                "transition weights (natural transition orbitals), not electron "
+                "occupations, so no frontier is named"
+            )
+        if occupation_semantics != ELECTRON_OCCUPATION:
+            return None, None, (
+                "the archive does not declare whether these natural-orbital values "
+                "are electron occupations or transition weights, so no frontier is named"
+            )
+        if n_electrons is not None:
+            total = float(np.sum(counts))
+            if abs(total - float(n_electrons)) > OCC_ELECTRON_TOL:
+                return None, None, (
+                    f"occupations sum to {total:.4g}, not the {n_electrons} electrons in "
+                    "this system: this is a partial or inconsistent occupation set"
+                )
+    elif fractional:
+        return None, None, (
+            "fractional occupations (smearing or an ensemble), so the frontier is a Fermi"
+            " level rather than an orbital"
+        )
+
+    filled = np.rint(counts) > 0
+    occupied = np.flatnonzero(filled)
+    homo = int(occupied[-1]) if occupied.size else None
+    search_from = 0 if homo is None else homo + 1
+    empty = np.flatnonzero(~filled[search_from:])
+    lumo = int(empty[0] + search_from) if empty.size else None
+    return homo, lumo, None
+
+
+def _block_frontier(
+    orbital_kind: str | None,
+    occupations: np.ndarray | None,
+    n_mo: int,
+    *,
+    natural_confirmed: bool,
+    n_electrons: int | float | None = None,
+) -> tuple[int, int]:
+    """Frontier pair as indices for one spin block, ``-1`` where none exists.
+
+    A thin adapter over :func:`frontier_orbitals`, whose reasons the MO
+    picker and the energy diagram do not display; ``natural_confirmed`` is
+    the caller's answer to "are these natural values electron counts".
+    """
+    semantics = ELECTRON_OCCUPATION if natural_confirmed else None
+    homo, lumo, _reason = frontier_orbitals(
+        occupations, n_mo, orbital_kind, n_electrons, semantics
+    )
+    return (-1 if homo is None else homo, -1 if lumo is None else lumo)
+
+
+def occupation_problem(
+    wf: WavefunctionGTOData, semantics: str | None, n_electrons: int | float | None
+) -> str | None:
+    """Why ``wf``'s occupations are not electron counts, or None when they are.
+
+    Shared by the browser's density and frontier logic and the terminal's
+    density availability check, so both say the same thing about the same
+    archive. Imported orbital sets can explicitly lack enough information for
+    density reconstruction even when they include electron occupations.
+    """
+    if wf.density_unavailable_reason:
+        return wf.density_unavailable_reason
+    blocks = (
+        (wf.alpha_occupations, wf.beta_occupations)
+        if wf.spin == "unrestricted"
+        else (wf.occupations,)
+    )
+    if any(block is None for block in blocks):
+        return "this wavefunction has no occupations"
+    if wf.orbital_kind != "natural":
+        return None
+    if semantics == TRANSITION_WEIGHT:
+        return (
+            "natural transition orbitals carry transition weights, not electron occupations"
+        )
+    if semantics != ELECTRON_OCCUPATION:
+        return (
+            "this natural-orbital section does not declare whether its values are "
+            "electron occupations or transition weights"
+        )
+    total = sum(float(np.asarray(block, dtype=float).sum()) for block in blocks)
+    if n_electrons is not None and abs(total - float(n_electrons)) > OCC_ELECTRON_TOL:
+        return (
+            f"values sum to {total:.4g}, not {n_electrons} electrons; this is a partial or "
+            "inconsistent occupation set"
+        )
+    return None
 
 
 def _mo_row_title(
     spin_label: str,
     index: int,
-    energy,
-    occ,
+    energy: float | None,
+    occ: float | None,
     sym_label: str,
     marker: str,
     occupation_label: str = "occ",
+    energy_display_unit: str = "hartree",
 ) -> str:
     """Compose a self-describing MO picker label, e.g.
-    ``"α #12  −0.314 Eh  occ 1.00  HOMO  (a1)"``."""
+    ``"α #12  −0.314 Eh  occ 1.00  HOMO  (a1)"``.
+
+    ``energy`` is in Hartree; ``energy_display_unit`` picks how it reads."""
     prefix = _SPIN_SHORT.get(spin_label, "")
     head = f"{prefix} #{index}" if prefix else f"#{index}"
     parts = [head.strip()]
     if energy is not None:
-        parts.append(f"{energy:+.3f} Eh")
+        parts.append(format_energy(energy, energy_display_unit))
     if occ is not None:
         parts.append(f"{occupation_label} {occ:.2f}")
     if marker:
@@ -108,7 +317,11 @@ def _mo_row_title(
 
 
 def _localized_row_title(
-    index: int, symbols, populations, n_centres, threshold: float = 0.10
+    index: int,
+    symbols: Sequence[str] | None,
+    populations: np.ndarray | Sequence[float] | None,
+    n_centres: int | None,
+    threshold: float = 0.10,
 ) -> str:
     """Picker label for a localized orbital, e.g. ``"#3  C1-H4 bond  (2c)"``.
 
@@ -150,6 +363,7 @@ class WavefunctionRenderer(BaseRenderer):
     def __init__(self, section: Section, reader: QVFReader) -> None:
         super().__init__(section, reader)
         self._wf: WavefunctionGTOData | None = None
+        self._centre_structures: dict[str, StructureData] = {}
         # Diagnostics from the most recent evaluate_mo() call. l>3 shells
         # are not yet evaluated (renderer scope is s,p,d,f), so a fraction
         # of the orbital's weight may be dropped; we surface it (A2-04).
@@ -168,6 +382,22 @@ class WavefunctionRenderer(BaseRenderer):
             return 0 if wf.mo_coefficients_alpha is None else int(wf.mo_coefficients_alpha.shape[0])
         return 0 if wf.mo_coefficients is None else int(wf.mo_coefficients.shape[0])
 
+    def _natural_occupations_confirmed(self, wf: WavefunctionGTOData) -> bool:
+        """True when a natural set's ``occupations`` are electron counts.
+
+        Requires the producer's explicit ``electron_occupation`` semantics
+        and, when the provenance records ``n_electrons``, a matching sum;
+        transition weights or an unmarked set never confirm.
+        """
+        if wf.orbital_kind != "natural":
+            return False
+        return occupation_problem(wf, self.natural_value_semantics(), self.electron_count()) is None
+
+    def electron_count(self) -> int | float | None:
+        """The provenance's ``n_electrons``, when the archive records one."""
+        value = self.reader.provenance.get("n_electrons")
+        return value if isinstance(value, int | float) else None
+
     def natural_value_semantics(self) -> str | None:
         """Meaning of ``occupations`` for a natural-orbital section.
 
@@ -176,14 +406,13 @@ class WavefunctionRenderer(BaseRenderer):
         transition weights, and neither a section id nor their sum can
         distinguish those cases reliably.
         """
-        wf = self.load()
-        explicit = getattr(wf, "occupation_semantics", None)
-        if explicit in {_ELECTRON_OCCUPATION, _TRANSITION_WEIGHT}:
-            return explicit
-        return None
+        return natural_value_semantics(self.load())
 
-    def mo_table(self) -> list[dict]:
+    def mo_table(self, energy_unit: str = "hartree") -> list[dict[str, Any]]:
         """Rows describing every MO, for the UI picker.
+
+        ``energy_unit`` (a ``vibeview.units.ENERGY_UNITS`` key) sets the unit
+        of the energy in each ``title``; ``energy_eh`` stays in Hartree.
 
         Each row carries a **composite** ``value`` of the form
         ``"{spin}:{index}"`` and a human-readable ``title`` (energy,
@@ -195,7 +424,8 @@ class WavefunctionRenderer(BaseRenderer):
         parses spin + index back out of ``value``.
         """
         wf = self.load()
-        rows: list[dict] = []
+        rows: list[dict[str, Any]] = []
+        blocks: tuple[tuple[str, np.ndarray | None, np.ndarray | None, np.ndarray | None], ...]
         if wf.spin == "unrestricted":
             blocks = (
                 ("alpha", wf.alpha_energies, wf.alpha_occupations, wf.mo_coefficients_alpha),
@@ -208,27 +438,12 @@ class WavefunctionRenderer(BaseRenderer):
         # occupation-based frontier detection would tag the last orbital as
         # "HOMO" — meaningless for an IBO, and actively misleading in the
         # picker. Suppress it, and label by atomic composition instead.
-        localized = wf.orbital_kind == "localized"
+        localized = wf.orbital_kind in LOCALIZED_ORBITAL_KINDS
         natural = wf.orbital_kind == "natural"
         natural_semantics = self.natural_value_semantics() if natural else None
         symbols = self._structure_symbols(wf.structure_ref) if localized else None
-        n_electrons = self.reader.provenance.get("n_electrons")
 
-        natural_occupations_confirmed = False
-        if natural and natural_semantics == _ELECTRON_OCCUPATION:
-            occupation_blocks = (
-                (wf.alpha_occupations, wf.beta_occupations)
-                if wf.spin == "unrestricted"
-                else (wf.occupations,)
-            )
-            if all(block is not None for block in occupation_blocks):
-                total = sum(
-                    float(np.asarray(block, dtype=float).sum())
-                    for block in occupation_blocks
-                )
-                natural_occupations_confirmed = n_electrons is None or (
-                    abs(total - float(n_electrons)) <= _OCC_ELECTRON_TOL
-                )
+        natural_occupations_confirmed = self._natural_occupations_confirmed(wf)
 
         for spin_label, energies, occs, coeffs in blocks:
             # β orbitals carry their own symmetry labels; α + restricted use
@@ -238,14 +453,9 @@ class WavefunctionRenderer(BaseRenderer):
                 wf.symmetry_labels_beta if spin_label == "beta" else wf.symmetry_labels
             )
             n = 0 if coeffs is None else int(coeffs.shape[0])
-            if localized:
-                homo, lumo = (-1, -1)
-            elif natural and natural_occupations_confirmed:
-                homo, lumo = _natural_frontier_indices(occs, n)
-            elif natural:
-                homo, lumo = (-1, -1)
-            else:
-                homo, lumo = _frontier_indices(occs, n)
+            homo, lumo = _block_frontier(
+                wf.orbital_kind, occs, n, natural_confirmed=natural_occupations_confirmed
+            )
             for i in range(n):
                 e = float(energies[i]) if energies is not None and i < len(energies) else None
                 occ = float(occs[i]) if occs is not None and i < len(occs) else None
@@ -294,6 +504,7 @@ class WavefunctionRenderer(BaseRenderer):
                         )
                         if natural
                         else "occ",
+                        energy_display_unit=energy_unit,
                     )
                 rows.append(
                     {
@@ -308,30 +519,33 @@ class WavefunctionRenderer(BaseRenderer):
                 )
         return rows
 
-    def render_energy_diagram(self) -> str:
+    def render_energy_diagram(
+        self, include_plotlyjs: str | bool = "cdn", energy_unit: str = "hartree"
+    ) -> str:
         """Build an orbital energy-level diagram as an HTML chart.
 
         Returns an HTML string with an inline Plotly figure showing each
         MO as a horizontal line at its energy, coloured by occupation
         (blue = occupied, red = virtual).  HOMO and LUMO are highlighted
-        and the HOMO-LUMO gap is annotated.
+        and the HOMO-LUMO gap is annotated. ``energy_unit`` (a
+        ``vibeview.units.ENERGY_UNITS`` key) sets the axis unit; the gap
+        reads in that unit, or in eV when the axis is in Hartree.
         """
         import plotly.graph_objects as go
 
         wf = self.load()
-        if wf.orbital_kind == "localized":
+        if wf.orbital_kind in LOCALIZED_ORBITAL_KINDS:
             # Localized orbitals carry no eigenvalue -- the emitter writes
             # explicit zeros -- so an energy-level diagram would be a row of
             # coincident lines at 0 Eh masquerading as a spectrum. Say what
             # the set actually is instead of drawing a misleading axis.
-            method = (wf.localization_method or "localized").upper()
+            method = (wf.localization_method or wf.orbital_kind).upper()
             n_orb = 0 if wf.mo_coefficients is None else int(wf.mo_coefficients.shape[0])
             return (
                 '<div style="padding:1.5rem;font-family:sans-serif;color:#555">'
-                f"<b>{method} orbitals have no orbital energies.</b><br>"
-                f"These {n_orb} localized occupied orbitals are a unitary "
-                "mixture of the canonical set, so no eigenvalue spectrum "
-                "exists for them. Use the orbital picker, which labels each "
+                f"<b>{method} orbitals are not energy ordered.</b><br>"
+                f"These {n_orb} localized orbitals have no canonical "
+                "HOMO/LUMO ordering. Use the orbital picker, which labels each "
                 "one by the atoms it sits on."
                 "</div>"
             )
@@ -344,7 +558,11 @@ class WavefunctionRenderer(BaseRenderer):
             ]
         else:
             blocks = [("", wf.energies, wf.occupations)]
+        natural = wf.orbital_kind == "natural"
+        natural_confirmed = self._natural_occupations_confirmed(wf)
+        frontier_names = ("HONO", "LUNO") if natural else ("HOMO", "LUMO")
 
+        unit = _energy_unit_key(energy_unit)
         fig = go.Figure()
         gap_eh: float | None = None
         # Track the largest block for the figure height; also guards the
@@ -353,17 +571,22 @@ class WavefunctionRenderer(BaseRenderer):
         for spin_label, energies, occs in blocks:
             if energies is None:
                 continue
-            e = np.asarray(energies, dtype=float)
+            e_eh = np.asarray(energies, dtype=float)
+            e = e_eh * energy_factor(unit)
             occ = np.asarray(occs, dtype=float) if occs is not None else np.zeros_like(e)
             n = len(e)
             if n == 0:
                 continue
             n_max = max(n_max, n)
-            homo_idx = int(np.argwhere(occ > 0.001)[-1].item()) if np.any(occ > 0.001) else -1
-            lumo_idx = homo_idx + 1 if homo_idx + 1 < n else -1
+            # The same rule as the MO picker: fractional canonical occupations
+            # (smearing, ensembles) and unconfirmed natural sets have no
+            # frontier pair, so they get no diamonds and no gap annotation.
+            homo_idx, lumo_idx = _block_frontier(
+                wf.orbital_kind, occs, n, natural_confirmed=natural_confirmed
+            )
             if homo_idx >= 0 and lumo_idx >= 0:
-                gap_eh = float(e[lumo_idx] - e[homo_idx])
-            colours = ["#3366cc" if occ_i > 0.001 else "#cc3333" for occ_i in occ]
+                gap_eh = float(e_eh[lumo_idx] - e_eh[homo_idx])
+            colours = [ACCENT_BLUE if occ_i > 0.001 else ACCENT_RED for occ_i in occ]
             prefix = f"{spin_label} " if spin_label else ""
             label = f"{prefix}MO" if spin_label else "MO"
             # Composite render key per point ("{spin}:{index}"), carried as
@@ -383,20 +606,24 @@ class WavefunctionRenderer(BaseRenderer):
                     customdata=keys,
                 )
             )
-            # Colour each point individually.
-            for i in range(n):
-                fig.add_trace(
-                    go.Scatter(
-                        x=[e[i]],
-                        y=[f"{prefix}#{i}"],
-                        mode="markers",
-                        marker=dict(size=8, color=colours[i], line=dict(width=1, color="#333")),
-                        showlegend=False,
-                        hoverinfo="text",
-                        text=f"{prefix}#{i}: {e[i]:.4f} Eh (occ {occ[i]:.2f})",
-                        customdata=[keys[i]],
-                    )
+            # One marker trace for every level, coloured per point: a
+            # 500-orbital diagram used to be a 500-trace figure.
+            fig.add_trace(
+                go.Scatter(
+                    x=e,
+                    y=[f"{prefix}#{i}" for i in range(n)],
+                    mode="markers",
+                    marker=dict(size=8, color=colours, line=dict(width=1, color="#333")),
+                    showlegend=False,
+                    hoverinfo="text",
+                    text=[
+                        f"{prefix}#{i}: {format_energy(e_eh[i], unit, extra_digits=1)}"
+                        f" (occ {occ[i]:.2f})"
+                        for i in range(n)
+                    ],
+                    customdata=keys,
                 )
+            )
             # HOMO / LUMO highlight markers
             if homo_idx >= 0:
                 fig.add_trace(
@@ -406,13 +633,13 @@ class WavefunctionRenderer(BaseRenderer):
                         mode="markers",
                         marker=dict(
                             size=12,
-                            color="#3366cc",
+                            color=ACCENT_BLUE,
                             symbol="diamond",
                             line=dict(width=2, color="#fff"),
                         ),
                         showlegend=False,
                         hoverinfo="skip",
-                        name="HOMO" if not spin_label else f"{spin_label} HOMO",
+                        name=f"{prefix}{frontier_names[0]}",
                         customdata=[keys[homo_idx]],
                     )
                 )
@@ -424,13 +651,13 @@ class WavefunctionRenderer(BaseRenderer):
                         mode="markers",
                         marker=dict(
                             size=12,
-                            color="#cc3333",
+                            color=ACCENT_RED,
                             symbol="diamond",
                             line=dict(width=2, color="#fff"),
                         ),
                         showlegend=False,
                         hoverinfo="skip",
-                        name="LUMO" if not spin_label else f"{spin_label} LUMO",
+                        name=f"{prefix}{frontier_names[1]}",
                         customdata=[keys[lumo_idx]],
                     )
                 )
@@ -439,16 +666,19 @@ class WavefunctionRenderer(BaseRenderer):
         if wf.orbital_kind and wf.orbital_kind != "canonical":
             title = f"{wf.orbital_kind.capitalize()} Orbital Energy Diagram"
         if gap_eh is not None:
-            title += f" (gap {gap_eh * 27.2114:.2f} eV)"
+            if unit == "hartree":
+                title += f" (gap {gap_eh * HARTREE_TO_EV:.2f} eV)"
+            else:
+                gap = energy_from_hartree(gap_eh, unit)
+                title += f" (gap {gap:.2f} {energy_label(unit)})"
 
-        fig.update_layout(
+        # One row per level, so the diagram grows with the orbital count.
+        chart_layout(
+            fig,
             title=title,
-            xaxis_title="Energy (Eh)",
-            yaxis=dict(showticklabels=False, title=None),
-            height=max(400, n_max * 8),
-            margin=dict(l=40, r=20, t=50, b=40),
-            showlegend=False,
-            template="plotly_dark",
+            x_title=f"Energy ({energy_label(unit)})",
+            yaxis={"showticklabels": False, "title": None},
+            height=max(DEFAULT_HEIGHT, n_max * 8),
         )
         # Click-to-render: a click on any level posts its "{spin}:{index}"
         # render key to the parent window, which drives render_mo (design
@@ -467,7 +697,7 @@ class WavefunctionRenderer(BaseRenderer):
             "{type:'vibeview-mo-click',key:String(key)},'*');});}"
             "bind();})();</script>"
         )
-        return fig.to_html(full_html=False, include_plotlyjs="cdn") + click_js
+        return figure_to_html(fig, include_plotlyjs=include_plotlyjs, extra_script=click_js)
 
     def evaluate_mo(
         self,
@@ -506,40 +736,22 @@ class WavefunctionRenderer(BaseRenderer):
         """
         wf = self.load()
         coeffs = self._mo_row(wf, index, spin)
-        if component not in {"real", "imag", "magnitude"}:
-            raise ValueError("Orbital component must be real, imag, or magnitude")
+        if component not in _ORBITAL_COMPONENTS:
+            raise ValueError(f"Orbital component must be one of {', '.join(_ORBITAL_COMPONENTS)}")
         if wf.k_point is not None:
             from vibeview.renderers.periodic_wavefunction import evaluate_gamma_mo
 
             grid, values = evaluate_gamma_mo(self, wf, coeffs, n_per_dim)
-            values = {"real": np.real, "imag": np.imag, "magnitude": np.abs}[component](values)
+            values = apply_component(values, component)
             return grid, values.astype(np.float32)
 
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
-
-        # Bounding box + padding (in bohr)
-        lo = positions_bohr.min(axis=0) - padding_bohr
-        hi = positions_bohr.max(axis=0) + padding_bohr
-        extents = hi - lo
-        step_bohr = extents / max(n_per_dim - 1, 1)
-
-        nx = ny = nz = int(n_per_dim)
-        # Build linspaces in bohr — evaluator works in bohr to match exponents.
-        xs = np.linspace(lo[0], hi[0], nx)
-        ys = np.linspace(lo[1], hi[1], ny)
-        zs = np.linspace(lo[2], hi[2], nz)
-
-        values = self._evaluate_on_grid(wf, coeffs, positions_bohr, xs, ys, zs)
-
-        # Build GridData in angstroms
-        origin_ang = lo * _BOHR_TO_ANGSTROM
-        vox_ang = np.diag(step_bohr * _BOHR_TO_ANGSTROM)
-        grid = GridData(
-            origin=origin_ang.astype(np.float64),
-            voxel_vectors=vox_ang.astype(np.float64),
-            shape=(nx, ny, nz),
-        )
-        values = {"real": np.real, "imag": np.imag, "magnitude": np.abs}[component](values)
+        # The evaluator works in bohr to match the exponents; the grid it
+        # returns is laid out in Å beside the atoms.
+        box = _molecular_grid(positions_bohr, padding_bohr, n_per_dim)
+        values = self._evaluate_on_grid(wf, coeffs, positions_bohr, box.xs, box.ys, box.zs)
+        grid = box.grid
+        values = apply_component(values, component)
         return grid, values.astype(np.float32, copy=False)
 
     def evaluate_density(
@@ -627,13 +839,9 @@ class WavefunctionRenderer(BaseRenderer):
         wf = self.load()
         self._require_molecular_field(wf, real_only=True)
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
-        lo = positions_bohr.min(axis=0) - padding_bohr
-        hi = positions_bohr.max(axis=0) + padding_bohr
-        step_bohr = (hi - lo) / max(n_per_dim - 1, 1)
+        box = _molecular_grid(positions_bohr, padding_bohr, n_per_dim)
+        xs, ys, zs = box.xs, box.ys, box.zs
         nx = ny = nz = int(n_per_dim)
-        xs = np.linspace(lo[0], hi[0], nx)
-        ys = np.linspace(lo[1], hi[1], ny)
-        zs = np.linspace(lo[2], hi[2], nz)
 
         # One spin channel. For a restricted wavefunction the doubly-occupied
         # spatial orbitals each hold exactly one alpha electron, so the
@@ -687,13 +895,7 @@ class WavefunctionRenderer(BaseRenderer):
         elf = np.where(rho > density_floor, elf, 0.0)
         elf = np.clip(elf, 0.0, 1.0)
 
-        origin_ang = lo * _BOHR_TO_ANGSTROM
-        vox_ang = np.diag(step_bohr * _BOHR_TO_ANGSTROM)
-        grid = GridData(
-            origin=origin_ang.astype(np.float64),
-            voxel_vectors=vox_ang.astype(np.float64),
-            shape=(nx, ny, nz),
-        )
+        grid = box.grid
         return grid, elf.astype(np.float32)
 
     def evaluate_nci(
@@ -732,14 +934,11 @@ class WavefunctionRenderer(BaseRenderer):
         wf = self.load()
         self._require_molecular_field(wf, real_only=True)
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
-        lo = positions_bohr.min(axis=0) - padding_bohr
-        hi = positions_bohr.max(axis=0) + padding_bohr
-        step_bohr = (hi - lo) / max(n_per_dim - 1, 1)
+        box = _molecular_grid(positions_bohr, padding_bohr, n_per_dim)
+        xs, ys, zs = box.xs, box.ys, box.zs
         nx = ny = nz = int(n_per_dim)
-        xs = np.linspace(lo[0], hi[0], nx)
-        ys = np.linspace(lo[1], hi[1], ny)
-        zs = np.linspace(lo[2], hi[2], nz)
 
+        blocks: tuple[tuple[np.ndarray | None, np.ndarray | None], ...]
         if wf.spin == "unrestricted":
             blocks = (
                 (wf.mo_coefficients_alpha, wf.alpha_occupations),
@@ -778,26 +977,18 @@ class WavefunctionRenderer(BaseRenderer):
         prefactor = 2.0 * (3.0 * math.pi**2) ** (1.0 / 3.0)
         s = grad_norm / (prefactor * safe_rho ** (4.0 / 3.0))
 
-        # Middle eigenvalue of the symmetric 3x3 Hessian at every point.
-        full = np.empty((nx, ny, nz, 3, 3), dtype=np.float64)
-        for idx, (a, b) in enumerate(pairs):
-            full[..., a, b] = hess_rho[idx]
-            full[..., b, a] = hess_rho[idx]
-        eigenvalues = np.linalg.eigvalsh(full)  # ascending
-        lambda2 = eigenvalues[..., 1]
+        # Middle eigenvalue of the symmetric 3x3 Hessian at every point,
+        # from the six unique components (renderers.nci.middle_eigenvalue).
+        from vibeview.renderers.nci import middle_eigenvalue
+
+        lambda2 = middle_eigenvalue(*hess_rho)
         signed_rho = np.sign(lambda2) * rho
 
         # In vacuum s blows up (0/0 with both going to zero); the paper only
         # ever reads s where rho is meaningful, so clamp rather than emit inf.
         s = np.where(rho > density_floor, s, 100.0)
         return (
-            GridData(
-                origin=(lo * _BOHR_TO_ANGSTROM).astype(np.float64),
-                voxel_vectors=np.diag(step_bohr * _BOHR_TO_ANGSTROM).astype(
-                    np.float64
-                ),
-                shape=(nx, ny, nz),
-            ),
+            box.grid,
             s.astype(np.float32),
             signed_rho.astype(np.float32),
         )
@@ -822,14 +1013,11 @@ class WavefunctionRenderer(BaseRenderer):
         wf = self.load()
         self._require_molecular_field(wf, real_only=True)
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
-        lo = positions_bohr.min(axis=0) - padding_bohr
-        hi = positions_bohr.max(axis=0) + padding_bohr
-        step_bohr = (hi - lo) / max(n_per_dim - 1, 1)
+        box = _molecular_grid(positions_bohr, padding_bohr, n_per_dim)
+        xs, ys, zs = box.xs, box.ys, box.zs
         nx = ny = nz = int(n_per_dim)
-        xs = np.linspace(lo[0], hi[0], nx)
-        ys = np.linspace(lo[1], hi[1], ny)
-        zs = np.linspace(lo[2], hi[2], nz)
 
+        blocks: tuple[tuple[np.ndarray | None, np.ndarray | None], ...]
         if wf.spin == "unrestricted":
             blocks = (
                 (wf.mo_coefficients_alpha, wf.alpha_occupations),
@@ -859,13 +1047,7 @@ class WavefunctionRenderer(BaseRenderer):
                 )
 
         return (
-            GridData(
-                origin=(lo * _BOHR_TO_ANGSTROM).astype(np.float64),
-                voxel_vectors=np.diag(step_bohr * _BOHR_TO_ANGSTROM).astype(
-                    np.float64
-                ),
-                shape=(nx, ny, nz),
-            ),
+            box.grid,
             laplacian.astype(np.float32),
         )
 
@@ -881,14 +1063,11 @@ class WavefunctionRenderer(BaseRenderer):
         wf = self.load()
         self._require_molecular_field(wf)
         positions_bohr = self._atom_positions_bohr(wf.structure_ref)
-        lo = positions_bohr.min(axis=0) - padding_bohr
-        hi = positions_bohr.max(axis=0) + padding_bohr
-        step_bohr = (hi - lo) / max(n_per_dim - 1, 1)
+        box = _molecular_grid(positions_bohr, padding_bohr, n_per_dim)
+        xs, ys, zs, step_bohr = box.xs, box.ys, box.zs, box.step_bohr
         nx = ny = nz = int(n_per_dim)
-        xs = np.linspace(lo[0], hi[0], nx)
-        ys = np.linspace(lo[1], hi[1], ny)
-        zs = np.linspace(lo[2], hi[2], nz)
 
+        blocks: tuple[tuple[np.ndarray | None, np.ndarray | None, float], ...]
         if wf.spin == "unrestricted":
             blocks = (
                 (wf.mo_coefficients_alpha, wf.alpha_occupations, 1.0),
@@ -921,13 +1100,7 @@ class WavefunctionRenderer(BaseRenderer):
         self.last_dropped_l_fraction = max_dropped_fraction
         self.last_dropped_l_max = max_dropped_l
 
-        origin_ang = lo * _BOHR_TO_ANGSTROM
-        vox_ang = np.diag(step_bohr * _BOHR_TO_ANGSTROM)
-        grid = GridData(
-            origin=origin_ang.astype(np.float64),
-            voxel_vectors=vox_ang.astype(np.float64),
-            shape=(nx, ny, nz),
-        )
+        grid = box.grid
         # ∫ρ dV in bohr³ (the evaluator + density are in atomic units).
         integral = float(rho.sum() * float(np.prod(step_bohr)))
         return grid, rho.astype(np.float32), integral
@@ -935,7 +1108,9 @@ class WavefunctionRenderer(BaseRenderer):
     # ── helpers ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _require_molecular_field(wf, *, real_only=False):
+    def _require_molecular_field(wf: WavefunctionGTOData, *, real_only: bool = False) -> None:
+        if wf.density_unavailable_reason:
+            raise ValueError(wf.density_unavailable_reason)
         if wf.k_point is not None:
             raise ValueError(
                 "A single k-point orbital block cannot supply the total periodic field. "
@@ -949,17 +1124,15 @@ class WavefunctionRenderer(BaseRenderer):
 
     def _mo_row(self, wf: WavefunctionGTOData, index: int, spin: str) -> np.ndarray:
         if wf.spin == "unrestricted":
-            if spin == "beta":
-                coeffs = wf.mo_coefficients_beta
-            else:
-                coeffs = wf.mo_coefficients_alpha
+            coeffs = wf.mo_coefficients_beta if spin == "beta" else wf.mo_coefficients_alpha
         else:
             coeffs = wf.mo_coefficients
         if coeffs is None:
             raise ValueError(f"No MO coefficients present for spin={spin!r}")
         if index < 0 or index >= coeffs.shape[0]:
             raise IndexError(f"MO index {index} out of range [0, {coeffs.shape[0]})")
-        return coeffs[index]
+        row: np.ndarray = coeffs[index]
+        return row
 
     def _structure_symbols(self, structure_ref: str) -> list[str] | None:
         """Element symbols from the referenced structure, for orbital labels.
@@ -969,28 +1142,28 @@ class WavefunctionRenderer(BaseRenderer):
         rather than failing the picker.
         """
         try:
-            if not self.reader.has_section(structure_ref):
-                structure_ref = "structure"
-            if structure_ref == "structure":
-                structure = self.reader.read_structure()
-                return [str(a.symbol) for a in structure.atoms]
-            raw = self.reader._read_json_member(structure_ref, "structure")
-            return [str(a["symbol"]) for a in raw["atoms"]]
+            return [str(a.symbol) for a in self._centre_structure(structure_ref).atoms]
         except Exception:
             return None
 
+    def _centre_structure(self, structure_ref: str) -> StructureData:
+        """The structure section the basis is centred on, parsed once.
+
+        A missing or unknown ``structure_ref`` falls back to the archive's
+        first structure, as the format allows (QVF spec § 4.1).
+        """
+        if not self.reader.has_section(structure_ref):
+            structure_ref = self.reader.first_structure_id or structure_ref
+        cached = self._centre_structures.get(structure_ref)
+        if cached is None:
+            cached = self.reader.read_structure(structure_ref)
+            self._centre_structures[structure_ref] = cached
+        return cached
+
     def _atom_positions_bohr(self, structure_ref: str) -> np.ndarray:
         """Atomic positions in bohr from the referenced structure section."""
-        if not self.reader.has_section(structure_ref):
-            structure_ref = "structure"
-        # read_structure() is hard-coded to id "structure"; if the ref
-        # is something else we still need to parse the JSON manually.
-        if structure_ref == "structure":
-            structure = self.reader.read_structure()
-            arr = np.array([a.position for a in structure.atoms], dtype=np.float64)
-        else:
-            raw = self.reader._read_json_member(structure_ref, "structure")
-            arr = np.array([a["position"] for a in raw["atoms"]], dtype=np.float64)
+        structure = self._centre_structure(structure_ref)
+        arr = np.array([a.position for a in structure.atoms], dtype=np.float64)
         return arr * _ANGSTROM_TO_BOHR
 
     def _evaluate_on_grid(
@@ -1013,71 +1186,23 @@ class WavefunctionRenderer(BaseRenderer):
         gx, gy, gz = np.meshgrid(xs, ys, zs, indexing="ij")
         return self._evaluate_at_points(wf, mo_coeffs, atom_pos_bohr, gx, gy, gz)
 
-    def _evaluate_at_points(self, wf, mo_coeffs, atom_pos_bohr, gx, gy, gz):
+    def _evaluate_at_points(
+        self,
+        wf: WavefunctionGTOData,
+        mo_coeffs: np.ndarray,
+        atom_pos_bohr: np.ndarray,
+        gx: np.ndarray,
+        gy: np.ndarray,
+        gz: np.ndarray,
+    ) -> np.ndarray:
         """Evaluate a coefficient row at Cartesian points (all coordinates in bohr)."""
         result = np.zeros(gx.shape, dtype=np.result_type(mo_coeffs.dtype, np.float64))
-
-        total_w = float(np.sum(np.abs(mo_coeffs) ** 2)) or 1.0
-        dropped_w = 0.0
-        dropped_lmax = 0
-
-        n_atoms = len(atom_pos_bohr)
-        n_coeff = len(mo_coeffs)
-        ao_index = 0
-        for shell in wf.shells:
-            n_ao_shell = self._n_ao_per_shell(shell)
-            # A malformed wavefunction whose shells claim more AOs than the MO
-            # vector carries would otherwise slice past the end and silently
-            # drop trailing AOs (wrong orbital). Fail loudly instead.
-            if ao_index + n_ao_shell > n_coeff:
-                raise ValueError(
-                    f"wavefunction MO vector too short: shells need AO index "
-                    f"{ao_index + n_ao_shell - 1} but only {n_coeff} "
-                    "coefficients are present (basis / MO-width mismatch)."
-                )
-            if shell.l > 3:
-                # Skip high-l (g and beyond) shells but keep ao_index
-                # consistent. Track the orbital weight we drop so the caller
-                # can warn that the rendered isosurface is incomplete (A2-04).
-                block = mo_coeffs[ao_index : ao_index + n_ao_shell]
-                dropped_w += float(np.sum(np.abs(block) ** 2))
-                dropped_lmax = max(dropped_lmax, int(shell.l))
-                ao_index += n_ao_shell
-                continue
-
-            if not 0 <= shell.center < n_atoms:
-                raise ValueError(
-                    f"wavefunction shell references atom index {shell.center} "
-                    f"but the structure has only {n_atoms} atoms."
-                )
-            if len(shell.exponents) != len(shell.coefficients):
-                raise ValueError(
-                    f"wavefunction shell (l={shell.l}, center={shell.center}) "
-                    f"has {len(shell.exponents)} exponents but "
-                    f"{len(shell.coefficients)} contraction coefficients."
-                )
-            center = atom_pos_bohr[shell.center]
-            dx = gx - center[0]
-            dy = gy - center[1]
-            dz = gz - center[2]
-            r2 = dx * dx + dy * dy + dz * dz
-
-            # Contracted radial / scalar part: sum_p c_p * N(α_p) * exp(-α_p r²)
-            radial = np.zeros_like(r2)
-            for alpha, c in zip(shell.exponents, shell.coefficients):
-                norm = _primitive_norm(int(shell.l), float(alpha))
-                radial += c * norm * np.exp(-alpha * r2)
-
-            ao_vals = self._angular_factors(shell, dx, dy, dz)  # list of [nx, ny, nz]
-
-            for k, ang in enumerate(ao_vals):
-                coeff = mo_coeffs[ao_index + k]
+        for block in self._shell_blocks(wf, mo_coeffs, atom_pos_bohr, gx, gy, gz):
+            dx, dy, dz = block.deltas
+            for k, terms in enumerate(_angular_terms(block.shell)):
+                coeff = mo_coeffs[block.ao_index + k]
                 if coeff != 0.0:
-                    result += coeff * radial * ang
-            ao_index += n_ao_shell
-
-        self.last_dropped_l_fraction = dropped_w / total_w
-        self.last_dropped_l_max = dropped_lmax
+                    result += coeff * block.radial * _evaluate_terms(terms, dx, dy, dz)
         return result
 
     def _evaluate_gradient_on_grid(
@@ -1111,58 +1236,12 @@ class WavefunctionRenderer(BaseRenderer):
         gx, gy, gz = np.meshgrid(xs, ys, zs, indexing="ij")
         value = np.zeros((nx, ny, nz), dtype=np.float64)
         grad = np.zeros((3, nx, ny, nz), dtype=np.float64)
-
-        total_w = float(np.sum(np.abs(mo_coeffs) ** 2)) or 1.0
-        dropped_w = 0.0
-        dropped_lmax = 0
-
-        n_atoms = len(atom_pos_bohr)
-        n_coeff = len(mo_coeffs)
-        ao_index = 0
-        for shell in wf.shells:
-            n_ao_shell = self._n_ao_per_shell(shell)
-            if ao_index + n_ao_shell > n_coeff:
-                raise ValueError(
-                    f"wavefunction MO vector too short: shells need AO index "
-                    f"{ao_index + n_ao_shell - 1} but only {n_coeff} "
-                    "coefficients are present (basis / MO-width mismatch)."
-                )
-            if shell.l > 3:
-                block = mo_coeffs[ao_index : ao_index + n_ao_shell]
-                dropped_w += float(np.sum(np.abs(block) ** 2))
-                dropped_lmax = max(dropped_lmax, int(shell.l))
-                ao_index += n_ao_shell
-                continue
-            if not 0 <= shell.center < n_atoms:
-                raise ValueError(
-                    f"wavefunction shell references atom index {shell.center} "
-                    f"but the structure has only {n_atoms} atoms."
-                )
-            if len(shell.exponents) != len(shell.coefficients):
-                raise ValueError(
-                    f"wavefunction shell (l={shell.l}, center={shell.center}) "
-                    f"has {len(shell.exponents)} exponents but "
-                    f"{len(shell.coefficients)} contraction coefficients."
-                )
-
-            center = atom_pos_bohr[shell.center]
-            dx = gx - center[0]
-            dy = gy - center[1]
-            dz = gz - center[2]
-            r2 = dx * dx + dy * dy + dz * dz
-
-            radial = np.zeros_like(r2)
-            # d(radial)/d(r^2); the chain rule to d/dx brings the 2*dx.
-            radial_d = np.zeros_like(r2)
-            for alpha, c in zip(shell.exponents, shell.coefficients):
-                norm = _primitive_norm(int(shell.l), float(alpha))
-                gauss = c * norm * np.exp(-alpha * r2)
-                radial += gauss
-                radial_d += -float(alpha) * gauss
-
-            deltas = (dx, dy, dz)
-            for k, terms in enumerate(_angular_terms(shell)):
-                coeff = mo_coeffs[ao_index + k]
+        for block in self._shell_blocks(wf, mo_coeffs, atom_pos_bohr, gx, gy, gz, derivatives=1):
+            dx, dy, dz = block.deltas
+            radial, radial_d = block.radial, block.radial_d
+            assert radial_d is not None
+            for k, terms in enumerate(_angular_terms(block.shell)):
+                coeff = mo_coeffs[block.ao_index + k]
                 if coeff == 0.0:
                     continue
                 ang = _evaluate_terms(terms, dx, dy, dz)
@@ -1170,13 +1249,9 @@ class WavefunctionRenderer(BaseRenderer):
                 for axis in range(3):
                     d_ang = _differentiate_terms(terms, axis)
                     grad[axis] += coeff * (
-                        2.0 * radial_d * deltas[axis] * ang
+                        2.0 * radial_d * block.deltas[axis] * ang
                         + radial * _evaluate_terms(d_ang, dx, dy, dz)
                     )
-            ao_index += n_ao_shell
-
-        self.last_dropped_l_fraction = dropped_w / total_w
-        self.last_dropped_l_max = dropped_lmax
         return value, grad
 
     def _evaluate_hessian_on_grid(
@@ -1212,59 +1287,13 @@ class WavefunctionRenderer(BaseRenderer):
         grad = np.zeros((3, nx, ny, nz), dtype=np.float64)
         hess = np.zeros((6, nx, ny, nz), dtype=np.float64)
         pairs = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
-
-        total_w = float(np.sum(np.abs(mo_coeffs) ** 2)) or 1.0
-        dropped_w = 0.0
-        dropped_lmax = 0
-
-        n_atoms = len(atom_pos_bohr)
-        n_coeff = len(mo_coeffs)
-        ao_index = 0
-        for shell in wf.shells:
-            n_ao_shell = self._n_ao_per_shell(shell)
-            if ao_index + n_ao_shell > n_coeff:
-                raise ValueError(
-                    f"wavefunction MO vector too short: shells need AO index "
-                    f"{ao_index + n_ao_shell - 1} but only {n_coeff} "
-                    "coefficients are present (basis / MO-width mismatch)."
-                )
-            if shell.l > 3:
-                block = mo_coeffs[ao_index : ao_index + n_ao_shell]
-                dropped_w += float(np.sum(np.abs(block) ** 2))
-                dropped_lmax = max(dropped_lmax, int(shell.l))
-                ao_index += n_ao_shell
-                continue
-            if not 0 <= shell.center < n_atoms:
-                raise ValueError(
-                    f"wavefunction shell references atom index {shell.center} "
-                    f"but the structure has only {n_atoms} atoms."
-                )
-            if len(shell.exponents) != len(shell.coefficients):
-                raise ValueError(
-                    f"wavefunction shell (l={shell.l}, center={shell.center}) "
-                    f"has {len(shell.exponents)} exponents but "
-                    f"{len(shell.coefficients)} contraction coefficients."
-                )
-
-            center = atom_pos_bohr[shell.center]
-            dx = gx - center[0]
-            dy = gy - center[1]
-            dz = gz - center[2]
-            r2 = dx * dx + dy * dy + dz * dz
-
-            radial = np.zeros_like(r2)
-            radial_d = np.zeros_like(r2)
-            radial_dd = np.zeros_like(r2)
-            for alpha, c in zip(shell.exponents, shell.coefficients):
-                a = float(alpha)
-                gauss = c * _primitive_norm(int(shell.l), a) * np.exp(-a * r2)
-                radial += gauss
-                radial_d += -a * gauss
-                radial_dd += a * a * gauss
-
-            deltas = (dx, dy, dz)
-            for k, terms in enumerate(_angular_terms(shell)):
-                coeff = mo_coeffs[ao_index + k]
+        for block in self._shell_blocks(wf, mo_coeffs, atom_pos_bohr, gx, gy, gz, derivatives=2):
+            dx, dy, dz = block.deltas
+            deltas = block.deltas
+            radial, radial_d, radial_dd = block.radial, block.radial_d, block.radial_dd
+            assert radial_d is not None and radial_dd is not None
+            for k, terms in enumerate(_angular_terms(block.shell)):
+                coeff = mo_coeffs[block.ao_index + k]
                 if coeff == 0.0:
                     continue
                 ang = _evaluate_terms(terms, dx, dy, dz)
@@ -1290,11 +1319,90 @@ class WavefunctionRenderer(BaseRenderer):
                     if a == b:
                         contribution = contribution + 2.0 * radial_d * ang
                     hess[idx] += coeff * contribution
+        return value, grad, hess
+
+    def _shell_blocks(
+        self,
+        wf: WavefunctionGTOData,
+        mo_coeffs: np.ndarray,
+        atom_pos_bohr: np.ndarray,
+        gx: np.ndarray,
+        gy: np.ndarray,
+        gz: np.ndarray,
+        *,
+        derivatives: int = 0,
+    ) -> Iterator[_ShellBlock]:
+        """Walk the shells once for every evaluator.
+
+        Yields one :class:`_ShellBlock` per shell with ``l <= 3``: the AO
+        offset, the displacements from the centre and the contracted radial
+        part ``f(r²)`` with, for ``derivatives >= 1``, ``f'`` and, for
+        ``derivatives >= 2``, ``f''`` (derivatives with respect to ``r²``).
+        The validation and the ``l > 3`` bookkeeping (``last_dropped_l_*``)
+        happen here, so a value, a gradient and a Hessian cannot disagree
+        about which AOs they cover.
+        """
+        total_w = float(np.sum(np.abs(mo_coeffs) ** 2)) or 1.0
+        dropped_w = 0.0
+        dropped_lmax = 0
+        n_atoms = len(atom_pos_bohr)
+        n_coeff = len(mo_coeffs)
+        ao_index = 0
+        for shell in wf.shells:
+            n_ao_shell = self._n_ao_per_shell(shell)
+            # A malformed wavefunction whose shells claim more AOs than the MO
+            # vector carries would otherwise slice past the end and silently
+            # drop trailing AOs (wrong orbital). Fail loudly instead.
+            if ao_index + n_ao_shell > n_coeff:
+                raise ValueError(
+                    f"wavefunction MO vector too short: shells need AO index "
+                    f"{ao_index + n_ao_shell - 1} but only {n_coeff} "
+                    "coefficients are present (basis / MO-width mismatch)."
+                )
+            if shell.l > 3:
+                # Skip high-l (g and beyond) shells but keep ao_index
+                # consistent. Track the orbital weight we drop so the caller
+                # can warn that the rendered field is incomplete (A2-04).
+                block = mo_coeffs[ao_index : ao_index + n_ao_shell]
+                dropped_w += float(np.sum(np.abs(block) ** 2))
+                dropped_lmax = max(dropped_lmax, int(shell.l))
+                ao_index += n_ao_shell
+                continue
+            if not 0 <= shell.center < n_atoms:
+                raise ValueError(
+                    f"wavefunction shell references atom index {shell.center} "
+                    f"but the structure has only {n_atoms} atoms."
+                )
+            if len(shell.exponents) != len(shell.coefficients):
+                raise ValueError(
+                    f"wavefunction shell (l={shell.l}, center={shell.center}) "
+                    f"has {len(shell.exponents)} exponents but "
+                    f"{len(shell.coefficients)} contraction coefficients."
+                )
+            center = atom_pos_bohr[shell.center]
+            dx = gx - center[0]
+            dy = gy - center[1]
+            dz = gz - center[2]
+            r2 = dx * dx + dy * dy + dz * dz
+
+            # Contracted radial part: sum_p c_p N(α_p) exp(-α_p r²), and its
+            # derivatives with respect to r² when asked for.
+            radial = np.zeros_like(r2)
+            radial_d = np.zeros_like(r2) if derivatives >= 1 else None
+            radial_dd = np.zeros_like(r2) if derivatives >= 2 else None
+            for alpha, c in zip(shell.exponents, shell.coefficients, strict=True):
+                a = float(alpha)
+                gauss = c * _primitive_norm(int(shell.l), a) * np.exp(-a * r2)
+                radial += gauss
+                if radial_d is not None:
+                    radial_d += -a * gauss
+                if radial_dd is not None:
+                    radial_dd += a * a * gauss
+            yield _ShellBlock(shell, ao_index, (dx, dy, dz), radial, radial_d, radial_dd)
             ao_index += n_ao_shell
 
         self.last_dropped_l_fraction = dropped_w / total_w
         self.last_dropped_l_max = dropped_lmax
-        return value, grad, hess
 
     @staticmethod
     def _n_ao_per_shell(shell: BasisShell) -> int:
@@ -1309,39 +1417,24 @@ class WavefunctionRenderer(BaseRenderer):
         dy: np.ndarray,
         dz: np.ndarray,
     ) -> list[np.ndarray]:
-        """Return the angular factors for one shell, in the file's AO order.
+        """The angular factors of one shell, in the file's AO order.
 
-        For Cartesian (libint lexicographic over (i,j,k) with i+j+k=l,
-        i descending then j descending).
-
-        For pure spherical, m = -l, ..., +l with the standard real
-        spherical-harmonic conventions (Condon-Shortley; sin for m<0,
-        cos for m>0). Solid-harmonic normalisations are folded into the
-        primitive `_primitive_norm` so callers don't have to.
-
-        ``_primitive_norm`` already supplies the *complete* normalisation
-        of a spherical GTO (radial × angular), so the angular factor here
-        must be the bare real **regular solid harmonic** (Racah-normalised),
-        NOT the surface-normalised spherical harmonic. ``_spherical_factors``
-        returns the surface-normalised form (it carries the extra
-        ``sqrt((2l+1)/4π)``), so we strip that factor back out with
-        ``sqrt(4π/(2l+1))``. Without this, every AO was double-normalised by
-        ``sqrt((2l+1)/4π)`` — an *l-dependent* error (self-overlap was
-        ``(2l+1)/4π`` instead of 1) that mis-scaled s/p/d/f contributions
-        relative to each other and distorted the rendered orbital shape.
-        See ``tests/test_wavefunction_normalization.py``.
+        Cartesian shells: ``x^i y^j z^k`` in libint lexicographic order with
+        no per-component normalisation (spec Appendix A.1 defines one
+        ``N_i`` per shell, which ``_primitive_norm`` supplies). Pure shells:
+        the real regular solid harmonics with the Condon-Shortley phase,
+        Racah-normalised so ``_primitive_norm`` is the complete
+        normalisation. Both come from the one monomial table
+        :func:`_angular_terms`; the derivative evaluators differentiate the
+        same table, so a value and its gradient share one definition.
         """
-        l = shell.l
-        if not shell.pure:
-            return list(_cartesian_factors(l, dx, dy, dz))
-        racah = math.sqrt(4.0 * math.pi / (2 * l + 1))
-        return [racah * factor for factor in _spherical_factors(l, dx, dy, dz)]
+        return [_evaluate_terms(terms, dx, dy, dz) for terms in _angular_terms(shell)]
 
 
 # ── Primitive normalisation ───────────────────────────────────────────────
 
 
-def _primitive_norm(l: int, alpha: float) -> float:
+def _primitive_norm(l: int, alpha: float) -> float:  # noqa: E741 — angular momentum
     """Normalisation constant for a real primitive Gaussian.
 
     N = (2α/π)^(3/4) · sqrt[(8α)^l · l! / (2l)!]
@@ -1355,59 +1448,21 @@ def _primitive_norm(l: int, alpha: float) -> float:
     of a spherical GTO, and for Cartesian shells it is the shell-wide
     factor A.1 specifies (the norm of the axial ``(l, 0, 0)`` component).
     The angular factors carry no further per-component normalisation --
-    see :func:`_cartesian_factors` for why that is deliberate.
+    see :func:`_angular_terms` for why that is deliberate.
     """
-    pref = (2.0 * alpha / math.pi) ** 0.75
+    pref = float((2.0 * alpha / math.pi) ** 0.75)
     if l == 0:
         return pref
     fac = (8.0 * alpha) ** l * math.factorial(l) / math.factorial(2 * l)
     return pref * math.sqrt(fac)
 
 
-# ── Cartesian angular factors (libint lexicographic) ──────────────────────
+# ── Angular factors as monomial tables ───────────────────────────────────
 
 
-def _cartesian_factors(l: int, x: np.ndarray, y: np.ndarray, z: np.ndarray):
-    """Yield Cartesian-Gaussian angular factors x^i y^j z^k in libint
-    order: i+j+k=l, i descending then j descending.
-
-    **No per-component normalisation is applied, deliberately.** QVF spec
-    Appendix A.1 defines one ``N_i`` per shell, from the total ``l``, and
-    ``_primitive_norm`` supplies exactly that. Mixed Cartesian components
-    are therefore not individually unit-normalised under this convention:
-    a d shell has ``<xx|xx> = 1`` but ``<xy|xy> = 1/3``.
-
-    This reader used to multiply in
-    ``sqrt[(2l-1)!! / ((2i-1)!!(2j-1)!!(2k-1)!!)]`` to reach true unit norm
-    per component, which is what A.1's *prose* implied but not what its
-    *formula* says. Producers write coefficients against the formula, so
-    the correction scaled every mixed Cartesian AO by that factor and the
-    rendered density came out wrong by its square -- 3x for ``d_xy``. Pure
-    shells were never affected, which is why a spherical-only pipeline
-    never surfaced it. See ``tests/test_wavefunction_normalization.py``.
-    """
-    triples = []
-    for i in range(l, -1, -1):
-        for j in range(l - i, -1, -1):
-            k = l - i - j
-            triples.append((i, j, k))
-    for i, j, k in triples:
-        yield (x**i) * (y**j) * (z**k)
-
-
-# ── Real spherical-harmonic angular factors ───────────────────────────────
-#
-# Real solid harmonics S_lm(x,y,z) = r^l · Y_lm(θ,φ) with the
-# Condon-Shortley phase, in the m = -l, -l+1, ..., +l-1, +l ordering.
-# We pre-multiply the primitive normalisation (radial) by what would be
-# needed for the spherical form; here we just return the unnormalised
-# solid harmonic and let `_primitive_norm` handle the radial side. The
-# remaining per-m angular normalisation is captured below.
-
-
-def _solid_harmonic_terms(l: int) -> list[list[tuple[float, int, int, int]]]:
-    """Monomial expansion of the angular factors :func:`_spherical_factors`
-    yields, as ``[(coefficient, i, j, k), ...]`` per m with ``x^i y^j z^k``.
+def _solid_harmonic_terms(l: int) -> list[list[tuple[float, int, int, int]]]:  # noqa: E741 — angular momentum
+    """Real solid harmonics as monomial tables, ``[(coefficient, i, j, k), ...]``
+    per m with ``x^i y^j z^k``, ordered m = -l, ..., +l.
 
     Why a second representation of the same functions: an angular factor's
     *gradient* is needed for every density-derivative property (ELF, LOL,
@@ -1417,7 +1472,7 @@ def _solid_harmonic_terms(l: int) -> list[list[tuple[float, int, int, int]]]:
     got wrong, so the table is written once and both the value and the
     gradient are derived from it.
 
-    Normalisation matches :func:`_spherical_factors` term for term, and
+    Normalisation matches the real solid harmonics term for term, and
     ``tests/test_wavefunction_gradient.py`` pins that: the table is only
     trustworthy insofar as it reproduces the function already covered by
     ``tests/test_wavefunction_normalization.py``.
@@ -1477,11 +1532,13 @@ def _solid_harmonic_terms(l: int) -> list[list[tuple[float, int, int, int]]]:
 def _angular_terms(shell: BasisShell) -> list[list[tuple[float, int, int, int]]]:
     """Monomial terms for every AO of ``shell``, in the file's AO order.
 
-    Mirrors :meth:`WavefunctionRenderer._angular_factors` exactly, including
-    the Racah factor that strips the surface normalisation back out of the
-    pure factors.
+    Cartesian shells in libint lexicographic order; pure shells as the
+    solid harmonics with the Racah factor that strips the surface
+    normalisation back out (``_primitive_norm`` already carries the
+    complete normalisation of a spherical GTO; see
+    ``tests/test_wavefunction_normalization.py``).
     """
-    l = int(shell.l)
+    l = int(shell.l)  # noqa: E741 — angular momentum
     if not shell.pure:
         terms: list[list[tuple[float, int, int, int]]] = []
         for i in range(l, -1, -1):
@@ -1527,64 +1584,3 @@ def _differentiate_terms(
     return out
 
 
-def _spherical_factors(l: int, x: np.ndarray, y: np.ndarray, z: np.ndarray):
-    """Yield the (2l+1) real-spherical angular factors at the grid points,
-    ordered m = -l, ..., +l.
-
-    Implementation uses the explicit closed-form expressions for l = 0..3,
-    which is the renderer's stated scope.
-    """
-    if l == 0:
-        # m=0
-        yield np.ones_like(x) * (1.0 / math.sqrt(4.0 * math.pi))
-        return
-
-    if l == 1:
-        # Sign convention: m=-1 → y, m=0 → z, m=+1 → x (Condon-Shortley)
-        c = math.sqrt(3.0 / (4.0 * math.pi))
-        yield c * y
-        yield c * z
-        yield c * x
-        return
-
-    r2 = x * x + y * y + z * z
-
-    if l == 2:
-        # m=-2: xy
-        # m=-1: yz
-        # m= 0: (3z² - r²)
-        # m=+1: xz
-        # m=+2: x² - y²
-        c2 = math.sqrt(15.0 / (4.0 * math.pi))
-        c1 = math.sqrt(15.0 / (4.0 * math.pi))
-        c0 = math.sqrt(5.0 / (16.0 * math.pi))
-        yield c2 * x * y
-        yield c1 * y * z
-        yield c0 * (3.0 * z * z - r2)
-        yield c1 * x * z
-        yield 0.5 * c2 * (x * x - y * y)
-        return
-
-    if l == 3:
-        # Standard real-spherical f-orbital expressions (CCA / Molden):
-        # m=-3: y(3x² - y²)
-        # m=-2: xyz
-        # m=-1: y(5z² - r²)
-        # m= 0: z(5z² - 3r²)
-        # m=+1: x(5z² - r²)
-        # m=+2: z(x² - y²)
-        # m=+3: x(x² - 3y²)
-        c3 = math.sqrt(35.0 / (32.0 * math.pi))
-        c2 = math.sqrt(105.0 / (4.0 * math.pi))
-        c1 = math.sqrt(21.0 / (32.0 * math.pi))
-        c0 = math.sqrt(7.0 / (16.0 * math.pi))
-        yield c3 * y * (3.0 * x * x - y * y)
-        yield c2 * x * y * z
-        yield c1 * y * (5.0 * z * z - r2)
-        yield c0 * z * (5.0 * z * z - 3.0 * r2)
-        yield c1 * x * (5.0 * z * z - r2)
-        yield 0.5 * c2 * z * (x * x - y * y)
-        yield c3 * x * (x * x - 3.0 * y * y)
-        return
-
-    raise ValueError(f"_spherical_factors: l={l} not supported")

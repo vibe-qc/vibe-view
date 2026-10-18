@@ -21,19 +21,16 @@ _HERE = Path(__file__).resolve()
 def qvf_corpus_dir() -> Path | None:
     """Return the corpus directory, or None.
 
-    Order: ``$QVF_CORPUS`` (what CI sets after cloning qvf at its pinned tag),
-    a flat sibling ``../qvf`` checkout, the pre-split ``../qvf-writer``
-    location, then the per-chat clone layout ``../../qvf/<clone>/`` the
-    maintainer's machines use.
+    Order: ``$QVF_CORPUS`` (what CI sets after cloning qvf at its pinned
+    tag), then a flat sibling ``../qvf`` checkout, the layout CONTRIBUTING.md
+    documents. Any other layout sets ``QVF_CORPUS``; the suite does not guess
+    at one machine's directory structure.
     """
     cands: list[Path] = []
     env = os.environ.get("QVF_CORPUS")
     if env:
         cands.append(Path(env))
     cands.append(_HERE.parents[2] / "qvf" / "conformance" / "corpus")
-    cands.append(_HERE.parents[2] / "qvf-writer" / "conformance" / "corpus")
-    if len(_HERE.parents) > 3:
-        cands.extend(sorted((_HERE.parents[3] / "qvf").glob("*/conformance/corpus")))
     return next((c for c in cands if c.is_dir()), None)
 
 

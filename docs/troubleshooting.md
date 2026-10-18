@@ -11,6 +11,41 @@ exact command that would fix each thing it finds missing. `--json` makes it
 scriptable. Most of what follows is `doctor` telling you something in more
 detail.
 
+## A section, table or orbital is missing
+
+```sh
+vibe-view info calculation.qvf
+vibe-view table calculation.qvf
+vibe-view formats
+```
+
+Use the section inventory to distinguish a data limitation from an install
+problem:
+
+| What you observe | What to do |
+|---|---|
+| The demo shows only a structure | Expected: the demo is geometry, not a quantum-chemistry calculation. |
+| An XYZ or PDB has no density, orbitals or spectrum | Importing geometry cannot create those results. Obtain a computed QVF, a cube field, or a supported wavefunction dataset. |
+| `Section 'density' not found` | Use the exact ID from `info`; `volume.density` is a kind, and its ID need not be `density`. |
+| `table` reports no tabulatable sections | It lists scientific tables, not atom coordinates. Export XYZ or use `get_structure` for the geometry. |
+| A kind is listed as unsupported | Changing the view or installing a browser does not add a renderer for that kind. See the [capability catalogue](capabilities.md). |
+| An orbital is present but incomplete | Read the evaluator's message about angular momentum or periodicity; see [wavefunction limits](terminal.md#orbitals-on-demand). |
+
+## Opening ORCA results
+
+The [ORCA tutorial](orca.md) describes the complete workflow. For a failed or
+unexpected import, first check which files share the calculation basename:
+
+| What you observe | What to do |
+|---|---|
+| Opening a property file requests `orca_2json` | A matching GBW was discovered. Put the matching ORCA utility on `PATH`, set `ORCA_2JSON`, or create a current orbital JSON export as described in the tutorial. |
+| The property and orbital geometries or charge/multiplicity disagree | Use results from the same calculation and final geometry. Renaming files does not make them compatible. |
+| A Compound wrapper output lists several calculations | Open one step's result file, or import the results directory to create separate QVFs. |
+| A browser upload contains only properties | Uploads are isolated files. Import the full calculation locally, then upload its combined QVF. |
+| CASSCF orbitals are visible but density, ELF or NCI is unavailable | The export does not establish the required correlated density representation. Use an ORCA-exported density cube for that field. |
+| MCD strengths differ from a thermally averaged spectrum | The importer preserves raw orientation sticks. It does not reproduce `orca_mapspc` thermal averaging. |
+| An ORCA result changed on disk but the view did not | Converted sources are not watched. Restart the viewer or regenerate the QVF and open the updated archive. |
+
 ## A mode will not start, or "No module named …"
 
 vibe-view splits its dependencies into extras so a capture-only host does
@@ -26,6 +61,7 @@ with its environment activated:
 | SMILES construction is absent | `[smiles]` | `python -m pip install -e '.[smiles]'` |
 | `%vibeview` is not a magic | `[jupyter]` | Install it in the environment running the **kernel** |
 | The vq panel or `from-vq` is unavailable | `[queue]` | See [Queue integration](queue.md); it is not a plain pip install |
+| **Sketch** puts an install command in the status bar | `[sketch]` | Install vibe-sketch from its checkout, then `python -m pip install -e '.[sketch]'` |
 | Build-from-name, auto-optimize, re-localize or container submission are greyed out | vibe-qc | These are producer features; the viewer works without them |
 
 From a source checkout, `./scripts/install.sh --extras all` is usually
@@ -50,9 +86,11 @@ and have no idle timeout. Stop the other one, or start on a free port:
 
 ```sh
 lsof -nP -iTCP:8080 -sTCP:LISTEN     # what owns the port
-pkill -f "vibe-view open"             # stop stale servers
 vibe-view open water.qvf --port 8090
 ```
+
+Stop the identified server with **Ctrl+C** in the terminal where you
+started it; avoid terminating other sessions by command-name pattern.
 
 The guard exists because without it `open` would connect to the existing
 listener, announce *ready*, and open your browser at the **stale** server

@@ -16,7 +16,6 @@ import types
 import zipfile
 
 import numpy as np
-import pytest
 
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "True")
 
@@ -210,7 +209,7 @@ def test_clip_rebuild_retains_indirectly_removed_actor_until_replacement(monkeyp
         gc.collect()
         retained_during_rebuild.append(old_actor() is not None)
 
-    monkeypatch.setattr(appmod, "_rebuild_volume", observe_retired_actor)
+    monkeypatch.setattr(appmod._helpers, "_rebuild_volume", observe_retired_actor)
     state = _clip_state(clip_enabled=False, clip_position_message="")
     appmod._rebuild_clip(reader, plotter, object(), state)
 

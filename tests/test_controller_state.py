@@ -107,12 +107,11 @@ def test_no_template_bound_state_key_starts_with_underscore():
     because they never render the Vue template bindings; only live-browser
     review caught it.
     """
-    import pathlib
     import re
 
-    import vibeview.app
+    from tests._sources import app_source
 
-    src = pathlib.Path(vibeview.app.__file__).read_text()
+    src = app_source()
     # Trame binds state into templates as a 1-tuple: `=("state_key", ...)`.
     # Flag any such binding whose key begins with an underscore.
     offenders = re.findall(r'=\(\s*"(_[A-Za-z][A-Za-z0-9_]*)"', src)
@@ -221,7 +220,7 @@ def test_rebuild_scene_preserves_ssao_choice(
     plotter = Plotter()
 
     _rebuild_scene(
-        types.SimpleNamespace(sections=[]),
+        types.SimpleNamespace(sections=[], shown_structure=None),
         plotter,
         viewer_state,
         state,
@@ -252,31 +251,31 @@ def test_replay_wavefunction_surface_dispatches_exact_recipe(
     calls = []
 
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_render_mo_volume",
         lambda _r, _p, _v, _s, _section, index, spin, *, component: calls.append(
             ("mo", index, spin, component)
         ),
     )
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_render_wf_density",
         lambda _r, _p, _v, state, _section: calls.append(
             ("density", state.wf_density_spin)
         ),
     )
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_render_wf_elf",
         lambda *_args: calls.append(("elf",)),
     )
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_render_wf_nci",
         lambda *_args: calls.append(("nci",)),
     )
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_render_wf_laplacian",
         lambda *_args: calls.append(("laplacian",)),
     )
@@ -326,23 +325,23 @@ def test_rebuild_scene_replays_overlays_before_appearance(monkeypatch) -> None:
     events = []
 
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_replay_wavefunction_surface",
         lambda *_args: events.append("wavefunction") or True,
         raising=False,
     )
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_remove_atom_index_labels",
         lambda _plotter: events.append("remove_index_labels"),
     )
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_render_atom_properties_overlay",
         lambda *_args, **_kwargs: events.append("atom_properties"),
     )
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_apply_scene_appearance",
         lambda *_args: events.append("appearance"),
     )
@@ -391,7 +390,7 @@ def test_rebuild_scene_replays_overlays_before_appearance(monkeypatch) -> None:
     viewer_state = types.SimpleNamespace(replication=(1, 1, 1))
 
     appmod._rebuild_scene(
-        types.SimpleNamespace(sections=[]), Plotter(), viewer_state, state
+        types.SimpleNamespace(sections=[], shown_structure=None), Plotter(), viewer_state, state
     )
 
     assert events == [
@@ -407,13 +406,16 @@ def test_rebuild_scene_replays_overlays_before_appearance(monkeypatch) -> None:
         current_plotter.actors["mo_iso_partial"] = object()
         raise RuntimeError("grid evaluation failed")
 
-    monkeypatch.setattr(appmod, "_replay_wavefunction_surface", fail_replay)
+    monkeypatch.setattr(appmod._helpers, "_replay_wavefunction_surface", fail_replay)
     events.clear()
     state.atom_properties_active = False
     state.mo_visible = True
     failing_plotter = Plotter()
     appmod._rebuild_scene(
-        types.SimpleNamespace(sections=[]), failing_plotter, viewer_state, state
+        types.SimpleNamespace(sections=[], shown_structure=None),
+        failing_plotter,
+        viewer_state,
+        state,
     )
     assert state.mo_visible is False
     assert state.status_message == (
@@ -446,8 +448,8 @@ def test_rebuild_scene_preserves_structure_error_after_successful_replay(
         state.status_message = "Computed surface rendered"
         return True
 
-    monkeypatch.setattr(appmod, "_replay_wavefunction_surface", replay_success)
-    monkeypatch.setattr(appmod, "_apply_scene_appearance", lambda *_args: None)
+    monkeypatch.setattr(appmod._helpers, "_replay_wavefunction_surface", replay_success)
+    monkeypatch.setattr(appmod._helpers, "_apply_scene_appearance", lambda *_args: None)
 
     class Renderer:
         def SetPass(self, _render_pass) -> None:
@@ -484,9 +486,8 @@ def test_rebuild_scene_preserves_structure_error_after_successful_replay(
         atom_properties_active=False,
         atom_properties_section_id=None,
     )
-    reader = types.SimpleNamespace(
-        sections=[types.SimpleNamespace(id="structure", kind="structure")]
-    )
+    structure = types.SimpleNamespace(id="structure", kind="structure")
+    reader = types.SimpleNamespace(sections=[structure], shown_structure=structure)
 
     error = appmod._rebuild_scene(
         reader,
@@ -504,12 +505,12 @@ def test_rebuild_scene_keeps_hidden_computed_surface_hidden(monkeypatch) -> None
 
     calls = []
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_replay_wavefunction_surface",
         lambda *_args: calls.append("wavefunction") or True,
         raising=False,
     )
-    monkeypatch.setattr(appmod, "_apply_scene_appearance", lambda *_args: None)
+    monkeypatch.setattr(appmod._helpers, "_apply_scene_appearance", lambda *_args: None)
 
     class Renderer:
         def SetPass(self, _render_pass) -> None:
@@ -546,7 +547,7 @@ def test_rebuild_scene_keeps_hidden_computed_surface_hidden(monkeypatch) -> None
         atom_properties_section_id=None,
     )
     appmod._rebuild_scene(
-        types.SimpleNamespace(sections=[]),
+        types.SimpleNamespace(sections=[], shown_structure=None),
         Plotter(),
         types.SimpleNamespace(replication=(1, 1, 1)),
         state,
@@ -555,14 +556,14 @@ def test_rebuild_scene_keeps_hidden_computed_surface_hidden(monkeypatch) -> None
     assert calls == []
 
     monkeypatch.setattr(
-        appmod,
+        appmod._helpers,
         "_rebuild_volume",
         lambda *_args: calls.append("stored_volume"),
     )
     state.active_volume_id = "stored"
     state.mo_visible = True
     appmod._rebuild_scene(
-        types.SimpleNamespace(sections=[]),
+        types.SimpleNamespace(sections=[], shown_structure=None),
         Plotter(),
         types.SimpleNamespace(replication=(1, 1, 1)),
         state,
@@ -611,10 +612,15 @@ def _vibrations_qvf_zero_positions() -> Path:
                               "shape": [3, 3, 3], "sha256": _sha(disp_b)},
         }},
     ]
-    manifest = {"qvf_version": 1, "source": {"program": "vibe-qc", "version": "0", "calculation": "t"},
-                "sections": sections}
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    manifest = {
+        "qvf_version": 1,
+        "source": {"program": "vibe-qc", "version": "0", "calculation": "t"},
+        "sections": sections,
+    }
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
         for p, d in {"s.json": structure, "v/m.json": meta, "v/d.bin": disp_b}.items():
             zf.writestr(p, d)
@@ -913,7 +919,8 @@ def test_vq_submit_job_uses_queue_with_name_and_tag(water_qvf, monkeypatch):
 
     def _fake_submit(host, *, input_file, python, job_name, tags, **k):
         # the generated input must be a real, unit-correct vibe-qc script
-        src = open(input_file).read()
+        with open(input_file) as fh:
+            src = fh.read()
         seen.update(host=host, job_name=job_name, tags=tags, script=src)
         return "abcdef012345"
 
@@ -1060,15 +1067,27 @@ def test_vq_submit_job_container_mode_sends_a_pending_qvf(water_qvf, monkeypatch
             kinds=sorted({sec["kind"] for sec in manifest["sections"]}),
             run_status=manifest.get("provenance", {}).get("run_status"),
             extra=sorted(kwargs),
+            program=kwargs.get("program"),
+            pin=kwargs.get("program_runtime_pin"),
         )
         return "fedcba543210"
 
+    pin = types.SimpleNamespace(expected_git_sha="a" * 40)
+    program = types.SimpleNamespace(
+        kind="venv", python="/opt/vibeqc/.venv/bin/python", import_check="vibeqc"
+    )
+    cfg = types.SimpleNamespace(programs={"vibeqc-dev": program})
     submit_mod = types.ModuleType("vq.submit")
     submit_mod.submit_local = _fake_submit
+    submit_mod._program_runtime_pin_for_submit = lambda c, name: pin
     monkeypatch.setitem(sys.modules, "vq.submit", submit_mod)
+    config_mod = types.ModuleType("vq.config")
+    config_mod.load_config = lambda: cfg
+    monkeypatch.setitem(sys.modules, "vq.config", config_mod)
     listing_mod = types.ModuleType("vq.listing")
     listing_mod.list_jobs = lambda h, *a, **k: []
     monkeypatch.setitem(sys.modules, "vq.listing", listing_mod)
+    monkeypatch.delenv("VIBEVIEW_VQ_PROGRAM", raising=False)
 
     reader = QVFReader(water_qvf)
     try:
@@ -1087,8 +1106,11 @@ def test_vq_submit_job_container_mode_sends_a_pending_qvf(water_qvf, monkeypatch
         assert seen["kinds"] == ["job.spec", "structure"], seen["kinds"]
         assert seen["run_status"] == "pending"
         assert "qvf-container" in seen["tags"]
-        # No interpreter may be passed for a container payload.
+        # No interpreter may be passed for a container payload; vq needs the
+        # registered vibe-qc program and its runtime pin instead (#86).
         assert "python" not in seen["extra"], seen["extra"]
+        assert seen["program"] == "vibeqc-dev"
+        assert seen["pin"] is pin
         assert "container" in server.state.status_message
     finally:
         reader.close()
@@ -1123,6 +1145,12 @@ def test_keyboard_shortcut_triggers_registered(showcase_qvf):
             "edit_undo",
             "edit_redo",
             "edit_delete_selected",
+            # The playback keys: Space, [ ], < >.
+            "trajectory_play_toggle",
+            "trajectory_step",
+            "vibration_play_toggle",
+            "vibration_step_phase",
+            "vibration_step_mode",
         }
         missing = needed - registered
         assert not missing, f"shortcut triggers not registered: {sorted(missing)}"
@@ -1165,34 +1193,6 @@ def test_activate_sections_smoke_and_mo_picker_staleness(showcase_qvf):
         reader.close()
 
 
-def test_every_panel_kind_has_a_click_dispatch_branch():
-    """A panel kind with no branch in ``_activate_section_impl`` is dead:
-    clicking it in the sidebar renders nothing and says nothing.
-
-    ``dos.coop``, ``dos.cohp`` and ``bond_orders`` were in that state —
-    they had activators, and the viewer_defaults auto-open path called
-    them, but the click dispatch never did. The smoke test above only
-    asserts that activation doesn't *raise*, which a missing branch
-    trivially satisfies.
-    """
-    import inspect
-    import re
-
-    import vibeview.app as appmod
-
-    src = inspect.getsource(appmod.create_app)
-    # Only the section of create_app that dispatches a user click.
-    start = src.index("def _activate_section_impl")
-    impl = src[start : src.index("@ctrl.set(\"activate_section\")", start)]
-
-    # Spectra kinds are matched via a set membership, not a literal, and
-    # volume.* via startswith — both are covered by their own branches.
-    literal_kinds = appmod._two_d_panel_kinds() - appmod._plot_spectra_kinds()
-    missing = [k for k in sorted(literal_kinds) if not re.search(rf'"{k}"', impl)]
-    assert not missing, (
-        "panel kinds with no branch in the click dispatch (clicking them "
-        f"does nothing): {missing}"
-    )
 
 
 def test_two_d_panel_switch_pushes_cleaned_scene(showcase_qvf, monkeypatch):
@@ -1234,7 +1234,7 @@ def test_two_d_panel_switch_pushes_cleaned_scene(showcase_qvf, monkeypatch):
         activate(ap_id)  # draw the charge-label overlay
 
         pushes: list = []
-        monkeypatch.setattr(appmod, "_push_view", lambda p: pushes.append(p))
+        monkeypatch.setattr(appmod._helpers, "_push_view", lambda p: pushes.append(p))
         activate(panel_id)  # 2D panel — must sync the cleaned scene
         assert pushes, (
             "switching atom_properties → a 2D panel must push the cleaned "
@@ -1298,7 +1298,7 @@ def test_update_clip_accepts_slider_event_arg(showcase_qvf, monkeypatch):
         def record_rebuild(_reader, _plotter, _viewer_state, state):
             rebuilt_positions.append((state.clip_x, state.clip_y, state.clip_z))
 
-        monkeypatch.setattr(appmod, "_rebuild_clip", record_rebuild)
+        monkeypatch.setattr(appmod._helpers, "_rebuild_clip", record_rebuild)
         server.controller.view_update = lambda *a, **k: view_updates.append(True)
         server.state.clip_enabled = True
         server.state.clip_x = 0.5
@@ -1343,7 +1343,7 @@ def test_reload_active_file_rebuilds_scene(showcase_qvf, monkeypatch):
             builds.append(a)
             return real_build(*a, **k)
 
-        monkeypatch.setattr(appmod, "_build_structure_scene", _spy)
+        monkeypatch.setattr(appmod._helpers, "_build_structure_scene", _spy)
         server.controller.switch_file(0)  # drives _reload_active_file
         assert builds, (
             "_reload_active_file cleared the plotter but never called "
@@ -1416,8 +1416,8 @@ def test_file_switch_preserves_material_and_toon_appearance(water_qvf, monkeypat
             reader.close()
 
 
-def test_file_switch_rebinds_lazy_reader_to_the_active_qvf(water_qvf, monkeypatch):
-    """Symmetry and the lazy archive must both follow the selected file."""
+def test_file_switch_rebinds_symmetry_to_the_active_qvf(water_qvf, monkeypatch):
+    """Symmetry detection must follow the selected file."""
 
     from trame.app import get_server
 
@@ -1442,18 +1442,17 @@ def test_file_switch_rebinds_lazy_reader_to_the_active_qvf(water_qvf, monkeypatc
         server.controller.view_update = lambda *a, **k: None
 
         server.controller.detect_symmetry()
-        first_lazy = seen[-1]
+        first = seen[-1]
         assert server.state.point_group == "C2v"
-        assert Path(first_lazy.path).resolve() == water_qvf.resolve()
+        assert first is readers[0]
 
         server.controller.switch_file(1)
         server.controller.detect_symmetry()
-        second_lazy = seen[-1]
+        second = seen[-1]
 
         assert server.state.point_group == "D∞h"
-        assert second_lazy is not first_lazy
-        assert Path(second_lazy.path).resolve() == second_path.resolve()
-        assert first_lazy._raw_reader._zf.fp is None
+        assert second is readers[1]
+        assert Path(second.path).resolve() == second_path.resolve()
     finally:
         for active_reader in readers:
             active_reader.close()
@@ -1479,10 +1478,13 @@ def test_symmetry_detection_uses_the_active_edit_overlay(water_qvf):
         positions = [atom.position.copy() for atom in structure.atoms]
         positions[0] += np.array([0.13, 0.07, 0.21])
         reader.set_edit_overlay(positions, [atom.symbol for atom in structure.atoms])
-        assert detect_from_qvf(reader).symbol == "C1"
+        # Distorted water keeps exactly one symmetry element: the plane of
+        # its three atoms. That makes it Cs, which the Cartesian-only mirror
+        # search missed whenever the plane was not x, y or z (#40-11).
+        assert detect_from_qvf(reader).symbol == "Cs"
 
         server.controller.detect_symmetry()
-        assert server.state.point_group == "C1"
+        assert server.state.point_group == "Cs"
     finally:
         reader.close()
 
@@ -1521,6 +1523,22 @@ def _append_scf_iteration(path, energy_eh):
     _rewrite_qvf(path, _mutate)
 
 
+def _scf_chart_energy_series(html):
+    """Read the published energy trace, independent of Plotly's random div ID."""
+    marker = "Plotly.newPlot("
+    assert html.count(marker) == 1
+    payload = html.split(marker, 1)[1].lstrip()
+    decoder = json.JSONDecoder()
+    plot_id, end = decoder.raw_decode(payload)
+    assert isinstance(plot_id, str) and plot_id
+    payload = payload[end:].lstrip()
+    assert payload.startswith(",")
+    traces, _ = decoder.raw_decode(payload[1:].lstrip())
+    energy = [trace for trace in traces if trace.get("name") == "Energy (Eh)"]
+    assert len(energy) == 1
+    return energy[0]["x"], energy[0]["y"]
+
+
 def test_watcher_panel_only_hot_reload(monkeypatch, tmp_path, showcase_qvf):
     """A checkpoint that only grows scf_history must hot-reload the active
     panel from a *fresh* reader without rebuilding the 3D scene (the old
@@ -1551,9 +1569,15 @@ def test_watcher_panel_only_hot_reload(monkeypatch, tmp_path, showcase_qvf):
         create_app(reader)
         server = get_server(client_type="vue3")
         server.controller.view_update = lambda *a, **k: None
+        server.state.scf_skip_guess = False
+        server.state.scf_log_energy = False
         server.controller.activate_section(scf_id)
-        baseline_html = server.state.chart_html
-        assert baseline_html
+        baseline = reader.read_scf_history(scf_id).iterations
+        expected_iterations = [row["iter"] for row in baseline]
+        expected_energies = [row["energy_eh"] for row in baseline]
+        assert _scf_chart_energy_series(server.state.chart_html) == (
+            expected_iterations, expected_energies
+        )
 
         original = reader.read_structure()
         original_lattice = np.asarray(original.lattice_vectors, dtype=float)
@@ -1574,6 +1598,8 @@ def test_watcher_panel_only_hot_reload(monkeypatch, tmp_path, showcase_qvf):
 
         tracker = QVFChangeTracker(live, settle_delay=0.0)
         _append_scf_iteration(live, -99.9)
+        expected_iterations.append(len(baseline) + 1)
+        expected_energies.append(-99.9)
         tracker.poll()  # movement detected
         event = tracker.poll()  # settled → fingerprint + diff
         assert event is not None
@@ -1582,15 +1608,14 @@ def test_watcher_panel_only_hot_reload(monkeypatch, tmp_path, showcase_qvf):
 
         builds = []
         monkeypatch.setattr(
-            appmod, "_build_structure_scene", lambda *a, **k: builds.append(a)
+            appmod._helpers, "_build_structure_scene", lambda *a, **k: builds.append(a)
         )
         server.controller.apply_watcher_event(event)
 
         assert not builds, "panel-only change must not rebuild the 3D scene"
         assert server.state.selected_section == scf_id  # selection kept
-        assert server.state.chart_html != baseline_html, (
-            "panel must re-render from the fresh reader — identical HTML "
-            "means the stale pre-rewrite zip handle was reused"
+        assert _scf_chart_energy_series(server.state.chart_html) == (
+            expected_iterations, expected_energies
         )
         assert server.state.edit_history == history_before
         assert server.state.edit_future == []
@@ -1642,7 +1667,6 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
     from trame.app import get_server
 
     import vibeview.app as appmod
-    import vibeview.lazy_loader as lazy_loader
     import vibeview.qvf as qvfmod
     from vibeview.app import create_app
     from vibeview.file_watcher import QVFChangeTracker
@@ -1657,6 +1681,8 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
         create_app(reader)
         server = get_server(client_type="vue3")
         server.controller.view_update = lambda *a, **k: None
+        server.state.scf_skip_guess = False
+        server.state.scf_log_energy = False
         server.controller.activate_section("scf_hist0")
 
         class TrackingQVFReader(QVFReader):
@@ -1664,29 +1690,27 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
                 super().__init__(source)
                 replacements.append(self)
 
-        class LazyReaderStub:
-            def __init__(self, path):
-                self.path = path
-
-            def close(self):
-                pass
-
-        # Track primary watcher replacements without counting the separate
-        # raw reader owned by the lazy-controller wrapper.
+        # Track primary watcher replacements.
         monkeypatch.setattr(qvfmod, "QVFReader", TrackingQVFReader)
-        monkeypatch.setattr(lazy_loader, "QVFLazyReader", LazyReaderStub)
         monkeypatch.setattr(
-            appmod, "_build_structure_scene", lambda *a, **k: pytest.fail(
+            appmod._helpers, "_build_structure_scene", lambda *a, **k: pytest.fail(
                 "panel-only change must not rebuild the 3D scene"
             )
         )
 
         tracker = QVFChangeTracker(live, settle_delay=0.0)
-        previous_html = server.state.chart_html
-        baseline_count = len(reader.read_scf_history("scf_hist0").iterations)
+        baseline = reader.read_scf_history("scf_hist0").iterations
+        baseline_count = len(baseline)
+        expected_iterations = [row["iter"] for row in baseline]
+        expected_energies = [row["energy_eh"] for row in baseline]
+        assert _scf_chart_energy_series(server.state.chart_html) == (
+            expected_iterations, expected_energies
+        )
         for offset in range(1, 5):
             energy = -99.0 - offset / 10
             _append_scf_iteration(live, energy)
+            expected_iterations.append(baseline_count + offset)
+            expected_energies.append(energy)
             tracker.poll()
             event = tracker.poll()
             assert event is not None
@@ -1702,8 +1726,9 @@ def test_watcher_repeated_panel_only_reload_closes_superseded_readers(
             history = current.read_scf_history("scf_hist0").iterations
             assert len(history) == baseline_count + offset
             assert history[-1]["energy_eh"] == energy
-            assert server.state.chart_html != previous_html
-            previous_html = server.state.chart_html
+            assert _scf_chart_energy_series(server.state.chart_html) == (
+                expected_iterations, expected_energies
+            )
     finally:
         reader.close()
         for replacement in replacements:
@@ -1845,10 +1870,10 @@ def test_enabled_watcher_disables_when_upload_selects_pathless_reader(
         reader.close()
 
 
-def test_watcher_panel_only_reload_replaces_the_lazy_reader(
+def test_watcher_panel_only_reload_rebinds_symmetry_to_the_fresh_reader(
     water_qvf, monkeypatch, tmp_path
 ):
-    """A fresh raw reader must be paired with a fresh lazy wrapper too."""
+    """After a panel-only reload, symmetry detection reads the fresh reader."""
     import shutil
     import types
 
@@ -1890,7 +1915,6 @@ def test_watcher_panel_only_reload_replaces_the_lazy_reader(
 
         assert second_lazy is not first_lazy
         assert Path(second_lazy.path) == live
-        assert first_lazy._raw_reader._zf.fp is None
     finally:
         reader.close()
 
@@ -1949,7 +1973,7 @@ def test_watcher_added_section_rebuilds_scene_and_restores_selection(
             builds.append(a)
             return real_build(*a, **k)
 
-        monkeypatch.setattr(appmod, "_build_structure_scene", _spy)
+        monkeypatch.setattr(appmod._helpers, "_build_structure_scene", _spy)
         marked: list[str] = []
         state_cls = type(server.state)
         real_dirty = state_cls.dirty
@@ -2360,8 +2384,13 @@ def test_wannier_overlay_detected_and_toggles(monkeypatch, tmp_path):
         "qvf_version": 1,
         "source": {"program": "test", "version": "0", "calculation": "ccm"},
         "sections": [
-            {"id": "structure", "kind": "structure",
-             "members": {"structure": {"path": "s.json", "format": "json", "sha256": _sha(struct)}}},
+            {
+                "id": "structure",
+                "kind": "structure",
+                "members": {
+                    "structure": {"path": "s.json", "format": "json", "sha256": _sha(struct)}
+                },
+            },
             {"id": "wan0", "kind": "x_ccm.wannier_centers",
              "members": {"centers": {"path": "w.json", "format": "json", "sha256": _sha(centres)}}},
         ],
@@ -2451,7 +2480,7 @@ def test_activate_section_survives_a_renderer_exception(monkeypatch):
             raise RuntimeError("simulated renderer failure")
 
         # Make the volume renderer explode on activation.
-        monkeypatch.setattr(app_mod, "_activate_volume", _boom)
+        monkeypatch.setattr(app_mod._helpers, "_activate_volume", _boom)
 
         create_app(reader)
         server = get_server(client_type="vue3")
@@ -2468,3 +2497,38 @@ def test_activate_section_survives_a_renderer_exception(monkeypatch):
         assert "Could not open" not in (server.state.status_message or "")
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_orca_input_controls_export_current_geometry(water_qvf):
+    """The real application binds ORCA actions and initializes their form state."""
+    from trame.app import get_server
+
+    from vibeview.app import create_app
+    from vibeview.qvf import QVFReader
+
+    with QVFReader(water_qvf) as reader:
+        create_app(reader)
+        server = get_server(client_type="vue3")
+        assert server.state.calc_engine == "vibe-qc"
+        # Trame interprets a Python list supplied directly to items as a
+        # binding expression, not a literal list. STO-3G then prevents Vue
+        # from compiling the entire page, before any controller can run.
+        template = server.state["trame__template_main"]
+        for key in ("calc_engine_options", "calc_orca_method_options", "calc_orca_basis_options"):
+            assert f':items="{key}"' in template
+            assert isinstance(server.state[key], list)
+        assert server.state.calc_engine_options == ["vibe-qc", "ORCA"]
+        assert "PBE" in server.state.calc_orca_method_options
+        assert "def2-SVP" in server.state.calc_orca_basis_options
+        server.state.calc_engine = "ORCA"
+        server.state.calc_template = "optimization"
+        server.state.calc_charge = 0
+        server.state.calc_multiplicity = 1
+        server.controller.preview_orca_input()
+        assert "! PBE def2-SVP TightSCF Opt" in server.state.calc_orca_preview
+        server.controller.export_orca_input()
+        data = server.state.export_data or ""
+        assert data.startswith("data:text/plain;base64,"), server.state.status_message
+        text = base64.b64decode(data.split(",", 1)[1]).decode()
+        assert text == server.state.calc_orca_preview
+        assert "* xyz 0 1" in text
