@@ -6,8 +6,10 @@ enable specific vibe-view visualizations.
 
 from __future__ import annotations
 
+from typing import Any
+
 # Maps desired visualization features to the QVF sections/data needed
-VIS_NEEDS: dict[str, dict] = {
+VIS_NEEDS: dict[str, dict[str, Any]] = {
     "localized_orbitals": {
         "description": "Localized molecular orbitals (Boys, Pipek-Mezey, etc.)",
         "needs_from_qc": [

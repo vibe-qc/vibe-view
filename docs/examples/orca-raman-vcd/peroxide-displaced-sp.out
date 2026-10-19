@@ -1,0 +1,73 @@
+# Scientific excerpts from ORCA 6.1.1; intervening output omitted.
+# PBE/def2-SVP TightSCF SP on the selected-mode displaced peroxide geometry.
+
+                         Program Version 6.1.1  -  RELEASE   -
+
+# ... intervening output omitted ...
+
+CARTESIAN COORDINATES (ANGSTROEM)
+---------------------------------
+  O     -0.673688   -0.033434    0.046507
+  O      0.673738    0.054818   -0.016340
+  H     -0.967485    0.907036    0.064006
+  H      0.967293   -0.235250    0.878511
+
+----------------------------
+
+# ... intervening output omitted ...
+
+ORBITAL ENERGIES
+----------------
+
+  NO   OCC          E(Eh)            E(eV)
+   0   2.0000     -18.792407      -511.3674
+   1   2.0000     -18.792133      -511.3599
+   2   2.0000      -1.045311       -28.4443
+   3   2.0000      -0.772112       -21.0102
+   4   2.0000      -0.500366       -13.6157
+   5   2.0000      -0.421021       -11.4566
+   6   2.0000      -0.363683        -9.8963
+   7   2.0000      -0.233635        -6.3575
+   8   2.0000      -0.200234        -5.4486
+   9   0.0000       0.027409         0.7458
+  10   0.0000       0.029335         0.7982
+  11   0.0000       0.103427         2.8144
+  12   0.0000       0.527332        14.3494
+  13   0.0000       0.534335        14.5400
+  14   0.0000       0.817072        22.2337
+  15   0.0000       0.830987        22.6123
+  16   0.0000       0.855753        23.2862
+  17   0.0000       0.916501        24.9393
+  18   0.0000       0.942516        25.6472
+  19   0.0000       0.981855        26.7176
+*Only the first 10 virtual orbitals were printed.
+
+
+# ... intervening output omitted ...
+
+MULLIKEN ATOMIC CHARGES
+-----------------------
+   0 O :   -0.180605
+   1 O :   -0.180623
+   2 H :    0.180608
+   3 H :    0.180620
+Sum of atomic charges:   -0.0000000
+
+
+# ... intervening output omitted ...
+
+FINAL SINGLE POINT ENERGY      -151.264448448530
+-------------------------   --------------------
+
+# ... intervening output omitted ...
+
+Total Dipole Moment    :     -0.000158260       0.442601555       0.620880280
+                        -----------------------------------------
+Magnitude (a.u.)       :      0.762488350
+Magnitude (Debye)      :      1.938091363
+
+
+# ... intervening output omitted ...
+
+                             ****ORCA TERMINATED NORMALLY****
+TOTAL RUN TIME: 0 days 0 hours 0 minutes 0 seconds 693 msec

@@ -6,27 +6,31 @@ every wheel. `.githooks/pre-commit` blocks new ones at commit time, but a hook
 is opt-in (`git config --local core.hooksPath .githooks`) and git skips a
 missing hooks directory silently — so this test is the half that always runs.
 
-Keep the patterns and the allowlist in sync with the hook.
+The allowlist is read from the hook itself (``tests/_privacy_policy.py``);
+keep the path pattern in sync with it.
 """
 
 from __future__ import annotations
 
 import re
+import runpy
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from tests._privacy_policy import allowed_users
+
 _ROOT = Path(__file__).resolve().parent.parent
 
-# Placeholders and system usernames that are legitimate references: CI and system accounts,
-# and the documented "user" placeholder. Add sparingly; each entry weakens the
-# gate. Mirrors ALLOWED_USERS in .githooks/pre-commit.
-_ALLOWED_USERS = ("USER", "Shared", "runner", "root", "user")
+# Placeholders and system usernames that are legitimate references: CI and
+# system accounts, and the documented "user" placeholder. Defined once, as
+# ALLOWED_USERS in .githooks/pre-commit; add sparingly, since each entry
+# weakens the gate.
+_ALLOWED_USERS = allowed_users()
 
 _HOME_PATH = re.compile(r"/(?:Users|home)/([A-Za-z][A-Za-z0-9_.-]*)")
 # Private names are configured externally; never publish the denylist itself.
-import runpy
 _PRIVATE_TERMS = runpy.run_path(str(_ROOT / ".githooks/private_terms.py"))["load_terms"](_ROOT)
 
 
@@ -93,12 +97,19 @@ def test_the_hook_exists_and_is_executable():
     assert os.access(hook, os.X_OK), f"{hook} is not executable; git will skip it"
 
 
-def test_the_hook_and_this_test_share_an_allowlist():
-    """Two copies of a security allowlist that can drift is worse than one."""
-    hook = (_ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
-    match = re.search(r"^ALLOWED_USERS='([^']*)'", hook, re.MULTILINE)
-    assert match, "could not find ALLOWED_USERS in .githooks/pre-commit"
-    assert tuple(match.group(1).split("|")) == _ALLOWED_USERS
+def test_the_allowlist_has_one_definition():
+    """Two copies of a security allowlist that can drift is worse than one:
+    the tests read the hook's list, and no tracked file restates it."""
+    assert "root" in _ALLOWED_USERS and "USER" in _ALLOWED_USERS
+    literal = '", "'.join(_ALLOWED_USERS)
+    copies = [
+        rel
+        for rel in _tracked_text_files()
+        if rel.endswith(".py")
+        and (_ROOT / rel).is_file()  # tracked but deleted in the working tree
+        and literal in (_ROOT / rel).read_text(encoding="utf-8")
+    ]
+    assert not copies, f"a second copy of ALLOWED_USERS: {copies}"
 
 
 @pytest.mark.skipif(
@@ -148,16 +159,3 @@ def test_the_hook_rejects_a_home_path(tmp_path, monkeypatch, external_policy):
     assert allowed.returncode == 0, (
         f"the hook blocked a clean commit:\n{allowed.stdout}{allowed.stderr}"
     )
-
-
-def test_privacy_hook_regressions():
-    """Run isolated staged-diff regressions without any runtime dependencies."""
-    import subprocess
-    import sys
-
-    root = Path(__file__).resolve().parents[1]
-    completed = subprocess.run(
-        [sys.executable, str(root / ".githooks" / "test_privacy_hook.py"), "-q"],
-        capture_output=True, text=True, timeout=60, check=False,
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr

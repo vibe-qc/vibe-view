@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._qvf_builders import vibe_qc_source, write_archive
 from vibeview.qvf import (
     ManifestValidationError,
     MemberSpec,
@@ -25,31 +26,11 @@ def _make_qvf(
     files: dict[str, bytes] | None = None,
     viewer_defaults: dict | None = None,
 ) -> Path:
-    """Create a minimal valid .qvf file in a temp directory.
-
-    sections: list of section dicts for the manifest.
-    files: extra files to include in the zip (keyed by path inside zip).
-    viewer_defaults: optional viewer_defaults dict.
-    """
-    manifest = {
-        "qvf_version": 1,
-        "source": {
-            "program": "vibe-qc",
-            "version": "0.9.0",
-            "calculation": "test",
-        },
-        "sections": sections,
-    }
-    if viewer_defaults is not None:
-        manifest["viewer_defaults"] = viewer_defaults
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        if files:
-            for path, data in files.items():
-                zf.writestr(path, data)
-    return Path(tmp.name)
+    """A version-1 archive with these sections, member payloads and optional
+    ``viewer_defaults``, in a temporary file."""
+    return write_archive(
+        sections, files, source=vibe_qc_source("0.9.0", "test"), viewer_defaults=viewer_defaults
+    )
 
 
 def _sha256(data: bytes) -> str:
@@ -487,7 +468,7 @@ class TestQVFReaderPayloadErrors:
             reader = QVFReader(path)
             structure_data = reader.read_structure()
             assert structure_data.bonds == [(0, 1, 1.0, (0, 0, 0))]
-            assert reader.infer_bonds(structure_data) == [(0, 1, 1.0, (0, 0, 0))]
+            assert reader.connectivity(structure_data) == [(0, 1, 1.0, (0, 0, 0))]
         finally:
             path.unlink()
 
@@ -584,6 +565,214 @@ class TestSHA256MismatchNotSwallowed:
             reader = QVFReader(path)
             structure_data = reader.read_structure()
             with pytest.raises(SHA256MismatchError):
-                reader.infer_bonds(structure_data)
+                reader.connectivity(structure_data)
         finally:
             path.unlink()
+
+
+class TestQVFReaderEdgeCases:
+    def test_reader_hash(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        h = hash(reader)
+        assert isinstance(h, int)
+        reader.close()
+
+    def test_reader_repr(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        r = repr(reader)
+        assert "QVFReader" in r
+        reader.close()
+
+    def test_reader_context_manager(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        with QVFReader(sample_qvf) as reader:
+            assert reader.sections is not None
+
+    def test_manifest_source(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        src = reader.manifest.source
+        assert src.program == "vibe-qc"
+        reader.close()
+
+    def test_manifest_qvf_version(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        version = reader.manifest.qvf_version
+        assert isinstance(version, int)
+        reader.close()
+
+    def test_reader_sections_iterable(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        sections_list = list(reader.sections)
+        assert len(sections_list) >= 1
+        reader.close()
+
+    def test_reader_has_section(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        assert reader.has_section("structure") is True
+        assert reader.has_section("nonexistent") is False
+        reader.close()
+
+
+class TestQVFSource:
+    def test_reader_from_path(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        assert reader is not None
+        reader.close()
+
+    def test_reader_from_bytes(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        data = sample_qvf.read_bytes()
+        reader = QVFReader(data)
+        assert reader is not None
+        reader.close()
+
+
+class TestReaderSurface:
+    def test_reader_manifest_to_dict(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        manifest = reader.manifest
+        assert hasattr(manifest, "source")
+        reader.close()
+
+    def test_section_attributes(self, sample_qvf):
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        for section in reader.sections:
+            assert hasattr(section, "id")
+            assert hasattr(section, "kind")
+            break
+        reader.close()
+
+
+
+class TestWithdrawnVersion:
+    """``qvf_version`` 2 is read and checked as 1, with a warning (#88).
+
+    vibe-qc 0.10-0.15 stamped 2 on archives with a periodic
+    ``reaction.path``; the bump was withdrawn. QVF spec § 3.1: a consumer
+    reads such an archive as version 1 for every check, the JSON Schema
+    included, and reports ``W_VERSION_WITHDRAWN``. vibe-view carries no v2
+    schema; the v1 schema of the pinned qvf release governs both.
+    """
+
+    _STRUCTURE = json.dumps(
+        {
+            "atoms": [{"symbol": "H", "atomic_number": 1, "position": [0.0, 0.0, 0.0]}],
+            "pbc": [False, False, False],
+        }
+    ).encode()
+
+    def _archive(self, tmp_path: Path, qvf_version, *, member_extra=None, **extra) -> Path:
+        member = {
+            "path": "structure/structure.json",
+            "format": "json",
+            "sha256": _sha256(self._STRUCTURE),
+            **(member_extra or {}),
+        }
+        return write_archive(
+            [{"id": "structure", "kind": "structure", "members": {"structure": member}}],
+            {"structure/structure.json": self._STRUCTURE},
+            dest=tmp_path / "archive.qvf",
+            source=vibe_qc_source("0.12.0", "test"),
+            qvf_version=qvf_version,
+            **extra,
+        )
+
+    def test_a_version_2_archive_opens_with_the_warning(self, tmp_path) -> None:
+        with QVFReader(self._archive(tmp_path, 2)) as reader:
+            assert reader.read_structure().atoms[0].symbol == "H"
+            # The manifest still says what the file says.
+            assert reader.manifest.qvf_version == 2
+            [warning] = reader.manifest_warnings()
+        assert warning.startswith("W_VERSION_WITHDRAWN:")
+        assert "read as version 1" in warning
+
+    def test_a_version_1_archive_has_no_manifest_warning(self, tmp_path) -> None:
+        with QVFReader(self._archive(tmp_path, 1)) as reader:
+            assert reader.manifest_warnings() == []
+
+    def test_version_2_is_checked_against_the_current_v1_schema(self, tmp_path) -> None:
+        """Root ``byte_order`` and member ``size`` arrived with qvf v0.2.0's v1
+        schema; the old vendored v2 schema refused both."""
+        path = self._archive(
+            tmp_path, 2,
+            member_extra={"size": len(self._STRUCTURE)},
+            byte_order="little",
+        )
+        with QVFReader(path) as reader:
+            assert [w.split(":")[0] for w in reader.manifest_warnings()] == [
+                "W_VERSION_WITHDRAWN"
+            ]
+
+    def test_version_2_is_not_exempt_from_the_schema(self, tmp_path) -> None:
+        path = self._archive(tmp_path, 2, member_extra={"format": "yaml"})
+        with pytest.raises(ManifestValidationError):
+            QVFReader(path)
+
+    @pytest.mark.parametrize("version", [0, 3, 99, "2", True])
+    def test_other_versions_are_still_refused(self, tmp_path, version) -> None:
+        with pytest.raises(ManifestValidationError):
+            QVFReader(self._archive(tmp_path, version))
+
+    def test_the_qvf_legacy_archive_opens_with_the_warning(self) -> None:
+        """qvf's own ``conformance/legacy`` archive, from the checkout at QVF_TAG."""
+        import os
+
+        from tests._qvf_corpus import qvf_corpus_dir
+
+        corpus = qvf_corpus_dir()
+        legacy = corpus.parent / "legacy" if corpus is not None else None
+        archive = legacy / "reaction_path_v2.qvf" if legacy is not None else None
+        if archive is None or not archive.is_file():
+            if os.environ.get("VIBEVIEW_REQUIRE_QVF_CORPUS"):
+                raise RuntimeError(
+                    "VIBEVIEW_REQUIRE_QVF_CORPUS is set, but the qvf checkout has no "
+                    f"conformance/legacy/reaction_path_v2.qvf (corpus: {corpus})"
+                )
+            pytest.skip("qvf checkout unavailable; set QVF_CORPUS or check out qvf")
+        expected = json.loads((legacy / "reaction_path_v2.expected.json").read_text())
+        codes = [item["code"] for item in expected["expect"]]
+        with QVFReader(archive) as reader:
+            assert [w.split(":")[0] for w in reader.manifest_warnings()] == codes
+            # Its metadata names atoms by symbols and atomic_numbers (spec § 5.5);
+            # the path is periodic by its lattice member, not by the version.
+            path = reader.read_reaction_path("path")
+            assert [a.symbol for a in path.atoms] == ["C", "C"]
+            assert path.lattice is not None
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_job_spec_reads_an_empty_functional_or_basis_as_null(tmp_path, value) -> None:
+    """qvf v0.3.0, spec § 5.9: null says the method takes none, and "" is its
+    deprecated spelling, read as null (#88)."""
+    spec = json.dumps({"job_type": "molecular", "method": "gfn2_xtb",
+                       "basis": value, "functional": value}).encode()
+    path = write_archive(
+        [{"id": "job", "kind": "job.spec", "members": {"spec": {
+            "path": "job/spec.json", "format": "json", "sha256": _sha256(spec)}}}],
+        {"job/spec.json": spec},
+        dest=tmp_path / "job.qvf",
+        source=vibe_qc_source("0.17.0", "job"),
+    )
+    with QVFReader(path) as reader:
+        job = reader.read_job_spec("job")
+    assert (job.basis, job.functional) == (None, None)

@@ -160,7 +160,7 @@ def detect_point_group(
     pos = positions - com
 
     # Inertia tensor
-    I = np.zeros((3, 3))
+    I = np.zeros((3, 3))  # noqa: E741 — `I` is the inertia tensor
     for i in range(n):
         m = masses[i]
         x, y, z = pos[i]
@@ -178,7 +178,28 @@ def detect_point_group(
     moments, axes = np.linalg.eigh(I)
     # Sort ascending
     Ia, Ib, Ic = float(moments[0]), float(moments[1]), float(moments[2])
-    principal_axis = axes[:, 2]  # Axis of largest moment
+    principal_axis = axes[:, 2]  # Axis of largest moment (reported, lab frame)
+
+    # Test symmetry in the principal-axes frame. The mirror and C2 searches
+    # below try Cartesian planes and axes; every symmetry element of a
+    # molecule contains its centre of mass and maps the inertia tensor onto
+    # itself, so for a non-degenerate tensor its axes and plane normals are
+    # principal axes. Rotating into that frame makes the result independent
+    # of how the input happens to be oriented: water rotated 0.9 rad about
+    # (1, 1, 0.3) came out C1 instead of C2v (#40-11). A symmetric top's
+    # unique axis becomes z. A spherical top's principal axes are arbitrary
+    # (the tensor is isotropic), so it keeps the input frame.
+    frame_pos = pos @ axes
+    frame_axis = np.array([0.0, 0.0, 1.0])
+
+    # Linear branch of the inertia-based point-group algorithm:
+    # https://pymatgen.org/pymatgen.symmetry.html#pymatgen.symmetry.analyzer.PointGroupAnalyzer
+    # The molecular axis is the zero-moment eigenvector. Test transverse
+    # distances with the same position tolerance as the symmetry operations.
+    transverse = np.linalg.norm(frame_pos[:, 1:], axis=1)
+    if n == 2 or (Ic > 0.0 and np.all(transverse < _TOL)):
+        symbol = "D\u221eh" if _has_inversion(symbols, pos) else "C\u221ev"
+        return PointGroup(symbol, 0, 1.0, axes[:, 0], "symmetric", (Ia, Ib, Ic))
 
     # Classify rotor type
     eps = 0.01
@@ -190,17 +211,12 @@ def detect_point_group(
         rotor = "asymmetric"
 
     # Detect group based on rotor type
-    if n == 2:
-        if _has_inversion(symbols, pos):
-            return PointGroup("D\u221eh", 0, 1.0, principal_axis, "symmetric", (Ia, Ib, Ic))
-        return PointGroup("C\u221ev", 0, 1.0, principal_axis, "symmetric", (Ia, Ib, Ic))
-
     if rotor == "spherical":
         pg = _detect_spherical(symbols, pos, atomic_numbers)
     elif rotor == "symmetric":
-        pg = _detect_symmetric(symbols, pos, atomic_numbers, principal_axis, Ia, Ib, Ic)
+        pg = _detect_symmetric(symbols, frame_pos, atomic_numbers, frame_axis, Ia, Ib, Ic)
     else:
-        pg = _detect_asymmetric(symbols, pos, atomic_numbers, Ia, Ib, Ic)
+        pg = _detect_asymmetric(symbols, frame_pos, atomic_numbers, Ia, Ib, Ic)
 
     return PointGroup(
         pg["symbol"],
@@ -218,10 +234,9 @@ def _has_inversion(symbols: list[str], pos: np.ndarray) -> bool:
     for i in range(n):
         found = False
         for j in range(n):
-            if symbols[i] == symbols[j]:
-                if np.linalg.norm(pos[i] + pos[j]) < _TOL:
-                    found = True
-                    break
+            if symbols[i] == symbols[j] and np.linalg.norm(pos[i] + pos[j]) < _TOL:
+                found = True
+                break
         if not found:
             return False
     return True
@@ -238,10 +253,9 @@ def _has_sigma_h(symbols: list[str], pos: np.ndarray, axis: np.ndarray) -> bool:
         reflected = reflect @ pos[i]
         found = False
         for j in range(n):
-            if symbols[i] == symbols[j]:
-                if np.linalg.norm(reflected - pos[j]) < _TOL:
-                    found = True
-                    break
+            if symbols[i] == symbols[j] and np.linalg.norm(reflected - pos[j]) < _TOL:
+                found = True
+                break
         if not found:
             return False
     return True
@@ -264,16 +278,46 @@ def _has_any_mirror(symbols: list[str], pos: np.ndarray) -> bool:
             reflected = reflect @ pos[i]
             found = False
             for j in range(len(symbols)):
-                if symbols[i] == symbols[j]:
-                    if np.linalg.norm(reflected - pos[j]) < _TOL:
-                        found = True
-                        break
+                if symbols[i] == symbols[j] and np.linalg.norm(reflected - pos[j]) < _TOL:
+                    found = True
+                    break
             if not found:
                 match = False
                 break
         if match:
             return True
     return False
+
+
+def _in_plane_directions(pos: np.ndarray, axis: np.ndarray) -> list[np.ndarray]:
+    """Unit directions perpendicular to ``axis`` pointing at atoms and between them.
+
+    Every vertical mirror of a symmetric top contains the axis and either an
+    atom or the bisector of two symmetry-equivalent atoms, and every
+    perpendicular C2 axis runs through an atom or such a bisector. Testing
+    these candidates, instead of angles counted from the input's x axis,
+    makes the search independent of the input orientation (#40-11).
+    """
+    axis_n = axis / np.linalg.norm(axis)
+    units: list[np.ndarray] = []
+    for p in pos:
+        perp = p - np.dot(p, axis_n) * axis_n
+        norm = float(np.linalg.norm(perp))
+        if norm > _TOL:
+            units.append(perp / norm)
+    candidates = list(units)
+    for i in range(len(units)):
+        for j in range(i + 1, len(units)):
+            bisector = units[i] + units[j]
+            norm = float(np.linalg.norm(bisector))
+            if norm > 1e-6:
+                candidates.append(bisector / norm)
+    distinct: list[np.ndarray] = []
+    for d in candidates:
+        # A direction and its opposite define the same axis and plane.
+        if all(abs(float(np.dot(d, e))) < 1.0 - 1e-6 for e in distinct):
+            distinct.append(d)
+    return distinct
 
 
 def _has_vertical_mirror(symbols: list[str], pos: np.ndarray, axis: np.ndarray) -> bool:
@@ -288,19 +332,23 @@ def _has_vertical_mirror(symbols: list[str], pos: np.ndarray, axis: np.ndarray) 
     e1 = e1 / np.linalg.norm(e1)
     e2 = np.cross(axis_n, e1)
 
-    # Test vertical mirror planes at 0°, 45°, 90°, 135°
-    for angle in [0.0, math.pi / 4, math.pi / 2, 3 * math.pi / 4]:
-        normal = math.cos(angle) * e1 + math.sin(angle) * e2
+    # Test vertical mirror planes at 0°, 45°, 90°, 135°, and every plane
+    # through the axis and an atom or an atom-pair bisector.
+    normals = [
+        math.cos(angle) * e1 + math.sin(angle) * e2
+        for angle in [0.0, math.pi / 4, math.pi / 2, 3 * math.pi / 4]
+    ]
+    normals += [np.cross(axis_n, d) for d in _in_plane_directions(pos, axis_n)]
+    for normal in normals:
         reflect = np.eye(3) - 2 * np.outer(normal, normal)
         match = True
         for i in range(len(symbols)):
             reflected = reflect @ pos[i]
             found = False
             for j in range(len(symbols)):
-                if symbols[i] == symbols[j]:
-                    if np.linalg.norm(reflected - pos[j]) < _TOL:
-                        found = True
-                        break
+                if symbols[i] == symbols[j] and np.linalg.norm(reflected - pos[j]) < _TOL:
+                    found = True
+                    break
             if not found:
                 match = False
                 break
@@ -342,9 +390,14 @@ def _find_perpendicular_c2(
     e2 = np.cross(axis_n, e1)
 
     axes = []
-    # Test perpendicular C2 axes at various angles
-    for angle in np.linspace(0, math.pi, 7, endpoint=False):
-        c2_axis = math.cos(angle) * e1 + math.sin(angle) * e2
+    # Test perpendicular C2 axes at various angles, and through every atom
+    # and atom-pair bisector.
+    candidates = [
+        math.cos(angle) * e1 + math.sin(angle) * e2
+        for angle in np.linspace(0, math.pi, 7, endpoint=False)
+    ]
+    candidates += _in_plane_directions(pos, axis_n)
+    for c2_axis in candidates:
         if _has_cn(pos, c2_axis, 2, _TOL):
             axes.append(c2_axis)
     return axes
@@ -479,10 +532,7 @@ def _rotation_matrix(axis: np.ndarray, angle: float) -> np.ndarray:
 
 def _has_equivalent(p: np.ndarray, q: np.ndarray, positions: np.ndarray, tol: float) -> bool:
     """Check if q is close to any position in the set."""
-    for r in positions:
-        if np.linalg.norm(q - r) < tol:
-            return True
-    return False
+    return any(np.linalg.norm(q - r) < tol for r in positions)
 
 
 # ── Symmetry element rendering ──────────────────────────────────────────
@@ -553,21 +603,15 @@ def detect_from_qvf(reader: Any) -> PointGroup | None:
 
     Parameters
     ----------
-    reader : QVFReader or QVFLazyReader
-        An open QVF reader with a ``read_structure()`` method or
-        ``_raw_reader`` attribute.
+    reader : QVFReader
+        An open QVF reader.
 
     Returns
     -------
     PointGroup or None
     """
     try:
-        # Support both QVFReader (has read_structure) and
-        # QVFLazyReader (which wraps _raw_reader)
-        if hasattr(reader, "_raw_reader"):
-            sdata = reader._raw_reader.read_structure()
-        else:
-            sdata = reader.read_structure()
+        sdata = reader.read_structure()
     except Exception:
         return None
 
@@ -585,7 +629,8 @@ def pg_summary(pg: PointGroup) -> str:
         f"Order: {pg.order}",
         f"Rotor type: {pg.rotor_type}",
         f"Confidence: {pg.confidence:.0%}",
-        f"Moments (amu\u00b7\u00c5\u00b2): Ia={pg.moments[0]:.1f}, Ib={pg.moments[1]:.1f}, Ic={pg.moments[2]:.1f}",
+        f"Moments (amu\u00b7\u00c5\u00b2): Ia={pg.moments[0]:.1f}, "
+        f"Ib={pg.moments[1]:.1f}, Ic={pg.moments[2]:.1f}",
     ]
     if pg.principal_axis is not None:
         pa = pg.principal_axis

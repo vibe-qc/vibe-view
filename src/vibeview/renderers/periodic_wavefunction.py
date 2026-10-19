@@ -4,15 +4,24 @@ from __future__ import annotations
 
 from dataclasses import replace
 from itertools import product
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vibeview.qvf import GridData
+from vibeview.qvf import GridData, WavefunctionGTOData
+from vibeview.units import BOHR_TO_ANGSTROM as _BOHR_TO_ANGSTROM
 
-_BOHR_TO_ANGSTROM = 0.529177210903
+if TYPE_CHECKING:
+    from vibeview.renderers.wavefunction import WavefunctionRenderer
 
 
-def evaluate_gamma_mo(renderer, wf, coefficients, n_per_dim):
+
+def evaluate_gamma_mo(
+    renderer: WavefunctionRenderer,
+    wf: WavefunctionGTOData,
+    coefficients: np.ndarray,
+    n_per_dim: int,
+) -> tuple[GridData, np.ndarray]:
     """Sum translated atomic orbitals before contouring, retaining complex phase.
 
     Bloch, Z. Phys. 52, 555–600 (1929), doi:10.1007/BF01339455:
@@ -21,6 +30,8 @@ def evaluate_gamma_mo(renderer, wf, coefficients, n_per_dim):
     or phase rotation is applied. Nonzero k needs a declared k-vector unit
     convention, which older QVF metadata does not provide.
     """
+    if wf.k_point is None:
+        raise ValueError("Bloch evaluation needs a k-point; this wavefunction declares none")
     if np.any(np.abs(wf.k_point) > 1e-12):
         raise ValueError("Non-Gamma Bloch orbitals are not supported; use a stored orbital grid")
     structure = renderer.reader.read_structure(wf.structure_ref)
@@ -93,5 +104,6 @@ def evaluate_gamma_mo(renderer, wf, coefficients, n_per_dim):
         origin=np.zeros(3),
         voxel_vectors=np.asarray(structure.lattice_vectors) / (n - 1),
         shape=(n, n, n),
+        units="angstrom",
     )
     return grid, values.reshape(grid.shape)

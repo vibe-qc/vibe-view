@@ -13,7 +13,7 @@ def format_banner(reader: QVFReader) -> str:
     - rendered (kind in supported set)
     - skipped, unsupported (kind not recognised)
     - skipped, vendor namespace (x_<vendor>.*)
-    - error, sha256 mismatch (if the section failed verification)
+    - error, with the recorded member-read or payload failure category
 
     The banner is printed at file-open time before the Trame server
     starts, so the user can see what sections are available and which
@@ -45,8 +45,9 @@ def format_banner(reader: QVFReader) -> str:
     for section in reader.sections:
         section_id = section.id
         error = reader.section_error(section_id)
+        detail: str | None
         if error is not None:
-            status = "error, sha256 mismatch"
+            status = f"error, {reader.section_error_kind(section_id) or 'invalid payload'}"
             detail = error
         else:
             status, detail = classify_section(section.kind)
