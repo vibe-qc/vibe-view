@@ -68,7 +68,7 @@ def test_failed_toon_enable_restores_actors_and_discards_snapshots() -> None:
         1,
         1,
     ]
-    assert plotter._vibeview_toon_saved == {}
+    assert plotter._vibe_view_toon_saved == {}
 
     replacement = Actor(Property(2))
     plotter.actors["reused"] = replacement
@@ -119,7 +119,8 @@ class TestBondInference:
     """Test the covalent-radii bond inference in QVFReader."""
 
     def test_water_bonds_inferred(self) -> None:
-        from vibeview.qvf import Atom, QVFReader, StructureData
+        from vibeview.bonds import structure_bonds
+        from vibeview.qvf import Atom, StructureData
 
         atoms = [
             Atom("O", np.array([0.0, 0.0, 0.1173]), 8),
@@ -129,16 +130,16 @@ class TestBondInference:
         structure = StructureData(
             atoms=atoms, pbc=(False, False, False), lattice_vectors=None, bonds=None
         )
-        # We need a mock reader — just test the inference logic
-        reader = QVFReader.__new__(QVFReader)
-        bonds = reader.infer_bonds(structure)
+        # The inference itself; a reader adds only bond_orders enrichment.
+        bonds = structure_bonds(structure)
         assert len(bonds) == 2  # O-H1, O-H2 (not H-H)
         # Both bonds should involve O (index 0)
         indices = {i for bond in bonds for i in bond}
         assert 0 in indices
 
     def test_no_bonds_for_distant_atoms(self) -> None:
-        from vibeview.qvf import Atom, QVFReader, StructureData
+        from vibeview.bonds import structure_bonds
+        from vibeview.qvf import Atom, StructureData
 
         atoms = [
             Atom("He", np.array([0.0, 0.0, 0.0]), 2),
@@ -147,24 +148,24 @@ class TestBondInference:
         structure = StructureData(
             atoms=atoms, pbc=(False, False, False), lattice_vectors=None, bonds=None
         )
-        reader = QVFReader.__new__(QVFReader)
-        bonds = reader.infer_bonds(structure)
+        bonds = structure_bonds(structure)
         assert len(bonds) == 0
 
     def test_explicit_bonds_not_overridden(self) -> None:
-        from vibeview.qvf import Atom, QVFReader, StructureData
+        from vibeview.bonds import structure_bonds
+        from vibeview.qvf import Atom, StructureData
 
+        # 10 Å apart: inference would find nothing, so the returned bond can
+        # only be the producer's. A bare pair is filled out to the full
+        # (i, j, order, image) form every consumer unpacks.
         atoms = [
             Atom("H", np.array([0.0, 0.0, 0.0]), 1),
-            Atom("H", np.array([1.0, 0.0, 0.0]), 1),
+            Atom("H", np.array([10.0, 0.0, 0.0]), 1),
         ]
-        explicit = [(0, 1)]
         structure = StructureData(
-            atoms=atoms, pbc=(False, False, False), lattice_vectors=None, bonds=explicit
+            atoms=atoms, pbc=(False, False, False), lattice_vectors=None, bonds=[(0, 1)]
         )
-        reader = QVFReader.__new__(QVFReader)
-        bonds = reader.infer_bonds(structure)
-        assert bonds == explicit
+        assert structure_bonds(structure) == [(0, 1, 1.0, (0, 0, 0))]
 
 
 class TestPlotlyRendering:
@@ -223,8 +224,10 @@ class TestPlotlyRendering:
             "source": {"program": "x", "version": "1", "calculation": "t"},
             "sections": sections,
         }
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        with zipfile.ZipFile(tmp, "w") as zf:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+            zipfile.ZipFile(tmp, "w") as zf,
+        ):
             zf.writestr("manifest.json", json.dumps(manifest))
             zf.writestr("s/k.json", kpath)
             zf.writestr("s/e.dat", evals)
@@ -278,8 +281,10 @@ class TestPlotlyRendering:
             "source": {"program": "x", "version": "1", "calculation": "t"},
             "sections": sections,
         }
-        tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-        with zipfile.ZipFile(tmp, "w") as zf:
+        with (
+            tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+            zipfile.ZipFile(tmp, "w") as zf,
+        ):
             zf.writestr("manifest.json", json.dumps(manifest))
             zf.writestr("s/sp.json", spectrum)
         try:
@@ -431,7 +436,8 @@ class TestVolumeUnitConversion:
         isosurface's bbox should be ~ ±2 Å, not ~ ±4 (which it would
         be if the renderer used the raw bohr values)."""
         from vibeview.qvf import QVFReader
-        from vibeview.renderers.volume import _BOHR_TO_ANGSTROM, VolumeRenderer
+        from vibeview.renderers.volume import VolumeRenderer
+        from vibeview.units import BOHR_TO_ANGSTROM as _BOHR_TO_ANGSTROM
 
         n_voxels = 21
         spacing_bohr = 0.4

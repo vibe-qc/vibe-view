@@ -10,7 +10,16 @@ build. A normal `./build-desktop.sh` creates the platform's packaged artifacts.
 On supported macOS arm64 builds, the hosted updater reads the configured feed.
 Linux builds currently produce an AppImage without publishing a hosted feed.
 
-Keep packaging versions and update manifests consistent. Review only artifacts
+The desktop version is the product version. A release sets it in
+`package.json` (`version`) and in both `version` entries of
+`package-lock.json`, the top-level one and the one under `packages[""]`, in
+the same commit as `pyproject.toml`; step 1 of `docs/release_process.md`
+lists every site, and `tests/test_version_sites.py` fails when they
+disagree. Do not bump the version for a packaging-only rebuild: an update
+feed compares versions, so a rebuilt installer under an old number is never
+offered, and one under a new number is a release.
+
+Keep update manifests consistent with that version. Review only artifacts
 from the intended build: stale files in `dist/` can otherwise enter a feed.
 Signing and notarization use the platform's configured signing environment;
 private keys and account credentials must never be committed.
@@ -19,6 +28,20 @@ The product build never uploads artifacts. Operators publish a reviewed build
 from its explicit artifact directory using the separate private deployment
 tooling and external SSH configuration. The site setup and recovery runbook
 lives with that tooling.
+
+## Self-contained macOS payload
+
+The Apple Silicon builder includes a locked CPython/PyVista/VTK runtime.
+The beforePack/afterPack hooks run for direct electron-builder calls too;
+missing, stale or mismatched payloads fail the build. See
+[runtime/README.md](runtime/README.md) for included features, exact inputs,
+license/source supplements and installed-package checks. Python is required
+on the build host only. Intel/universal Mac payloads remain unqualified.
+
+Local previews must not overwrite existing release downloads with different
+bytes under the same version. Keep signing/notarization and App Store sandbox
+qualification separate from local packaging acceptance. Validate the signed
+installed bundle and preserve checksums before delivering a release.
 
 ## Bundled dependency licenses
 

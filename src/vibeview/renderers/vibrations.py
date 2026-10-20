@@ -47,12 +47,17 @@ class VibrationsRenderer(BaseRenderer):
         if not np.allclose(pos, 0.0):
             return
         try:
-            structure = self.reader.read_structure()
+            reference = self.reader.structure_ref_of(self.section_id)
+            if reference is None:
+                return
+            structure = self.reader.read_structure(reference, apply_edits=False)
         except Exception:  # noqa: BLE001 — best-effort recovery
             return
         if len(structure.atoms) != len(data.atoms):
             return
-        for vib_atom, struct_atom in zip(data.atoms, structure.atoms):
+        if [a.symbol for a in structure.atoms] != [a.symbol for a in data.atoms]:
+            return
+        for vib_atom, struct_atom in zip(data.atoms, structure.atoms, strict=True):
             vib_atom.position = np.asarray(struct_atom.position, dtype=float)
             if not vib_atom.atomic_number:
                 vib_atom.atomic_number = struct_atom.atomic_number
@@ -85,10 +90,14 @@ class VibrationsRenderer(BaseRenderer):
     ) -> list[tuple[str, np.ndarray]]:
         """Return atom symbols + displaced positions for a given mode and amplitude.
 
-        amplitude: scaling factor for the displacement vector.
+        amplitude: the user amplitude scale. The mode is first normalised so
+        its largest atomic excursion is ``DEFAULT_PEAK_EXCURSION_ANGSTROM``
+        (the convention the terminal shares, #38-28); ``amplitude``
+        multiplies that. The stored displacement vectors are not modified.
         phase: in radians, for sinusoidal animation.
         """
+        from vibeview.vibration_amplitude import normalized_displacement
+
         symbols, positions, disp = self.get_mode(mode_index)
-        scale = amplitude * np.cos(phase)
-        displaced = positions + scale * disp
+        displaced = positions + np.cos(phase) * normalized_displacement(disp, amplitude)
         return [(symbols[i], displaced[i]) for i in range(len(symbols))]

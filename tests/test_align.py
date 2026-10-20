@@ -93,6 +93,62 @@ def test_align_by_species_permuted_within_element() -> None:
     assert result.transformed.shape == P.shape
 
 
+@pytest.fixture
+def labelled_points() -> tuple[list[str], np.ndarray]:
+    return ["O", "H", "H", "C"], np.array(
+        [[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, 0.0, 7.0]]
+    )
+
+
+@pytest.mark.parametrize("angle", [0.0, 0.5, 1.5, 2.0, 2.5, np.pi])
+def test_species_alignment_preserves_same_order_rotated_copy(
+    labelled_points: tuple[list[str], np.ndarray], angle: float
+) -> None:
+    symbols, points = labelled_points
+    c, s = np.cos(angle), np.sin(angle)
+    rotation = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+    reference = points @ rotation.T + [2.0, -3.0, 4.0]
+    original_points, original_reference = points.copy(), reference.copy()
+
+    result = align_by_species(symbols, points, symbols, reference)
+
+    assert result is not None
+    assert result.rmsd_after == pytest.approx(0.0, abs=1e-10)
+    assert result.rmsd_before == pytest.approx(rmsd(points, reference))
+    assert result.transformed == pytest.approx(reference, abs=1e-10)
+    assert points @ result.rotation.T + result.translation == pytest.approx(result.transformed)
+    assert np.linalg.det(result.rotation) == pytest.approx(1.0)
+    np.testing.assert_array_equal(points, original_points)
+    np.testing.assert_array_equal(reference, original_reference)
+
+
+def test_species_alignment_still_matches_reordered_identical_elements(
+    labelled_points: tuple[list[str], np.ndarray],
+) -> None:
+    symbols, reference = labelled_points
+    permutation = [0, 2, 1, 3]
+    points = reference[permutation] + [2.0, -3.0, 4.0]
+
+    result = align_by_species(symbols, points, symbols, reference)
+
+    assert result is not None
+    assert result.rmsd_after == pytest.approx(0.0, abs=1e-10)
+    assert result.transformed == pytest.approx(reference[permutation], abs=1e-10)
+    assert points @ result.rotation.T + result.translation == pytest.approx(result.transformed)
+
+
+def test_species_alignment_never_pairs_different_elements_by_index(
+    labelled_points: tuple[list[str], np.ndarray],
+) -> None:
+    symbols, reference = labelled_points
+    # Coordinates match by index, but oxygen and carbon have exchanged sites.
+    # An index fit would incorrectly report zero for these labelled structures.
+    result = align_by_species(["C", "H", "H", "O"], reference.copy(), symbols, reference)
+
+    assert result is not None
+    assert result.rmsd_after > 1e-3
+
+
 def test_align_by_species_returns_none_on_mismatch() -> None:
     P = np.zeros((3, 3))
     Q = np.zeros((3, 3))
@@ -129,3 +185,37 @@ def test_value_errors_on_degenerate_inputs() -> None:
     # Symbol-length mismatch in align_by_species.
     with pytest.raises(ValueError):
         align_by_species(["H", "H"], good, ["H"] * 4, good)
+
+
+class TestAlignModule:
+    def test_rmsd_identical(self):
+        from vibeview.align import rmsd
+
+        pos = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+        assert rmsd(pos, pos) == pytest.approx(0.0)
+
+    def test_rmsd_shifted(self):
+        from vibeview.align import rmsd
+
+        # This rmsd() is index-wise, no superposition — shifted != identical
+        pos_a = np.array([[0, 0, 0], [1, 0, 0]], dtype=float)
+        pos_b = np.array([[1, 0, 0], [2, 0, 0]], dtype=float)
+        r = rmsd(pos_a, pos_b)
+        # Each atom pair offset by (1,0,0) -> per-pair squared dist = 1.0
+        assert r == pytest.approx(1.0)
+
+    def test_rmsd_different(self):
+        from vibeview.align import rmsd
+
+        pos_a = np.array([[0, 0, 0], [1, 0, 0]], dtype=float)
+        pos_b = np.array([[0, 0, 0], [0, 1, 0]], dtype=float)
+        r = rmsd(pos_a, pos_b)
+        assert r > 0.0
+
+    def test_rmsd_shape_mismatch_raises(self):
+        from vibeview.align import rmsd
+
+        pos_a = np.array([[0, 0, 0], [1, 0, 0]], dtype=float)
+        pos_b = np.array([[0, 0, 0]], dtype=float)
+        with pytest.raises(ValueError):
+            rmsd(pos_a, pos_b)

@@ -26,6 +26,8 @@ from vibeview.tui import show as showmod
     [((True, True, True), 12), ((True, True, False), 4), ((True, False, False), 1)],
 )
 def test_cell_edges_only_span_periodic_axes(pbc, n_edges):
+    from vibeview.renderers.cell import cell_edges
+
     """Synthesized lattice columns are bookkeeping, never cell edges.
 
     A 2D slab's third column is a 30-bohr normal that is numerically
@@ -33,15 +35,17 @@ def test_cell_edges_only_span_periodic_axes(pbc, n_edges):
     drawing by rank would put a box around every slab.
     """
     lattice = np.diag([3.0, 4.0, 30.0])
-    starts, ends = scenelib._cell_edges(lattice, pbc)
+    starts, ends = cell_edges(lattice, pbc)
     assert len(starts) == n_edges
     if not pbc[2]:
         assert np.allclose(starts[:, 2], 0.0) and np.allclose(ends[:, 2], 0.0)
 
 
 def test_cell_edges_shear_with_a_hexagonal_lattice():
+    from vibeview.renderers.cell import cell_edges
+
     lattice = np.array([[4.92, 0.0, 0.0], [2.46, 4.26, 0.0], [0.0, 0.0, 7.94]])
-    starts, ends = scenelib._cell_edges(lattice, (True, True, False))
+    starts, ends = cell_edges(lattice, (True, True, False))
     edges = ends - starts
     assert any(np.allclose(e, lattice[1], atol=1e-9) for e in edges)
 
@@ -96,7 +100,6 @@ def test_evaluated_wavefunction_meshes_keep_angstrom_coordinates():
         values,
         isovalue=0.05,
         signed=True,
-        grid_units="angstrom",
     )
 
     assert len(meshes) == 2, "the antibonding natural orbital has both signs"
@@ -494,6 +497,24 @@ def test_overview_lists_every_section(sample_qvf):
     text = panes.overview(QVFReader(sample_qvf))
     for section in QVFReader(sample_qvf).sections:
         assert section.id in text
+
+
+def test_overview_shows_manifest_warnings(sample_qvf, tmp_path):
+    """#88: the withdrawn qvf_version 2 is reported beside lifecycle warnings."""
+    from vibeview.tui import panes
+
+    with zipfile.ZipFile(sample_qvf) as zf:
+        members = {name: zf.read(name) for name in zf.namelist()}
+    manifest = json.loads(members["manifest.json"])
+    members["manifest.json"] = json.dumps({**manifest, "qvf_version": 2}).encode()
+    legacy = tmp_path / "legacy.qvf"
+    with zipfile.ZipFile(legacy, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+
+    text = panes.overview(QVFReader(legacy))
+    assert "Manifest warnings" in text and "W_VERSION_WITHDRAWN" in text
+    assert "Manifest warnings" not in panes.overview(QVFReader(sample_qvf))
 
 
 def test_structure_table_reports_coordinates(sample_qvf):
@@ -1006,22 +1027,25 @@ def test_backbone_declines_when_there_is_nothing_to_trace(sample_qvf):
     assert any("no backbone" in note for note in scene.color_notes)
 
 
-def test_constant_b_factors_fall_back_instead_of_one_flat_colour():
+def test_constant_b_factors_sit_at_the_midpoint_and_are_reported():
     """A column of identical b-factors carries no information.
 
-    Many files write a constant 0.00 rather than omitting the field.
-    Scaling it anyway paints every atom the colour at one end of the ramp,
-    which says nothing and reads as a rendering fault. Found on a real
-    167k-atom protein whose b-factors were all zero.
+    Many files write a constant 0.00 rather than omitting the field (found on
+    a real 167k-atom protein whose b-factors were all zero). Maintainer
+    decision #38-22: show it as the browser does, at the ramp midpoint rather
+    than at one end, and say why the picture is flat.
     """
+    from vibeview.renderers import palette
+
     atoms = [
         type("A", (), {"atomic_number": z, "b_factor": 0.0, "atom_name": None})()
         for z in (6, 7, 8)
     ]
     notes: list[str] = []
     colors = scenelib._atom_colors(atoms, "bfactor", None, notes)
-    assert len({tuple(c) for c in colors}) > 1, "one flat colour for the whole system"
-    assert any("b-factor" in n for n in notes), "the substitution must be reported"
+    mid = palette.sequential_ramp([0.0, 0.0])[0]
+    assert {tuple(int(v) for v in c) for c in colors} == {mid}
+    assert any("b-factor" in n for n in notes), "the flat column must be reported"
 
 
 def test_varying_b_factors_still_produce_a_ramp():

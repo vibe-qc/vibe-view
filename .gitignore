@@ -35,6 +35,8 @@ htmlcov/
 node_modules/
 electron/node_modules/
 electron/dist/
+electron/.runtime/
+.cache/desktop-runtime/
 npm-debug.log*
 
 # ── vibe-view runtime droppings ───────────────────────────────────────

@@ -116,6 +116,7 @@
         overflow: hidden;
         margin: 4px 0 20px;
       }
+      .cmd[hidden] { display: none; }
       .cmd code {
         flex: 1;
         padding: 12px 14px;
@@ -320,6 +321,17 @@
       const DOCS = "https://vibe-qc.com/vibe-view/docs/desktop.html";
 
       const COPY = {
+        "bundle-error": {
+          title: "vibe-view could not start",
+          lead: "This application includes Python and its viewing libraries. " +
+            "Its bundled server could not start; no separate Python installation is needed.",
+          steps: [
+            "Quit vibe-view and try opening it again.",
+            "If the problem persists, replace the application with a fresh download for your Mac.",
+            "Your documents and settings are kept outside the application. Contact support if a fresh copy also fails.",
+          ],
+          cmd: "",
+        },
         "no-python": {
           title: "vibe-view needs Python",
           lead:
@@ -378,6 +390,9 @@
         document.getElementById("title").textContent = info.title;
         document.getElementById("lead").innerHTML = info.lead;
         document.getElementById("cmd").textContent = info.cmd;
+        document.querySelector(".cmd").hidden = !info.cmd;
+        const packaged = state.reason === "bundle-error";
+        document.getElementById("recheck").textContent = packaged ? "Try again" : "I've installed it — recheck";
         const steps = document.getElementById("steps");
         steps.innerHTML = "";
         for (const s of info.steps) {
@@ -397,6 +412,7 @@
           "Using a dedicated virtualenv avoids the system-Python " +
           "<code>externally-managed-environment</code> (PEP 668) error. " +
           "Full instructions: <code>docs/user_guide/vibe_view_desktop.md</code>.";
+        if (packaged) foot.textContent = "Python, PyVista and VTK are included in this application.";
       }
 
       const statusEl = document.getElementById("status");
