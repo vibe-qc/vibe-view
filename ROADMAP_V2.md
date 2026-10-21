@@ -4,6 +4,8 @@
 > "feature complete" labels are not current feature status, and its version
 > numbers and codenames never corresponded to a vibe-view release. Use the
 > [roadmap](docs/roadmap.md) for what has shipped and what is planned.
+> Reviewed 2026-10-19: retain the proposal below as history, including its
+> estimates; it is not a current release schedule or acceptance checklist.
 
 ```
 v1.0  "Fukui's Fox"         ✅ shipped

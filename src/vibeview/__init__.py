@@ -15,12 +15,13 @@ binary file-like:
     >>> print(diff("hf.qvf", "pbe.qvf"))
     >>> print(validate("result.qvf"))
 
-``launch_qvf`` boots the interactive Trame server. (v1.5+ adds POV-Ray, Blender, crystal builder, and material presets modules.)
+``launch_qvf`` boots the interactive Trame server. (v1.5+ adds POV-Ray,
+Blender, crystal builder, and material presets modules.)
 """
 
 from __future__ import annotations
 
-__version__ = "2.17.1"  # Lorensen's Loon -- see vibeview.codenames,
+__version__ = "2.20.20"  # Levoy's Lemur -- see vibeview.codenames,
 #                        which is the catalogue every surface reads. This
 #                        comment is a convenience, and the drift test in
 #                        tests/test_release_codenames.py keeps it honest.
@@ -41,12 +42,13 @@ from vibeview.api import (
     validate,
 )
 from vibeview.launcher import launch_qvf
-from vibeview.qvf import QVFOpenError, QVFReader, QVFSource
+from vibeview.qvf import QVFOpenError, QVFReader, QVFSource, ValidationUnavailableError
 
 __all__ = [
     "QVFReader",
     "QVFSource",
     "QVFOpenError",
+    "ValidationUnavailableError",
     "launch_qvf",
     "info",
     "sections",

@@ -28,18 +28,27 @@ is the window, the menus and the file association.
 | Route | Status |
 |---|---|
 | `vibe-view desktop` from a **source checkout** | The supported route, on macOS, Linux and Windows. |
-| A packaged `.app`, `.dmg`, AppImage or NSIS installer | Buildable locally from `electron/`; **no signed, published artifact exists**. An older ad-hoc-signed macOS arm64 package on the update feed can detect a newer version and offer a manual download, but cannot self-install. |
+| Apple Silicon `.app`, `.dmg` and ZIP | Buildable locally with Python, PyVista, VTK, Trame and RDKit included. Requires macOS 14+. Developer ID signing and notarization remain release work. |
+| AppImage or NSIS installer | Buildable desktop shells; these still require an external Python environment. |
 
 The Python wheel carries the browser, terminal and headless surfaces but not
-the Electron source, so desktop mode needs the checkout. A locally built
-package is not a self-contained Python bundle either: it still needs a
-Python with the `vibeview` distribution and its `[viewer]` extra on the
-machine, and its first-run [setup screen](#first-run-the-setup-screen)
-says so when that is missing. Bundling a full Python and VTK runtime into
-the installer was evaluated and deferred; the reasoning is in
-[Desktop packaging design](desktop_packaging_design.md).
+the Electron source, so the CLI's desktop command needs the checkout. The
+Apple Silicon package instead runs its included interpreter, including for
+each per-file viewer; it ignores external Python environments. Copy the app
+from the DMG to Applications and open it. No Python, pip, Homebrew or Node.js
+installation is needed for normal viewing, editing or image capture.
+
+External calculation engines and companion applications remain separate.
+The bundled profile includes common format readers and SMILES conversion;
+ASE's additional formats, TREXIO and notebook widgets remain optional source
+extras. See [Desktop packaging design](desktop_packaging_design.md) for the
+runtime scope and build instructions. Locally built ad-hoc previews do not
+provide Gatekeeper trust or establish Mac App Store readiness.
 
 ## Installing
+
+The following commands install from source. They are unnecessary for the
+self-contained Apple Silicon app.
 
 Clone the public source repository:
 
@@ -123,6 +132,12 @@ download for a later reinstall. Settings, recents, logs, window state, your
 archives and the app-managed environment described next are preserved.
 
 ## First run: the setup screen
+
+The Apple Silicon package validates its embedded runtime. If it cannot start,
+the repair screen suggests restarting or replacing the application, keeping
+your documents and settings. It never asks you to install Python or tries a
+different interpreter from your machine. The discovery and setup instructions
+below apply to source launches and platforms without a bundled runtime.
 
 When the app starts it looks for a Python that can run the server, in this
 order: the interpreter recorded by an earlier `vibe-view desktop` launch,
@@ -248,6 +263,12 @@ python -c "import vibeview, trame, uvicorn; print('ok')"
 quit; current builds route the same conditions to the setup screen, which
 names what is missing.
 
+**"Could not open" instead of the viewer.** The viewer process for that file
+stopped before it was ready, most often because the file is not a valid
+archive. The page shows the exit status and the viewer's error message.
+Choosing the file again from the browse page or Open Recent starts a new
+attempt, so fix the file first.
+
 **Check for Updates** in the Help menu queries the macOS arm64 feed, which
 currently advertises only an older ad-hoc package. It can offer a manual
 download but cannot self-install, and it never updates a source checkout.
@@ -258,3 +279,24 @@ Linux and Windows feeds are not published.
 viewer, so the [browser troubleshooting](troubleshooting.md#the-browser-viewer)
 applies: most often a port that something else holds. `--port` moves the
 server.
+
+## Self-contained Linux desktop
+
+Linux x86-64 AppImages include Python and the application libraries. No external
+Python, pip, Node.js or source checkout is needed. Download the package and its
+SHA-256 checksum from [the downloads page](https://vibe-qc.com/download/).
+Linux desktop downloads are public and require no supporter membership.
+macOS and Windows Store editions are planned paid purchases; their availability
+is separate from Linux downloads.
+
+The initial Linux target is Debian 12 or Ubuntu 24.04 on x86-64 with a graphical
+desktop and standard GTK3, NSS, ALSA, OpenGL and X11/Wayland compatibility libraries.
+Make the AppImage executable and launch it as a regular user. If FUSE is not
+available, extract with `--appimage-extract` and launch `squashfs-root/AppRun`.
+The application and Python runtime remain inside that directory. Offline local
+work is supported; remote services and external calculation engines remain optional.
+Linux updates currently use replacement AppImages from the website.
+
+Build natively on Linux x86-64 using `electron/build-desktop.sh --linux`. The
+Linux runtime lock pins interpreter and wheel hashes; the builder checks native
+library resolution and the installed runtime before packaging.

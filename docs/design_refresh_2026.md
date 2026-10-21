@@ -17,7 +17,7 @@ and per-item status. Update it as milestones land.
 | 2 | Better layout; resizable panes/sections | **M1 done** — left/right panels user-resizable (native CSS resize, like the bottom panel) |
 | 3 | More visualization options | ideas below; representation presets pending |
 | 4 | SCF convergence: option to hide the initial guess | **M1 done** — checkbox above the plot |
-| 5 | Fresher look overall | incremental; theme/accent pass pending |
+| 5 | Fresher look overall | incremental; dark-theme accent brought to WCAG AA 2026-10-05 (#68), wider pass pending |
 | 6 | Nice rendering options | SSAO/toon exist; presets + depth cue pending |
 | 7 | **NEW: insert structures from the qc input library** | **M2 done** — Structure Library card (curated DB (83 molecules today), autocomplete; insert into scene or open as new file) |
 | 8 | **NEW: spectrum comparison across multiple QVF files** | **M2 done** — "Compare open files" toggle overlays same-kind spectra with per-file legend |
@@ -41,7 +41,8 @@ and per-item status. Update it as milestones land.
   (**done 2026-07-16**); denser card headers. The old toggle was a no-op
   (its class was never bound); now switches every component + accent.
 - Publication mode: white background, thick outlines, no gizmos, one
-  click.
+  click (**done 2026-10-05**, #68: inverted-hull outlines, a hide-chrome
+  switch, a restorable previous look, `capture --publication`).
 
 **3D rendering**
 - Representation presets: Publication / Presentation / Analysis
@@ -53,7 +54,12 @@ and per-item status. Update it as milestones land.
   vtkPolyDataSilhouette is view-dependent (it selects different line
   cells per camera — verified 32 vs 86 on a sphere), so a
   server-computed outline goes stale the moment the client rotates,
-  and the client owns its camera.
+  and the client owns its camera. *Superseded 2026-10-20 (#112):* the
+  outline moved to the client instead. A vtk.js render pass after the
+  scene's own detects depth and crease edges of the isosurfaces and ribbons
+  each frame, so it never goes stale; atoms and bonds keep the inverted
+  hulls of #68. vtkPolyDataSilhouette is not used. See
+  [the browser manual](browser.md) for the pass and its limits.
 - Per-element colour overrides (**done 2026-07-17**) — element picker +
   colour swatch in the Display panel, applied via cpk_color() so every
   render path honours them. Pending: periodic-table popover styling.

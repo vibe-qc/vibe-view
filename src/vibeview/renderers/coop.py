@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import html
 from typing import TYPE_CHECKING
 
 import numpy as np
 import plotly.graph_objects as go
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._plotly import chart_layout, fermi_line, figure_to_html, zero_line
+from vibeview.renderers.palette import series_color
+from vibeview.units import band_axis_unit
 
 if TYPE_CHECKING:
     from vibeview.qvf import DOSCOOPData, QVFReader, Section
@@ -34,68 +38,65 @@ class COOPRenderer(BaseRenderer):
     def kind_label(self) -> str:
         return "COOP" if self.section.kind == "dos.coop" else "COHP"
 
-    def render_to_html(self) -> str:
+    def render_to_html(
+        self, include_plotlyjs: str | bool = "cdn", *, energy_unit: str = "ev"
+    ) -> str:
+        """The chart as a Plotly HTML div.
+
+        ``energy_unit`` (a ``vibeview.units.ENERGY_UNITS`` key) is the axis
+        unit, the browser's Band / DOS energy unit (#58); the stored grid
+        stays in eV, and the Fermi tag moves with the axis.
+        """
         data = self.load()
-        energies = np.asarray(data.energies, dtype=float)
+        unit, factor = band_axis_unit(energy_unit)
+        energies = np.asarray(data.energies, dtype=float) * factor
         projections = np.asarray(data.projections, dtype=float)
         integrated = np.asarray(data.integrated, dtype=float)
         meta = data.meta or {}
-        pair_labels = meta.get("pair_labels", [])
-        fermi = meta.get("fermi_energy_ev")
+        raw_labels = meta.get("pair_labels", [])
+        pair_labels = [str(p) for p in raw_labels] if isinstance(raw_labels, list) else []
+        raw_fermi = meta.get("fermi_energy_ev")
+        fermi = float(raw_fermi) * factor if isinstance(raw_fermi, int | float) else None
         label = self.kind_label
 
         n_pairs = projections.shape[0]
         fig = go.Figure()
 
-        colours = [
-            "#3366CC",
-            "#CC3333",
-            "#66AA55",
-            "#CC8833",
-            "#AA66CC",
-            "#33AAAA",
-            "#CCCC33",
-            "#CC6699",
-        ]
-
         for i in range(n_pairs):
             p_label = pair_labels[i] if i < len(pair_labels) else f"pair {i + 1}"
             i_val = float(integrated[i]) if i < len(integrated) else 0.0
-            name = f"{p_label} (I{label}={i_val:+.3f})"
+            # Plotly renders legend and hover strings as HTML and expands
+            # ``%{...}`` placeholders in a template, so a producer label goes
+            # in as escaped per-point text, never into the template itself.
+            safe_label = html.escape(p_label)
             fig.add_trace(
                 go.Scatter(
                     x=energies,
                     y=projections[i],
                     mode="lines",
-                    line={"color": colours[i % len(colours)], "width": 1.5},
-                    name=name,
-                    hovertemplate=f"{p_label}<br>E: %{{x:.3f}}<br>{label}: %{{y:.4f}}<extra></extra>",
+                    line={"color": series_color(i), "width": 1.5},
+                    name=f"{safe_label} (I{label}={i_val:+.3f})",
+                    text=[safe_label] * len(energies),
+                    hovertemplate=(
+                        f"%{{text}}<br>E: %{{x:.3f}} {unit}<br>{label}: %{{y:.4f}}<extra></extra>"
+                    ),
                 )
             )
 
         # Zero line (bonding/antibonding boundary).
-        fig.add_hline(y=0.0, line={"color": "#888888", "width": 0.5, "dash": "dot"})
+        zero_line(fig, width=0.5)
 
         # Fermi line if present.
         if fermi is not None:
-            fig.add_vline(
-                x=float(fermi),
-                line={"color": "#CC3333", "width": 1, "dash": "dash"},
-                annotation_text="E<sub>F</sub>",
-                annotation_position="top",
-            )
+            fermi_line(fig, axis="x", at=fermi, position="top")
 
-        y_title = f"{label} (bonding → antibonding)"
-        fig.update_layout(
+        chart_layout(
+            fig,
             title=f"{label} Analysis",
-            xaxis_title="Energy (eV)" if fermi is not None else "Energy",
-            yaxis_title=y_title,
-            template="plotly_dark",
-            hovermode="closest",
-            height=400,
-            margin={"l": 60, "r": 20, "t": 50, "b": 50},
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5),
+            # QVF fixes dos.* energies in eV (E_F at 0); the axis unit does
+            # not depend on whether the producer also wrote a Fermi tag.
+            x_title=f"Energy ({unit})",
+            y_title=f"{label} (bonding → antibonding)",
+            legend="bottom",
         )
-
-        return fig.to_html(full_html=False, include_plotlyjs="cdn")
+        return figure_to_html(fig, include_plotlyjs=include_plotlyjs)

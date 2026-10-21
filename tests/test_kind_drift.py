@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from vibeview.kinds import DEFERRED_KINDS, SUPPORTED_KINDS, classify_section
+from vibeview.kinds import (
+    DEFERRED_KINDS,
+    DESCRIPTIVE_KINDS,
+    SUPPORTED_KINDS,
+    classify_section,
+)
 
 # Kinds the writer emits that the viewer does NOT render as a standalone
 # panel, but handles another way. `bonds` connectivity is folded into the
@@ -50,10 +55,19 @@ def test_deferred_kinds_are_surfaced_as_not_yet_rendered():
         assert classify_section(kind) == ("skipped", "not yet rendered")
 
 
+def test_excited_state_table_is_rendered():
+    """#109 rendered the state table, so the kind left DEFERRED_KINDS (#96)."""
+    assert "excited_states" in SUPPORTED_KINDS
+    assert "excited_states" not in DEFERRED_KINDS
+    assert classify_section("excited_states") == ("rendered", None)
+
+
 def test_no_viewer_kind_is_unwritable():
     qvf = pytest.importorskip("vibeqc.output.formats.qvf")
     impl = set(qvf._IMPLEMENTED_KINDS) | set(getattr(qvf, "_RESERVED_KINDS", set()))
-    orphan = set(SUPPORTED_KINDS) - impl
+    # reaction.scheme and preview describe an archive (a scheme, a picture);
+    # the qvf reference writers and vibe-sketch emit them, vibe-qc need not.
+    orphan = set(SUPPORTED_KINDS) - impl - set(DESCRIPTIVE_KINDS)
     assert not orphan, (
         f"viewer claims to support {sorted(orphan)} but the writer can neither "
         "emit nor reserve them — a renderer with no producer."

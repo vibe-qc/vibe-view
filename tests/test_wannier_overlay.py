@@ -32,8 +32,13 @@ def _qvf_with_centres(centres_payload) -> io.BytesIO:
         "qvf_version": 1,
         "source": {"program": "test", "version": "0", "calculation": "ccm"},
         "sections": [
-            {"id": "structure", "kind": "structure",
-             "members": {"structure": {"path": "s.json", "format": "json", "sha256": _sha(struct)}}},
+            {
+                "id": "structure",
+                "kind": "structure",
+                "members": {
+                    "structure": {"path": "s.json", "format": "json", "sha256": _sha(struct)}
+                },
+            },
             {"id": "wan0", "kind": "x_ccm.wannier_centers",
              "members": {"centers": {"path": "w.json", "format": "json", "sha256": _sha(centres)}}},
         ],

@@ -12,18 +12,24 @@ in the meantime, so the caller never blocks on VTK cold-start.
 
 from __future__ import annotations
 
+import contextlib
 import html
 import http.server
 import json
 import os
-import socket
+import shutil
 import subprocess
 import sys
 import threading
 import urllib.parse
-import webbrowser
+from collections import deque
 from datetime import datetime
 from pathlib import Path
+from typing import IO, Any
+
+from vibeview._fmt import human_size
+from vibeview.netutil import find_free_port, port_open
+from vibeview.worker_client import terminate_and_wait
 
 _DIR_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -63,7 +69,8 @@ _DIR_TEMPLATE = """<!DOCTYPE html>
 {welcome}
 <div class="parent">{parent_link}</div>
 <table>
-<tr><th>File</th><th>Calculation</th><th>Energy (Eh)</th><th>Sections</th><th>Size</th><th>Modified</th></tr>
+<tr><th>File</th><th>Calculation</th><th>Energy (Eh)</th>
+<th>Sections</th><th>Size</th><th>Modified</th></tr>
 {rows}
 </table>
 <div class="footer">vibe-view {version} — {n_files} file(s)</div>
@@ -75,14 +82,17 @@ _WELCOME_CARD = """<div class="welcome">
 <h2>👋 Welcome to vibe-view</h2>
 Click a <b>.qvf</b> file below to open it in the interactive 3D viewer.
 <ul>
-<li><b>Open a file</b> — File → Open (Cmd+O in the desktop app), or drag &amp; drop a .qvf onto the window</li>
+<li><b>Open a file</b> — File → Open (Cmd+O in the desktop app),
+or drag &amp; drop a .qvf onto the window</li>
 <li><b>Start from scratch</b> — ➕ New structure (above) creates an editable file:
 press <code>e</code> for edit mode, sketch with clicks / Add Hydrogens / fragments,
 then build the input from the Calculate dialog</li>
-<li><b>Change folder</b> — File → Open Folder… (Cmd+Shift+O), or the ⬆ Parent / ⌂ Home links above the listing</li>
+<li><b>Change folder</b> — File → Open Folder… (Cmd+Shift+O),
+or the ⬆ Parent / ⌂ Home links above the listing</li>
 <li><b>Structure</b> — atoms and bonds in 3D; rotate with the mouse</li>
 <li><b>Molecular orbitals</b> — HOMO, LUMO and friends as isosurfaces</li>
-<li><b>Keyboard</b> — press <code>?</code> in the viewer for shortcuts (e=edit, m=measure, r=reset, s=screenshot)</li>
+<li><b>Keyboard</b> — press <code>?</code> in the viewer for shortcuts
+(e=edit, m=measure, r=reset, s=screenshot)</li>
 </ul>
 </div>"""
 
@@ -230,19 +240,20 @@ def _browse_recursive(dir_path: Path) -> str:
             mtime_str = datetime.fromtimestamp(entry.stat().st_mtime).strftime(
                 "%Y-%m-%d %H:%M"
             )
-            size = _human_size(entry.stat().st_size)
+            size = human_size(entry.stat().st_size)
         except OSError:
             continue
+        calc: str
+        n_sec: int | str
         if time.monotonic() > meta_deadline:
             meta_skipped = True
             calc, n_sec = "", ""
         else:
             meta_read += 1
             try:
-                reader = QVFReader(entry)
-                calc = str(reader.manifest.source.calculation)
-                n_sec = len(reader.sections)
-                reader.close()
+                with QVFReader(entry) as reader:
+                    calc = str(reader.manifest.source.calculation)
+                    n_sec = len(reader.sections)
             except (QVFError, Exception):
                 calc, n_sec = "(unreadable)", 0
         rel = entry.parent.relative_to(dir_path)
@@ -289,14 +300,6 @@ def _browse_recursive(dir_path: Path) -> str:
     )
 
 
-def _human_size(size_bytes: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(size_bytes) < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
-
-
 def _browse_dir(dir_path: Path, rel_path: str = "", show_welcome: bool | None = None) -> str:
     """Generate an HTML directory listing for QVF files.
 
@@ -340,16 +343,15 @@ def _browse_dir(dir_path: Path, rel_path: str = "", show_welcome: bool | None = 
             )
         elif entry.suffix == ".qvf":
             n_files += 1
+            reader = None
             try:
                 reader = QVFReader(entry)
                 src = reader.manifest.source
-                prov = getattr(reader.manifest, "provenance", None) or {}
-                if hasattr(prov, "model_dump"):
-                    prov = prov.model_dump()
-                energy = prov.get("scf_energy", {}) if isinstance(prov, dict) else {}
+                prov = reader.provenance
+                energy = prov.get("scf_energy", {})
                 if isinstance(energy, dict):
                     energy = energy.get("value")
-                e_str = f"{float(energy):.8f}" if energy else "--"
+                e_str = f"{float(energy):.8f}" if energy is not None else "--"
                 conv = prov.get("scf_converged") if isinstance(prov, dict) else None
                 conv_cls = "ok" if conv else ("err" if conv is False else "")
                 n_sec = len(reader.sections)
@@ -366,11 +368,14 @@ def _browse_dir(dir_path: Path, rel_path: str = "", show_welcome: bool | None = 
                     f'<a href="{_html_text(view_url)}" title="File details" '
                     f'style="opacity:0.6">ⓘ</a></td>'
                     f"<td>{_html_text(calc)}</td><td>{e_str}</td><td>{n_sec}</td>"
-                    f'<td class="size">{_human_size(entry.stat().st_size)}</td>'
+                    f'<td class="size">{human_size(entry.stat().st_size)}</td>'
                     f'<td class="size">{mtime_str}</td></tr>'
                 )
                 reader.close()
             except (QVFError, Exception):
+                # Closed on the error path too (#39-18).
+                if reader is not None:
+                    reader.close()
                 rows.append(
                     f"<tr><td>{_html_text(entry.name)}</td>"
                     f'<td colspan="5" class="err">Unreadable</td></tr>'
@@ -425,20 +430,17 @@ def _view_page(qvf_rel: str, dir_path: Path) -> str:
     if not qvf_path.exists():
         return "<html><body><h1>File not found</h1></body></html>"
 
+    reader = None
     try:
         reader = QVFReader(qvf_path)
         src = reader.manifest.source
         program = _html_text(f"{src.program} {src.version}")
         calc = _html_text(src.calculation)
-        prov = getattr(reader.manifest, "provenance", None) or {}
-        if hasattr(prov, "model_dump"):
-            prov = prov.model_dump()
-        if not isinstance(prov, dict):
-            prov = {}
+        prov = reader.provenance
         energy = prov.get("scf_energy", {})
         if isinstance(energy, dict):
             energy = energy.get("value")
-        e_str = f"{float(energy):.8f} Eh" if energy else "N/A"
+        e_str = f"{float(energy):.8f} Eh" if energy is not None else "N/A"
         conv = (
             "Yes"
             if prov.get("scf_converged")
@@ -449,9 +451,12 @@ def _view_page(qvf_rel: str, dir_path: Path) -> str:
             for s in reader.sections
         )
         n_sec = len(reader.sections)
-        size = _human_size(qvf_path.stat().st_size)
+        size = human_size(qvf_path.stat().st_size)
         reader.close()
     except (QVFError, Exception):
+        # Closed on the error path too (#39-18).
+        if reader is not None:
+            reader.close()
         program, calc, e_str, conv, sec_rows, n_sec, size = (
             "?",
             "?",
@@ -459,7 +464,7 @@ def _view_page(qvf_rel: str, dir_path: Path) -> str:
             "Error",
             "",
             0,
-            _human_size(qvf_path.stat().st_size),
+            human_size(qvf_path.stat().st_size),
         )
     conv_class = "ok" if conv == "Yes" else ("err" if conv == "No" else "")
     resolved = urllib.parse.quote(str(qvf_path.resolve()))
@@ -519,30 +524,12 @@ def _view_page(qvf_rel: str, dir_path: Path) -> str:
 # ``?file=`` request gets its own viewer process on its own port; this
 # registry reuses live viewers and reaps dead ones.
 
-_viewers: dict[str, dict] = {}  # resolved path → {"port": int, "proc": Popen}
+_viewers: dict[str, dict[str, Any]] = {}  # resolved path → {"port", "proc", "stderr", "drain"}
 _viewers_lock = threading.Lock()
 
-
-def _port_responding(port: int, host: str = "127.0.0.1") -> bool:
-    """True once something accepts TCP connections on (host, port)."""
-    try:
-        with socket.create_connection((host, port), timeout=0.5):
-            return True
-    except OSError:
-        return False
-
-
-def _find_free_port(start: int, host: str = "127.0.0.1") -> int:
-    """First bindable port at or above ``start``."""
-    for port in range(start, start + 200):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind((host, port))
-            return port
-        except OSError:
-            continue
-    raise OSError(f"No free port in range {start}-{start + 199}")
+# Lines of a viewer child's stderr kept for the loading page (#59).  A
+# bounded buffer rather than a log file: a healthy viewer runs for hours.
+_STDERR_TAIL_LINES = 40
 
 
 def _openable(path: Path) -> bool:
@@ -553,25 +540,48 @@ def _openable(path: Path) -> bool:
     return (path.is_file() or is_trexio_directory(path)) and detect_format(path) is not None
 
 
-def _ensure_viewer(file_path: Path, base_port: int, host: str = "127.0.0.1") -> int:
+def _drain_stderr(stream: IO[str], tail: deque[str]) -> None:
+    """Keep the last lines of a child's stderr; the pipe never fills up."""
+    with stream:
+        for line in stream:
+            tail.append(line.rstrip("\n"))
+
+
+def _ensure_viewer(
+    file_path: Path,
+    base_port: int,
+    host: str = "127.0.0.1",
+    *,
+    respawn: bool = True,
+) -> int:
     """Return the port of a live viewer for ``file_path``, spawning one if needed.
 
     The viewer is ``vibe-view open FILE --no-browser`` in a subprocess —
     the same code path as the CLI, so format auto-conversion (.xyz, .cif,
     vibe-qc .py inputs, …) and recent-files tracking behave identically.
+
+    A viewer that has exited is replaced only when ``respawn`` is true.
+    ``/open`` asks for that, since it is a new attempt by the user.  The
+    ``/open-status`` poll does not: it reports the failure through
+    :func:`_viewer_failure` instead of starting a new child every half
+    second (#59).
     """
     key = str(file_path.resolve())
     with _viewers_lock:
         entry = _viewers.get(key)
         if entry is not None:
-            if entry["proc"].poll() is None:
-                return entry["port"]
+            if not respawn or entry["proc"].poll() is None:
+                return int(entry["port"])
             del _viewers[key]  # viewer died — respawn below
 
-        port = _find_free_port(base_port + 1, host)
+        port = find_free_port(base_port + 1, host)
         proc = subprocess.Popen(
             [
                 sys.executable,
+                # Keep the installed desktop's isolation in every file viewer.
+                # Source launches still honor their normal Python environment.
+                *(["-I"] if sys.flags.isolated else []),
+                *(["-B"] if sys.dont_write_bytecode else []),
                 "-m",
                 "vibeview.cli",
                 "open",
@@ -581,18 +591,42 @@ def _ensure_viewer(file_path: Path, base_port: int, host: str = "127.0.0.1") -> 
                 "--no-browser",
             ],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
         )
-        _viewers[key] = {"port": port, "proc": proc}
+        tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+        assert proc.stderr is not None  # stderr=PIPE
+        drain = threading.Thread(target=_drain_stderr, args=(proc.stderr, tail), daemon=True)
+        drain.start()
+        _viewers[key] = {"port": port, "proc": proc, "stderr": tail, "drain": drain}
         return port
+
+
+def _viewer_failure(file_path: Path) -> dict[str, Any] | None:
+    """Exit status and stderr tail of an exited viewer, or None while it runs.
+
+    ``vibe-view open`` serves until it is stopped, so any exit before the
+    page reached it is a failure, whatever the status.
+    """
+    with _viewers_lock:
+        entry = _viewers.get(str(file_path.resolve()))
+    if entry is None:
+        return None
+    code = entry["proc"].poll()
+    if code is None:
+        return None
+    # The pipe reaches EOF once the child is gone; give the drain thread a
+    # moment to read the last lines.
+    entry["drain"].join(timeout=1.0)
+    return {"exit_code": code, "error": "\n".join(entry["stderr"]).strip()}
 
 
 def _shutdown_viewers() -> None:
     """Terminate all spawned viewer processes (called on server shutdown)."""
     with _viewers_lock:
         for entry in _viewers.values():
-            if entry["proc"].poll() is None:
-                entry["proc"].terminate()
+            terminate_and_wait(entry["proc"])
         _viewers.clear()
 
 
@@ -611,16 +645,33 @@ _LOADING_TEMPLATE = """<!DOCTYPE html>
   @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
   h1 {{ font-size: 1.1em; font-weight: 500; color: #7c8aff; }}
   .hint {{ color: #888; font-size: 0.85em; margin-top: 8px; }}
+  .error {{ color: #f44336; font-size: 0.85em; margin-top: 16px; max-width: 90vw;
+           white-space: pre-wrap; text-align: left; }}
 </style>
 </head>
 <body>
-<div class="spinner"></div>
-<h1>Opening {name}…</h1>
-<div class="hint">Starting the 3D viewer — the first open can take up to a minute while VTK loads</div>
+<div class="spinner" id="spinner"></div>
+<h1 id="title">Opening {name}…</h1>
+<div class="hint" id="hint">Starting the 3D viewer — the first open can take up to
+a minute while VTK loads</div>
+<pre class="error" id="error" hidden></pre>
 <script>
+  const fail = d => {{
+    document.getElementById("spinner").remove();
+    document.getElementById("title").textContent = "Could not open " + {name_js};
+    document.getElementById("hint").textContent =
+      "The 3D viewer stopped with exit status " + d.exit_code + " before it was ready.";
+    const error = document.getElementById("error");
+    error.textContent = d.error || "It printed no error message.";
+    error.hidden = false;
+  }};
   const poll = () => fetch({status_url})
     .then(r => r.json())
-    .then(d => {{ if (d.ready) window.location = d.url; else setTimeout(poll, 500); }})
+    .then(d => {{
+      if (d.ready) window.location = d.url;
+      else if (d.failed) fail(d);
+      else setTimeout(poll, 500);
+    }})
     .catch(() => setTimeout(poll, 500));
   poll();
 </script>
@@ -632,6 +683,7 @@ def _loading_page(name: str, status_url: str) -> str:
     """Render the cold-start page with HTML and script contexts isolated."""
     return _LOADING_TEMPLATE.format(
         name=_html_text(name),
+        name_js=_script_string(name),
         status_url=_script_string(status_url),
     )
 
@@ -652,7 +704,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
     base_port = port
 
     class QVFHandler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, directory=str(dir_path), **kwargs)
 
         def _file_query(self, query: str) -> Path | None:
@@ -674,7 +726,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
                 return
             viewer_port = _ensure_viewer(target, base_port)
             url = f"http://127.0.0.1:{viewer_port}"
-            if _port_responding(viewer_port):
+            if port_open("127.0.0.1", viewer_port):
                 self.send_response(302)
                 self.send_header("Location", url)
                 self.end_headers()
@@ -682,7 +734,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
             status_url = "/open-status?file=" + urllib.parse.quote(str(target.resolve()))
             self._serve_html(_loading_page(target.name, status_url))
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self) -> None:  # noqa: N802
             parsed = urllib.parse.urlsplit(self.path)
             path = parsed.path.rstrip("/") or "/"
             query = parsed.query
@@ -744,26 +796,32 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
                 # Raw download by absolute path (restricted to .qvf).
                 target = Path(params["file"][0]).expanduser()
                 if target.is_file() and target.suffix == ".qvf":
-                    data = target.read_bytes()
+                    # Stream from disk, as the path route does; a gigabyte
+                    # archive must not be read into memory per download.
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
                     self.send_header(
                         "Content-Disposition", _attachment_disposition(target.name)
                     )
-                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Content-Length", str(target.stat().st_size))
                     self.end_headers()
-                    self.wfile.write(data)
+                    with target.open("rb") as handle:
+                        shutil.copyfileobj(handle, self.wfile)
                 else:
                     self.send_error(404)
             elif path == "/open-status":
-                target = self._file_query(query)
-                if target is None:
+                status_target = self._file_query(query)
+                if status_target is None:
                     self._serve_json({"ready": False, "error": "unknown file"})
                     return
-                viewer_port = _ensure_viewer(target, base_port)
+                viewer_port = _ensure_viewer(status_target, base_port, respawn=False)
+                failure = _viewer_failure(status_target)
+                if failure is not None:
+                    self._serve_json({"ready": False, "failed": True, **failure})
+                    return
                 self._serve_json(
                     {
-                        "ready": _port_responding(viewer_port),
+                        "ready": port_open("127.0.0.1", viewer_port),
                         "url": f"http://127.0.0.1:{viewer_port}",
                     }
                 )
@@ -794,7 +852,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
             self.end_headers()
             self.wfile.write(data)
 
-        def _serve_json(self, obj: dict) -> None:
+        def _serve_json(self, obj: dict[str, Any]) -> None:
             data = json.dumps(obj).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -802,20 +860,19 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
             self.end_headers()
             self.wfile.write(data)
 
-        def log_message(self, format, *args):
+        def log_message(self, format: str, *args: Any) -> None:
             pass  # Suppress access logs
 
     # The Electron shell stops us with SIGTERM on quit; route that into
     # the KeyboardInterrupt path so the viewer children get reaped too.
     import signal
 
-    def _terminate(signum, frame):  # noqa: ARG001
+    def _terminate(signum: int, frame: Any) -> None:  # noqa: ARG001
         raise KeyboardInterrupt
 
-    try:
+    # ValueError: not the main thread (e.g. tests) — skip.
+    with contextlib.suppress(ValueError):
         signal.signal(signal.SIGTERM, _terminate)
-    except ValueError:
-        pass  # not the main thread (e.g. tests) — skip
 
     # Threading server: /open requests spawn viewer subprocesses and the
     # loading page polls /open-status concurrently — a single-threaded
@@ -824,7 +881,7 @@ def serve_directory(dir_path: Path, host: str = "127.0.0.1", port: int = 8080) -
     url = f"http://{host}:{port}"
     print(f"vibe-view serve: {dir_path}")
     print(f"  Browse: {url}")
-    print(f"  Press Ctrl+C to stop.")
+    print("  Press Ctrl+C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
