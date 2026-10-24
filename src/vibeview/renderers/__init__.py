@@ -1,7 +1,18 @@
-"""Renderer dispatch — maps section kind to renderer class.
+"""Renderer dispatch: section kind to renderer class.
 
-Each renderer receives a Section + QVFReader reference and returns
-PyVista/Trame objects that the app composites into the viewport.
+A renderer is constructed with a ``Section`` and the ``QVFReader`` that
+owns it, loads its payload lazily through the reader's typed ``read_*``
+methods, and exposes one or more of
+
+* ``add_to_plotter(plotter, ...)`` for kinds drawn in the 3-D viewport,
+* ``render_to_html(...)`` for chart and table panels (a complete document
+  for the details iframe, or a Plotly fragment), and
+* ``render_energy_plot(frame)`` / ``make_mesh(hints)`` for the animated and
+  volumetric kinds.
+
+The app and the terminal viewer pick the method by kind; nothing here
+returns Trame objects. :func:`get_renderer` is the one place the kind to
+class table lives.
 """
 
 from __future__ import annotations
@@ -11,8 +22,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader, Section
 
-# Import renderers lazily to avoid loading VTK at import time.
-# The app imports them on first use.
+# Renderer modules import VTK and Plotly, so the registry is built on the
+# first dispatch rather than at package import, and then kept.
+_REGISTRY: dict[str, type[BaseRenderer]] | None = None
 
 
 class BaseRenderer:
@@ -32,12 +44,27 @@ class BaseRenderer:
         return self.section.kind
 
 
+def renderer_registry() -> dict[str, type[BaseRenderer]]:
+    """The kind to renderer-class table, imported on first use and kept."""
+    global _REGISTRY
+    if _REGISTRY is None:
+        _REGISTRY = _build_registry()
+    return _REGISTRY
+
+
 def get_renderer(section: Section, reader: QVFReader) -> BaseRenderer | None:
     """Dispatch a section to its renderer class.
 
-    Returns None if the kind is not in SUPPORTED_KINDS (caller should
-    handle as skipped).
+    Returns None for a kind without a renderer (the caller reports it as
+    skipped).
     """
+    cls = renderer_registry().get(section.kind)
+    if cls is None:
+        return None
+    return cls(section, reader)
+
+
+def _build_registry() -> dict[str, type[BaseRenderer]]:
     from vibeview.renderers.atom_properties import AtomPropertiesRenderer
     from vibeview.renderers.bands import BandsRenderer
     from vibeview.renderers.bond_orders import BondOrdersRenderer
@@ -45,13 +72,16 @@ def get_renderer(section: Section, reader: QVFReader) -> BaseRenderer | None:
     from vibeview.renderers.coop import COOPRenderer
     from vibeview.renderers.dos import DOSRenderer
     from vibeview.renderers.eos import EquationOfStateRenderer
-    from vibeview.renderers.fermi import FermiSurfaceRenderer
     from vibeview.renderers.epr import EPRRenderer
+    from vibeview.renderers.excited_states import ExcitedStatesRenderer
+    from vibeview.renderers.fermi import FermiSurfaceRenderer
+    from vibeview.renderers.job_spec import JobSpecRenderer
     from vibeview.renderers.nmr import NMRRenderer
     from vibeview.renderers.phonon import PhononBandsRenderer, PhononDOSRenderer
+    from vibeview.renderers.preview import PreviewRenderer
     from vibeview.renderers.qtaim import QTAIMRenderer
     from vibeview.renderers.reaction import ReactionPathRenderer, ReactionWaypointsRenderer
-    from vibeview.renderers.job_spec import JobSpecRenderer
+    from vibeview.renderers.reaction_scheme import ReactionSchemeRenderer
     from vibeview.renderers.run_record import RunRecordRenderer
     from vibeview.renderers.scan_surface import ScanSurfaceRenderer
     from vibeview.renderers.scf_history import SCFHistoryRenderer
@@ -63,7 +93,7 @@ def get_renderer(section: Section, reader: QVFReader) -> BaseRenderer | None:
     from vibeview.renderers.volume import VolumeRenderer
     from vibeview.renderers.wavefunction import WavefunctionRenderer
 
-    _KIND_RENDERER: dict[str, type[BaseRenderer]] = {
+    return {
         "structure": StructureRenderer,
         "volume.density": VolumeRenderer,
         "volume.orbital": VolumeRenderer,
@@ -73,6 +103,7 @@ def get_renderer(section: Section, reader: QVFReader) -> BaseRenderer | None:
         "volume.generic": VolumeRenderer,
         "volume.potential": VolumeRenderer,
         "volume.rdg": VolumeRenderer,
+        "volume.transition_density": VolumeRenderer,
         "basis.ao": VolumeRenderer,
         "bands": BandsRenderer,
         "dos.total": DOSRenderer,
@@ -105,9 +136,7 @@ def get_renderer(section: Section, reader: QVFReader) -> BaseRenderer | None:
         "topology.qtaim": QTAIMRenderer,
         "dos.coop": COOPRenderer,
         "dos.cohp": COOPRenderer,
+        "reaction.scheme": ReactionSchemeRenderer,
+        "preview": PreviewRenderer,
+        "excited_states": ExcitedStatesRenderer,
     }
-
-    cls = _KIND_RENDERER.get(section.kind)
-    if cls is None:
-        return None
-    return cls(section, reader)

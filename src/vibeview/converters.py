@@ -9,211 +9,70 @@ requiring a particular quantum-chemistry producer.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import io
-import json
-import zipfile
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from importlib.util import find_spec
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from vibeview.crystal_builder import cell_from_abc
+from vibeview.elements import SYMBOL_TO_Z as _SYMBOL_TO_Z
+from vibeview.elements import Z_TO_SYMBOL as _Z_TO_SYMBOL
+from vibeview.experimental_map import map_to_qvf
+from vibeview.orca_import import ORCA_EXTENSIONS, is_orca_json, is_orca_path, orca_to_qvf
+from vibeview.qvf_writer import structure_archive
+from vibeview.result_import import RESULT_EXTENSIONS, result_to_qvf
 from vibeview.trexio_import import TREXIO_EXTENSIONS, is_trexio_directory, trexio_to_qvf
+from vibeview.units import BOHR_TO_ANGSTROM
+
+#: Per-axis periodicity of a molecule: the converters' most common case.
+MOLECULE: tuple[bool, bool, bool] = (False, False, False)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import IO
 
 
-# Periodic table — enough for the first 96 elements (CPK colour range).
-_SYMBOL_TO_Z: dict[str, int] = {
-    "H": 1,
-    "He": 2,
-    "Li": 3,
-    "Be": 4,
-    "B": 5,
-    "C": 6,
-    "N": 7,
-    "O": 8,
-    "F": 9,
-    "Ne": 10,
-    "Na": 11,
-    "Mg": 12,
-    "Al": 13,
-    "Si": 14,
-    "P": 15,
-    "S": 16,
-    "Cl": 17,
-    "Ar": 18,
-    "K": 19,
-    "Ca": 20,
-    "Sc": 21,
-    "Ti": 22,
-    "V": 23,
-    "Cr": 24,
-    "Mn": 25,
-    "Fe": 26,
-    "Co": 27,
-    "Ni": 28,
-    "Cu": 29,
-    "Zn": 30,
-    "Ga": 31,
-    "Ge": 32,
-    "As": 33,
-    "Se": 34,
-    "Br": 35,
-    "Kr": 36,
-    "Rb": 37,
-    "Sr": 38,
-    "Y": 39,
-    "Zr": 40,
-    "Nb": 41,
-    "Mo": 42,
-    "Tc": 43,
-    "Ru": 44,
-    "Rh": 45,
-    "Pd": 46,
-    "Ag": 47,
-    "Cd": 48,
-    "In": 49,
-    "Sn": 50,
-    "Sb": 51,
-    "Te": 52,
-    "I": 53,
-    "Xe": 54,
-    "Cs": 55,
-    "Ba": 56,
-    "La": 57,
-    "Ce": 58,
-    "Pr": 59,
-    "Nd": 60,
-    "Pm": 61,
-    "Sm": 62,
-    "Eu": 63,
-    "Gd": 64,
-    "Tb": 65,
-    "Dy": 66,
-    "Ho": 67,
-    "Er": 68,
-    "Tm": 69,
-    "Yb": 70,
-    "Lu": 71,
-    "Hf": 72,
-    "Ta": 73,
-    "W": 74,
-    "Re": 75,
-    "Os": 76,
-    "Ir": 77,
-    "Pt": 78,
-    "Au": 79,
-    "Hg": 80,
-    "Tl": 81,
-    "Pb": 82,
-    "Bi": 83,
-    "Po": 84,
-    "At": 85,
-    "Rn": 86,
-    "Fr": 87,
-    "Ra": 88,
-    "Ac": 89,
-    "Th": 90,
-    "Pa": 91,
-    "U": 92,
-    "Np": 93,
-    "Pu": 94,
-    "Am": 95,
-    "Cm": 96,
-}
+def _read_source(source: str | Path | IO[bytes] | bytes) -> str:
+    """The text of a converter source: a path, raw bytes or a binary stream.
 
-
-_Z_TO_SYMBOL: dict[int, str] = {z: sym for sym, z in _SYMBOL_TO_Z.items()}
-
-
-def _make_qvf_zip(structure_json: bytes, source_label: str) -> io.BytesIO:
-    """Pack a structure JSON payload into a minimal valid .qvf zip."""
-    manifest = {
-        "qvf_version": 1,
-        "source": {
-            "program": "vibe-view",
-            "version": "0",
-            "calculation": source_label,
-        },
-        "sections": [
-            {
-                "id": "structure",
-                "kind": "structure",
-                "members": {
-                    "structure": {
-                        "path": "sections/structure.json",
-                        "format": "json",
-                        "sha256": hashlib.sha256(structure_json).hexdigest(),
-                    }
-                },
-            }
-        ],
-    }
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        zf.writestr("sections/structure.json", structure_json)
-    buf.seek(0)
-    return buf
-
-
-def xyz_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
-    """Convert an XYZ file to an in-memory .qvf archive.
-
-    The XYZ format is::
-
-        <n_atoms>
-        <comment line>
-        <symbol>  <x>  <y>  <z>
-        ...
-
-    Positions are assumed to be in angstroms.  No bonding or lattice
-    information is inferred — the resulting QVF is a molecular structure
-    with no PBC flags.
+    Every text converter reads through here, decoding as UTF-8 with
+    replacement so a stray byte in a comment cannot fail the whole file.
     """
-    if isinstance(source, (str, Path)):
+    if isinstance(source, str | Path):
         content = Path(source).read_bytes()
     elif isinstance(source, bytes):
         content = source
     else:
         content = source.read()
-    lines = content.decode("utf-8", errors="replace").strip().splitlines()
-    if not lines:
-        raise ValueError("empty XYZ file")
-    # Skip the first two lines (atom count + comment).
-    atom_lines = lines[2:] if len(lines) >= 3 else []
-    atoms: list[dict] = []
-    for line in atom_lines:
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        symbol = parts[0].capitalize()
-        try:
-            x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-        except ValueError:
-            continue
-        atom = {
-            "symbol": symbol,
-            "position": [x, y, z],
-            # QVFReader.read_structure requires atomic_number; 0 = unknown.
-            "atomic_number": _SYMBOL_TO_Z.get(symbol, 0),
-        }
-        atoms.append(atom)
-    if not atoms:
-        raise ValueError("no atoms found in XYZ file")
-    struct = json.dumps(
-        {"atoms": atoms, "pbc": [False, False, False]},
-        indent=2,
-    ).encode()
+    return content.decode("utf-8", errors="replace")
+
+
+# Extended XYZ puts key=value pairs in the comment line; vibe-sketch writes
+# ``charge=-1 multiplicity=2`` there (#89). A value may be quoted.
+_XYZ_KEY_VALUE = re.compile(
+    r"""(?:^|\s)(charge|multiplicity)\s*=\s*["']?([+-]?\d+)["']?(?=\s|$)""", re.I
+)
+
+
+def _xyz_charge_multiplicity(comment: str) -> tuple[int | None, int | None]:
+    """``charge`` and ``multiplicity`` from an XYZ comment line, if stated."""
+    found = {key.lower(): int(value) for key, value in _XYZ_KEY_VALUE.findall(comment)}
+    multiplicity = found.get("multiplicity")
+    if multiplicity is not None and multiplicity < 1:
+        multiplicity = None
+    return found.get("charge"), multiplicity
+
+
+def xyz_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
+    """Read XYZ/extended-XYZ structures and same-identity frame trajectories."""
+    from vibeview.xyz_trajectory import xyz_frames
+
     name = Path(source).stem if isinstance(source, (str, Path)) else "xyz"
-    return _make_qvf_zip(struct, f"xyz:{name}")
+    return xyz_frames(_read_source(source), name)
 
 
 # Fixed so the same SMILES always yields the same structure. ETKDG is
@@ -281,12 +140,22 @@ def smiles_to_qvf(smiles: str, *, add_hydrogens: bool = True) -> io.BytesIO:
         atoms.append((int(atom.GetAtomicNum()), float(pos.x), float(pos.y), float(pos.z)))
     if not atoms:
         raise ValueError(f"SMILES produced no atoms: {text!r}")
-    return atoms_to_qvf(atoms, label=text)
+    # The net formal charge, and the multiplicity of the unpaired electrons
+    # RDKit assigns from valence, taken as high spin: one radical electron is
+    # a doublet, two a triplet. Without them an ion read back by vibe-sketch,
+    # or a job submitted from the panel, would be neutral (#89).
+    radicals = sum(int(atom.GetNumRadicalElectrons()) for atom in mol.GetAtoms())
+    return atoms_to_qvf(
+        atoms, label=text, charge=int(Chem.GetFormalCharge(mol)), multiplicity=radicals + 1
+    )
 
 
 def atoms_to_qvf(
     atoms: list[tuple[int, float, float, float]],
     label: str = "molecule",
+    *,
+    charge: int | None = None,
+    multiplicity: int | None = None,
 ) -> io.BytesIO:
     """Pack ``(Z, x, y, z)`` tuples into an in-memory molecular .qvf archive.
 
@@ -296,9 +165,10 @@ def atoms_to_qvf(
 
     The archive is tagged ``builder:<label>`` in ``manifest.source.calculation``
     so the Files dropdown can show the molecule's name instead of the generic
-    ``<in-memory>`` placeholder.
+    ``<in-memory>`` placeholder. ``charge`` and ``multiplicity``, when given,
+    are recorded in ``provenance``.
     """
-    atom_dicts: list[dict] = []
+    atom_dicts: list[dict[str, Any]] = []
     for z, x, y, z_coord in atoms:
         z_int = int(z)
         atom_dicts.append(
@@ -310,200 +180,306 @@ def atoms_to_qvf(
         )
     if not atom_dicts:
         raise ValueError("cannot build a QVF from zero atoms")
-    struct = json.dumps({"atoms": atom_dicts, "pbc": [False, False, False]}, indent=2).encode()
-    return _make_qvf_zip(struct, f"builder:{label}")
+    return structure_archive(
+        atom_dicts, MOLECULE, calculation=f"builder:{label}",
+        charge=charge, multiplicity=multiplicity,
+    ).to_bytesio()
+
+
+def _cif_tokens(text: str) -> list[tuple[str, bool]]:
+    """Split CIF text into ``(token, quoted)`` pairs per the CIF 1.1 syntax.
+
+    CIF 1.1 (IUCr, "CIF 1.1 syntax specification", paragraphs 15-19 and
+    the formal grammar): values are separated by whitespace; a value may be
+    delimited by matching single or double quotes, where a quote closes the
+    value only when followed by whitespace or the end of the line, so
+    ``'O'Neil'`` style apostrophes inside a value survive; a text field is a
+    run of lines opened and closed by a semicolon in column 1; ``#`` starts a
+    comment outside a quoted value. ``quoted`` marks a delimited value, which
+    is data even when it looks like a data name or ``?``.
+    """
+    tokens: list[tuple[str, bool]] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith(";"):
+            field = [line[1:]]
+            i += 1
+            while i < len(lines) and not lines[i].startswith(";"):
+                field.append(lines[i])
+                i += 1
+            if i == len(lines):
+                raise ValueError("CIF text field opened with ';' is never closed")
+            tokens.append(("\n".join(field).strip(), True))
+            i += 1
+            continue
+        pos = 0
+        n = len(line)
+        while pos < n:
+            ch = line[pos]
+            if ch.isspace():
+                pos += 1
+                continue
+            if ch == "#":
+                break
+            if ch in "'\"":
+                end = pos + 1
+                while True:
+                    end = line.find(ch, end)
+                    if end == -1:
+                        raise ValueError(f"unterminated {ch}-quoted CIF value on line {i + 1}")
+                    if end + 1 == n or line[end + 1].isspace():
+                        break
+                    end += 1
+                tokens.append((line[pos + 1 : end], True))
+                pos = end + 1
+                continue
+            end = pos
+            while end < n and not line[end].isspace():
+                end += 1
+            tokens.append((line[pos:end], False))
+            pos = end
+        i += 1
+    return tokens
+
+
+_CIF_RESERVED = ("data_", "loop_", "save_", "global_", "stop_")
+_CIF_SITE_COORDINATES = frozenset(
+    f"_atom_site_{family}_{axis}" for family in ("fract", "cartn") for axis in "xyz"
+)
+
+
+def _cif_items(
+    text: str,
+) -> tuple[dict[str, str | None], list[list[dict[str, str | None]]]]:
+    """Scalar items and loops of the first CIF block containing atom sites.
+
+    Returns ``(items, loops)``: the ``_name: value`` pairs outside loops, and
+    each ``loop_`` as a list of row dicts keyed by data name, so a consumer
+    reads a site as ``row["_atom_site_fract_x"]`` rather than assembling a
+    string key per cell.
+
+    Data names are case-insensitive (CIF 1.1), so keys are lower-cased. A
+    loop's values are one whitespace-separated stream that may wrap across
+    lines, and must fill whole packets. Unquoted ``?`` and ``.`` (unknown,
+    inapplicable) become None. Leading blocks without atom-site coordinates
+    are skipped; no items or loops are inherited from them.
+    """
+    tokens = _cif_tokens(text)
+    items: dict[str, str | None] = {}
+    loops: list[list[dict[str, str | None]]] = []
+
+    def _is_keyword(tok: tuple[str, bool]) -> bool:
+        value, quoted = tok
+        return not quoted and (
+            value.startswith("_") or value.lower().startswith(_CIF_RESERVED)
+        )
+
+    def _value(tok: tuple[str, bool]) -> str | None:
+        value, quoted = tok
+        return None if not quoted and value in ("?", ".") else value
+
+    k = 0
+    while k < len(tokens):
+        value, quoted = tokens[k]
+        low = value.lower()
+        if not quoted and low.startswith("data_"):
+            # CIF 1.1 §§6–7: scalar tags and loops belong to their data block.
+            # https://www.iucr.org/what-we-do/digital-standards/cif/cif1/file-syntax
+            if any(rows and _CIF_SITE_COORDINATES.intersection(rows[0]) for rows in loops):
+                break
+            items.clear()
+            loops.clear()
+            k += 1
+            continue
+        if not quoted and low == "loop_":
+            k += 1
+            names: list[str] = []
+            while k < len(tokens) and not tokens[k][1] and tokens[k][0].startswith("_"):
+                names.append(tokens[k][0].lower())
+                k += 1
+            values: list[str | None] = []
+            while k < len(tokens) and not _is_keyword(tokens[k]):
+                values.append(_value(tokens[k]))
+                k += 1
+            if not names:
+                continue
+            if len(values) % len(names):
+                raise ValueError(
+                    f"CIF loop over {names[0]} has {len(values)} values, "
+                    f"not a multiple of its {len(names)} data names"
+                )
+            rows = [
+                dict(zip(names, values[row * len(names) : (row + 1) * len(names)], strict=True))
+                for row in range(len(values) // len(names))
+            ]
+            loops.append(rows)
+            continue
+        if not quoted and value.startswith("_"):
+            if k + 1 < len(tokens) and not _is_keyword(tokens[k + 1]):
+                items[low] = _value(tokens[k + 1])
+                k += 2
+            else:
+                items[low] = None
+                k += 1
+            continue
+        k += 1  # save_ headers and anything outside an item
+    return items, loops
+
+
+def _cif_number(value: str | None) -> float | None:
+    """A CIF numeric value, its standard uncertainty ``5.4300(2)`` dropped."""
+    if value is None:
+        return None
+    return float(value.split("(", 1)[0])
+
+
+def _cif_element(type_symbol: str | None, label: str | None) -> str | None:
+    """Element from ``_atom_site_type_symbol`` (``Na1+``, ``O2-``), else the label.
+
+    Both start with the element symbol; what follows (an oxidation state,
+    a site number) is dropped. A two-letter reading wins only when it is a
+    real element, so ``CA1`` stays carbon-free guessing aside.
+    """
+    for raw in (type_symbol, label):
+        if not raw:
+            continue
+        letters = re.match(r"[A-Za-z]+", raw.strip())
+        if not letters:
+            continue
+        run = letters.group(0)
+        two = run[:2].capitalize()
+        if len(run) >= 2 and two in _SYMBOL_TO_Z:
+            return two
+        return run[0].upper()
+    return None
 
 
 def cif_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
     """Convert a CIF file to an in-memory .qvf archive.
 
-    Reads crystallographic information: cell parameters and atom sites
-    with fractional coordinates.  Builds lattice vectors, converts
-    to Cartesian positions, and sets all PBC flags to True.
+    Reads the first data block containing atom-site coordinates and uses
+    only that block's cell parameters. Builds lattice vectors, converts
+    fractional coordinates to Cartesian positions, and sets all PBC flags
+    to True when cell parameters are present.
     """
-    if isinstance(source, (str, Path)):
-        content = Path(source).read_bytes()
-    elif isinstance(source, bytes):
-        content = source
-    else:
-        content = source.read()
-    text = content.decode("utf-8", errors="replace")
-    # Parse CIF key-value pairs.  CIF is loosely structured; we handle
-    # both simple key-value lines and loop_ blocks.
-    kv: dict[str, str] = {}
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        i += 1
-        if not line or line.startswith("#") or line.startswith("data_"):
-            continue
-        if line.startswith("loop_"):
-            # Collect the loop header keys.
-            loop_keys: list[str] = []
-            while i < len(lines):
-                hdr = lines[i].strip()
-                if not hdr or not hdr.startswith("_"):
-                    break
-                loop_keys.append(hdr)
-                i += 1
-            if not loop_keys:
-                continue
-            # Read data rows until we hit a blank line or another keyword.
-            row_idx = 0
-            while i < len(lines):
-                data_line = lines[i].strip()
-                if (
-                    not data_line
-                    or data_line.startswith("_")
-                    or data_line.startswith("loop_")
-                    or data_line.startswith("data_")
-                ):
-                    break
-                parts = data_line.split()
-                if len(parts) < len(loop_keys):
-                    i += 1
-                    continue
-                for ki, key in enumerate(loop_keys):
-                    kv[f"{key}_{row_idx}"] = parts[ki]
-                row_idx += 1
-                i += 1
-        elif line.startswith("_"):
-            # Simple key-value line: "_key value" or just "_key"
-            parts = line.split(None, 1)
-            key = parts[0]
-            val = parts[1].strip().strip("'\"") if len(parts) > 1 else "?"
-            if val in ("?", "."):
-                continue
-            kv[key] = val
+    text = _read_source(source)
+    if "_atom_site." in text:
+        return mmcif_to_qvf(text.encode())
+
+    # CIF 1.1 tokens, not whitespace-split lines: a quoted label with a
+    # space, a loop packet wrapped over two lines, a ';' text field or a
+    # '#' comment each misaligned every later column before (#40-3).
+    kv, loops = _cif_items(text)
 
     # ── Cell parameters ────────────────────────────────────────────
-    def _get_float(*keys: str) -> float | None:
-        for k in keys:
-            v = kv.get(k)
-            if v is not None:
-                # Remove parenthesised uncertainties like 5.4300(2)
-                if "(" in v:
-                    v = v.split("(")[0]
-                try:
-                    return float(v)
-                except ValueError:
-                    continue
-        return None
+    def _get_float(key: str) -> float | None:
+        try:
+            return _cif_number(kv.get(key))
+        except ValueError:
+            return None
 
-    a_val = _get_float("_cell_length_a", "_cell_length_a")
-    b_val = _get_float("_cell_length_b", "_cell_length_b")
-    c_val = _get_float("_cell_length_c", "_cell_length_c")
-    alpha = _get_float("_cell_angle_alpha", "_cell_angle_alpha")
-    beta = _get_float("_cell_angle_beta", "_cell_angle_beta")
-    gamma = _get_float("_cell_angle_gamma", "_cell_angle_gamma")
+    a_val = _get_float("_cell_length_a")
+    b_val = _get_float("_cell_length_b")
+    c_val = _get_float("_cell_length_c")
+    alpha = _get_float("_cell_angle_alpha")
+    beta = _get_float("_cell_angle_beta")
+    gamma = _get_float("_cell_angle_gamma")
 
     # Build lattice vectors from cell parameters.
     lattice = np.eye(3)
     pbc = [False, False, False]
-    if all(v is not None for v in (a_val, b_val, c_val, alpha, beta, gamma)):
-        a_, b_, c_ = a_val, b_val, c_val
-        al = np.radians(alpha)
-        be = np.radians(beta)
-        ga = np.radians(gamma)
-        cos_a, cos_b, cos_g = np.cos(al), np.cos(be), np.cos(ga)
-        sin_g = np.sin(ga)
-        lattice[0] = [a_, 0.0, 0.0]
-        lattice[1] = [b_ * cos_g, b_ * sin_g, 0.0]
-        vol_factor = max(1.0 - cos_a**2 - cos_b**2 - cos_g**2 + 2 * cos_a * cos_b * cos_g, 0.0)
-        lattice[2] = [
-            c_ * cos_b,
-            c_ * (cos_a - cos_b * cos_g) / max(sin_g, 1e-10),
-            c_ * np.sqrt(vol_factor) / max(sin_g, 1e-10),
-        ]
+    if (
+        a_val is not None
+        and b_val is not None
+        and c_val is not None
+        and alpha is not None
+        and beta is not None
+        and gamma is not None
+    ):
+        lattice = cell_from_abc(a_val, b_val, c_val, alpha, beta, gamma)
         pbc = [True, True, True]
 
     # ── Atom sites ─────────────────────────────────────────────────
     # Collect all atom-site entries.  CIF can have them in any order;
     # we need to pair _atom_site_type_symbol with _atom_site_fract_x/y/z.
     symbols: list[str] = []
-    frac_x: list[float] = []
-    frac_y: list[float] = []
-    frac_z: list[float] = []
-    cartesian_sites = False
-    idx = 0
-    while True:
-        sym = kv.get(f"_atom_site_type_symbol_{idx}")
-        # Fall back to _atom_site_label if type_symbol is missing.
-        if sym is None:
-            sym = kv.get(f"_atom_site_label_{idx}")
-            if sym is not None:
-                # Labels often look like "Si1", "O2" — strip digits.
-                sym = "".join(c for c in sym if not c.isdigit()).strip()
-        fx = kv.get(f"_atom_site_fract_x_{idx}")
-        fy = kv.get(f"_atom_site_fract_y_{idx}")
-        fz = kv.get(f"_atom_site_fract_z_{idx}")
+    positions: list[list[float]] = []
+    sites = next(
+        (
+            rows
+            for rows in loops
+            if rows and _CIF_SITE_COORDINATES.intersection(rows[0])
+        ),
+        [],
+    )
+    for idx, row in enumerate(sites):
+        label = row.get("_atom_site_label")
+        sym = _cif_element(row.get("_atom_site_type_symbol"), label)
+        fx, fy, fz = (row.get(f"_atom_site_fract_{axis}") for axis in "xyz")
         # A CIF may give sites in Cartesian angstroms instead. That is what a
         # molecule with no cell must use — labelling Cartesian coordinates
         # fract_* would make every consumer misread the file — and it is what
         # this package's own CIF export writes for a non-periodic structure.
-        # Reading only fract_* meant vibe-view rejected its own export with
-        # "no atom sites found".
-        if fx is None:
-            fx = kv.get(f"_atom_site_Cartn_x_{idx}")
-            fy = kv.get(f"_atom_site_Cartn_y_{idx}")
-            fz = kv.get(f"_atom_site_Cartn_z_{idx}")
-            site_is_cartesian = True
-        else:
-            site_is_cartesian = False
-        if sym is None or fx is None:
-            break
+        site_is_cartesian = any(value is None for value in (fx, fy, fz)) and any(
+            f"_atom_site_cartn_{axis}" in row for axis in "xyz"
+        )
+        if site_is_cartesian:
+            fx, fy, fz = (row.get(f"_atom_site_cartn_{axis}") for axis in "xyz")
+        if sym is None:
+            continue
+        # Parse the whole site before keeping any of it, and refuse a bad
+        # coordinate: truncating at it silently dropped every later site,
+        # and appending the symbol first left the lists unequal (#40-3).
         try:
-            symbols.append(sym.strip().capitalize())
-            frac_x.append(float(fx.split("(")[0]))
-            frac_y.append(float(fy.split("(")[0]) if fy else 0.0)
-            frac_z.append(float(fz.split("(")[0]) if fz else 0.0)
-        except (ValueError, IndexError):
-            break
-        cartesian_sites = site_is_cartesian
-        idx += 1
-
+            xyz: list[float] = []
+            for value in (fx, fy, fz):
+                coordinate = _cif_number(value)
+                # CIF 1.1 semantics §§21–23: '?' and '.' supply no number.
+                # https://www.iucr.org/what-we-do/digital-standards/cif/cif1/common-semantic-features
+                if coordinate is None or not np.isfinite(coordinate):
+                    raise ValueError
+                xyz.append(coordinate)
+        except ValueError:
+            raise ValueError(
+                f"CIF atom site {label or idx + 1!s} has a missing, non-finite or "
+                "non-numeric coordinate: "
+                f"{fx!r} {fy!r} {fz!r}"
+            ) from None
+        symbols.append(sym)
+        # Convert each site separately: a complete Cartesian triple can
+        # supply a position when its fractional values are unavailable.
+        position = np.asarray(xyz) if site_is_cartesian else np.asarray(xyz) @ lattice
+        positions.append(position.tolist())
     if not symbols:
         raise ValueError("no atom sites found in CIF file")
 
-    coords = np.column_stack([frac_x, frac_y, frac_z])
-    # Cartesian sites are already angstroms; multiplying them by the lattice
-    # would scale a molecule by the (possibly synthesized) cell.
-    cart = coords if cartesian_sites else coords @ lattice
-
-    atoms: list[dict] = []
+    atoms: list[dict[str, Any]] = []
     for i, sym in enumerate(symbols):
-        atom: dict = {
+        atom: dict[str, Any] = {
             "symbol": sym,
-            "position": cart[i].tolist(),
+            "position": positions[i],
             # QVFReader.read_structure requires atomic_number; 0 = unknown.
             "atomic_number": _SYMBOL_TO_Z.get(sym, 0),
         }
         atoms.append(atom)
 
-    struct = json.dumps(
-        {"atoms": atoms, "pbc": pbc, "lattice_vectors": lattice.tolist()},
-        indent=2,
-    ).encode()
     name = Path(source).stem if isinstance(source, (str, Path)) else "cif"
-    return _make_qvf_zip(struct, f"cif:{name}")
+    return structure_archive(atoms, pbc, lattice, calculation=f"cif:{name}").to_bytesio()
 
 
-def cube_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
+def cube_to_qvf(
+    source: str | Path | IO[bytes] | bytes, *, dtype: str = "float32",
+) -> io.BytesIO:
     """Convert a Gaussian cube file to an in-memory .qvf archive.
 
     Cube files carry both a molecular structure and a 3D volumetric
     scalar field (density, orbital, electrostatic potential, etc.) on
     a regular grid.  The field type is auto-detected from the title
-    comment line.
+    comment line. For multiple interleaved datasets, import the first one.
     """
-    if isinstance(source, (str, Path)):
-        content = Path(source).read_bytes()
-    elif isinstance(source, bytes):
-        content = source
-    else:
-        content = source.read()
-    text = content.decode("utf-8", errors="replace")
+    text = _read_source(source)
     lines = text.strip().splitlines()
     if len(lines) < 6:
         raise ValueError("cube file too short")
@@ -538,126 +514,112 @@ def cube_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
     elif any(kw in combined_comments for kw in ("elf", "localization")):
         _kind = "volume.elf"
 
-    # Line 3: n_atoms, origin_x, origin_y, origin_z
+    # Line 3: n_atoms, origin_x, origin_y, origin_z, optional NVAL.
     parts = lines[line_idx].split()
     line_idx += 1
+    if len(parts) not in (4, 5):
+        raise ValueError("cube atom/origin record requires four fields and optional NVAL")
     n_atoms = int(parts[0])
     origin = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
+    try:
+        n_fields = int(parts[4]) if len(parts) == 5 else 1
+    except ValueError:
+        raise ValueError("cube NVAL must be a positive integer") from None
+    if n_fields < 1:
+        raise ValueError("cube NVAL must be a positive integer")
+    if n_atoms < 0 and n_fields != 1:
+        raise ValueError("cube NVAL must be absent or 1 with negative atom count")
 
-    # Lines 4-6: nx, dx, dy, dz  (row-major voxel vectors, in bohr)
+    # Lines 4-6: signed counts and row-major voxel vectors. Gaussian cubes
+    # use bohr; support the negative-count angstrom extension described by
+    # Paul Bourke, "Gaussian Cube Files" (2003):
+    # https://paulbourke.net/dataformats/cube/
     voxel_vectors = np.zeros((3, 3))
     shape = [0, 0, 0]
+    negative_counts = []
     for axis in range(3):
         parts = lines[line_idx].split()
         line_idx += 1
         n_pts = int(parts[0])
-        shape[axis] = n_pts
+        if n_pts == 0:
+            raise ValueError("cube voxel counts must be nonzero")
+        shape[axis] = abs(n_pts)
+        negative_counts.append(n_pts < 0)
         voxel_vectors[axis] = [float(parts[1]), float(parts[2]), float(parts[3])]
+    if any(negative_counts) and not all(negative_counts):
+        raise ValueError("cube voxel counts have mixed unit signs")
+    angstrom_units = all(negative_counts)
+    if angstrom_units:
+        origin = origin / BOHR_TO_ANGSTROM
+        voxel_vectors = voxel_vectors / BOHR_TO_ANGSTROM
 
-    # Atom lines: Z, charge, x, y, z  (positions in bohr)
-    atoms: list[dict] = []
+    # Atom lines use the same length unit; QVF atoms are in angstroms.
+    atoms: list[dict[str, Any]] = []
     for _ in range(abs(n_atoms)):
         parts = lines[line_idx].split()
         line_idx += 1
         z = int(float(parts[0]))
         pos = np.array([float(parts[2]), float(parts[3]), float(parts[4])])
-        # Convert bohr → angstrom.
-        pos_ang = pos * 0.529177210903
+        pos_ang = pos if angstrom_units else pos * BOHR_TO_ANGSTROM
         symbol = _Z_TO_SYMBOL.get(z, "X")
         atoms.append({"symbol": symbol, "position": pos_ang.tolist(), "atomic_number": z})
 
-    # MO cube files (negative n_atoms) carry a DSET record after the atom
-    # block: an integer count m followed by m orbital indices (wrapping onto
-    # continuation lines for m > 10). Those integers are metadata, not voxel
-    # values — they must be skipped or they corrupt the volume data.
-    if n_atoms < 0 and line_idx < len(lines):
+    # Negative NATOMS uses DSET_IDS, not NVAL: a positive count and exactly
+    # that many integer IDs, possibly wrapped across lines. h5cube's format
+    # description also specifies NVAL above (not an official Gaussian spec):
+    # https://h5cube-spec.readthedocs.io/en/latest/cubeformat.html
+    if n_atoms < 0:
+        if line_idx >= len(lines) or not lines[line_idx].split():
+            raise ValueError("cube DSET record is missing")
         dset = lines[line_idx].split()
         line_idx += 1
-        n_ids = int(float(dset[0])) if dset else 0
-        seen = len(dset) - 1
-        while seen < n_ids and line_idx < len(lines):
-            seen += len(lines[line_idx].split())
+        try:
+            n_fields = int(dset[0])
+        except ValueError:
+            raise ValueError("cube DSET count must be a positive integer") from None
+        if n_fields < 1:
+            raise ValueError("cube DSET count must be a positive integer")
+        ids = dset[1:]
+        while len(ids) < n_fields and line_idx < len(lines):
+            ids.extend(lines[line_idx].split())
             line_idx += 1
+        if len(ids) != n_fields:
+            raise ValueError(f"cube DSET record has {len(ids)} IDs, expected {n_fields}")
+        try:
+            for dataset_id in ids:
+                int(dataset_id)
+        except ValueError:
+            raise ValueError("cube DSET IDs must be integers") from None
 
-    # Volumetric data: nx*ny*nz floats, 6 per line, FORTRAN order (x outer, z inner).
+    # VMD's cube plugin describes x outermost, then y, z and field innermost.
+    # Keep the converter's one-volume contract by selecting the first dataset.
+    # https://www.ks.uiuc.edu/Research/vmd/plugins/molfile/cubeplugin.html
     data_parts: list[str] = []
     for remaining_line in lines[line_idx:]:
         data_parts.extend(remaining_line.split())
-    expected = shape[0] * shape[1] * shape[2]
+    expected = shape[0] * shape[1] * shape[2] * n_fields
     if len(data_parts) < expected:
         raise ValueError(f"cube file has {len(data_parts)} data points, expected {expected}")
-    data = np.array(data_parts[:expected], dtype=np.float64).reshape(shape, order="F")
-
-    # Convert grid origin from bohr to bohr (it's already in bohr; QVF stores
-    # in bohr internally and the viewer converts to Å).  The voxel vectors are
-    # also in bohr — QVF convention is row-major voxel vectors in bohr.
-    grid_origin_bohr = origin.copy()
+    data = np.array(data_parts[:expected], dtype=np.float64).reshape(*shape, n_fields)[..., 0]
 
     # ── Build the QVF archive ────────────────────────────────────
-    import struct
-
-    structure_json = json.dumps(
-        {"atoms": atoms, "pbc": [False, False, False]},
-        indent=2,
-    ).encode()
-    grid_json = json.dumps(
-        {
-            "origin": grid_origin_bohr.tolist(),
-            "voxel_vectors": voxel_vectors.tolist(),
-            "shape": list(shape),
-        },
-        indent=2,
-    ).encode()
-    data_bin = struct.pack(f"<{expected}f", *data.ravel(order="F").astype(np.float32))
-
     name = Path(source).stem if isinstance(source, (str, Path)) else "cube"
     source_label = f"cube:{name}"
     if title:
         source_label = f"cube:{title[:40]}"
-
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "vibe-view", "version": "0", "calculation": source_label},
-        "sections": [
-            {
-                "id": "structure",
-                "kind": "structure",
-                "members": {
-                    "structure": {
-                        "path": "sections/structure.json",
-                        "format": "json",
-                        "sha256": hashlib.sha256(structure_json).hexdigest(),
-                    }
-                },
-            },
-            {
-                "id": "vol_0",
-                "kind": _kind,
-                "members": {
-                    "grid": {
-                        "path": "volumes/vol_0_grid.json",
-                        "format": "json",
-                        "sha256": hashlib.sha256(grid_json).hexdigest(),
-                    },
-                    "data": {
-                        "path": "volumes/vol_0.dat",
-                        "format": "binary",
-                        "dtype": "float32",
-                        "shape": list(shape),
-                        "sha256": hashlib.sha256(data_bin).hexdigest(),
-                    },
-                },
-            },
-        ],
-    }
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        zf.writestr("sections/structure.json", structure_json)
-        zf.writestr("volumes/vol_0_grid.json", grid_json)
-        zf.writestr("volumes/vol_0.dat", data_bin)
-    buf.seek(0)
-    return buf
+    builder = structure_archive(atoms, MOLECULE, calculation=source_label)
+    builder.add_json(
+        "vol_0",
+        _kind,
+        "grid",
+        {
+            "origin": origin.tolist(),
+            "voxel_vectors": voxel_vectors.tolist(),
+            "shape": list(shape),
+        },
+    )
+    builder.add_binary("vol_0", _kind, "data", data, dtype)
+    return builder.to_bytesio()
 
 
 def _pdb_element(line: str) -> str | None:
@@ -718,25 +680,96 @@ def _pdb_element(line: str) -> str | None:
     return two or one or None
 
 
+def _is_pdb_unit_cell_placeholder(
+    a: float, b: float, c: float, alpha: float, beta: float, gamma: float,
+    space_group: str, z: int | None,
+) -> bool:
+    """True for the CRYST1 record of a structure that has no crystal.
+
+    wwPDB Format v3.3 §8 (CRYST1): "If the structure was not determined by
+    crystallographic means, CRYST1 simply provides the unitary values", i.e.
+    a = b = c = 1.0 Å, alpha = beta = gamma = 90°, space group P 1, Z = 1.
+    NMR and cryo-EM entries carry it; it is not a 1 Å periodic cell (#40-2).
+    """
+    return (
+        (a, b, c) == (1.0, 1.0, 1.0)
+        and (alpha, beta, gamma) == (90.0, 90.0, 90.0)
+        and "".join(space_group.split()) == "P1"
+        and z == 1
+    )
+
+
 def pdb_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
+    from vibeview.biomolecule import pdb_models
+
+    return pdb_models(_read_source(source))
+
+
+def mmcif_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
+    from vibeview.biomolecule import mmcif_models
+
+    return mmcif_models(_read_source(source))
+
+
+def _pdb_first_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
     """Convert a PDB file to an in-memory .qvf archive.
 
     Reads ATOM/HETATM records for atomic positions and optional CRYST1
     record for unit cell parameters.  PDB coordinates are in angstroms.
     """
-    if isinstance(source, (str, Path)):
-        content = Path(source).read_bytes()
-    elif isinstance(source, bytes):
-        content = source
-    else:
-        content = source.read()
-    text = content.decode("utf-8", errors="replace")
+    text = _read_source(source)
 
-    atoms: list[dict] = []
+    atoms: list[dict[str, Any]] = []
     a_val = b_val = c_val = None
     alpha = beta = gamma = None
+    space_group = ""
+    unit_cell_z = None
 
+    secondary_structure = []
+    # wwPDB v3.3 §9: MODEL/ENDMDL bracket one coordinate set each. An NMR
+    # ensemble or a trajectory is several copies of the same atoms; overlaying
+    # them all drew one molecule per model on top of each other (#40-15). The
+    # first model is the structure.
+    in_later_model = False
+    seen_model = False
+    # ATOM/HETATM column 17 (altLoc): alternate conformations of one atom.
+    # Keep the first location met for each atom and drop the others.
+    seen_alt: set[tuple[str, str, str, str, str]] = set()
     for line in text.splitlines():
+        if line.startswith("MODEL "):
+            if seen_model:
+                in_later_model = True
+            seen_model = True
+            continue
+        if line.startswith("ENDMDL"):
+            in_later_model = True
+            continue
+        if in_later_model and line.startswith(("ATOM", "HETATM", "ANISOU", "TER")):
+            continue
+        # wwPDB format 3.3, Secondary Structure Section: HELIX class 1/3/5
+        # denotes alpha/pi/3-10. Insertion-code ranges cannot be represented
+        # by our integer residue keys; do not silently assign them incorrectly.
+        if line.startswith(("HELIX ", "SHEET ")):
+            helix = line.startswith("HELIX ")
+            chain = line[19:20] if helix else line[21:22]
+            end_chain = line[31:32] if helix else line[32:33]
+            start_code = line[25:26] if helix else line[26:27]
+            if chain != end_chain or start_code.strip() or line[37:38].strip():
+                continue
+            try:
+                start = int(line[21:25] if helix else line[22:26])
+                end = int(line[33:37])
+                entry = {"type": "helix" if helix else "sheet", "chain": chain.strip(),
+                         "start_seq": start, "end_seq": end}
+                if helix:
+                    subtype = {1: "alpha", 3: "pi", 5: "3_10"}.get(int(line[38:40].strip() or "0"))
+                    if subtype:
+                        entry["subtype"] = subtype
+                secondary_structure.append(entry)
+            except ValueError:
+                pass
+            continue
+
         if line.startswith("CRYST1"):
             try:
                 a_val = float(line[6:15])
@@ -745,11 +778,22 @@ def pdb_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
                 alpha = float(line[33:40])
                 beta = float(line[40:47])
                 gamma = float(line[47:54])
+                space_group = line[55:66]
+                unit_cell_z = None
+                with contextlib.suppress(ValueError):
+                    unit_cell_z = int(line[66:70])
             except (ValueError, IndexError):
                 pass
             continue
 
         if line.startswith(("ATOM", "HETATM")):
+            alt_loc = line[16:17].strip()
+            if alt_loc:
+                # atom name, residue name, chain, residue number, insertion code
+                identity = (line[12:16], line[17:20], line[21:22], line[22:26], line[26:27])
+                if identity in seen_alt:
+                    continue
+                seen_alt.add(identity)
             try:
                 x = float(line[30:38])
                 y = float(line[38:46])
@@ -760,7 +804,7 @@ def pdb_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
             elem = _pdb_element(line)
             if not elem:
                 continue
-            atom: dict = {
+            atom: dict[str, Any] = {
                 "symbol": elem,
                 "position": [x, y, z],
                 # QVFReader.read_structure requires atomic_number; 0 = unknown.
@@ -801,162 +845,198 @@ def pdb_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
     # Build lattice if CRYST1 was present.
     pbc: list[bool] = [False, False, False]
     lattice: list[list[float]] | None = None
-    if all(v is not None for v in (a_val, b_val, c_val, alpha, beta, gamma)):
-        al = np.radians(alpha)
-        be = np.radians(beta)
-        ga = np.radians(gamma)
-        cos_a, cos_b, cos_g = np.cos(al), np.cos(be), np.cos(ga)
-        sin_g = np.sin(ga)
-        lat = np.zeros((3, 3))
-        lat[0] = [a_val, 0.0, 0.0]
-        lat[1] = [b_val * cos_g, b_val * sin_g, 0.0]
-        vol_factor = max(1.0 - cos_a**2 - cos_b**2 - cos_g**2 + 2 * cos_a * cos_b * cos_g, 0.0)
-        lat[2] = [
-            c_val * cos_b,
-            c_val * (cos_a - cos_b * cos_g) / max(sin_g, 1e-10),
-            c_val * np.sqrt(vol_factor) / max(sin_g, 1e-10),
-        ]
-        lattice = lat.tolist()
+    if (
+        a_val is not None
+        and b_val is not None
+        and c_val is not None
+        and alpha is not None
+        and beta is not None
+        and gamma is not None
+    ):
+        lattice = cell_from_abc(a_val, b_val, c_val, alpha, beta, gamma).tolist()
         pbc = [True, True, True]
+        if _is_pdb_unit_cell_placeholder(
+            a_val, b_val, c_val, alpha, beta, gamma, space_group, unit_cell_z
+        ):
+            lattice = None
+            pbc = [False, False, False]
 
-    struct = json.dumps(
-        {"atoms": atoms, "pbc": pbc, "lattice_vectors": lattice},
-        indent=2,
-    ).encode()
     name = Path(source).stem if isinstance(source, (str, Path)) else "pdb"
-    return _make_qvf_zip(struct, f"pdb:{name}")
+    return structure_archive(
+        atoms,
+        pbc,
+        lattice,
+        secondary_structure=secondary_structure,
+        calculation=f"pdb:{name}",
+    ).to_bytesio()
 
 
 def mol2_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
     """Convert a Tripos Mol2 file to an in-memory .qvf archive.
 
-    Reads the ``@<TRIPOS>ATOM`` section for atomic positions (in Å)
-    and the ``@<TRIPOS>BOND`` section for explicit bond connectivity.
+    Reads the first molecule only. Its ``@<TRIPOS>ATOM`` section supplies
+    atomic positions (in Å), and its ``@<TRIPOS>BOND`` section supplies
+    explicit connectivity through the source atom IDs. A declared zero
+    bond count remains explicit empty connectivity.
     """
-    if isinstance(source, (str, Path)):
-        content = Path(source).read_bytes()
-    elif isinstance(source, bytes):
-        content = source
-    else:
-        content = source.read()
-    text = content.decode("utf-8", errors="replace")
+    text = _read_source(source)
 
-    atoms: list[dict] = []
-    bond_pairs: list[dict] = []
-    in_atom = False
-    in_bond = False
+    atoms: list[dict[str, Any]] = []
+    atom_indices: dict[int, int] = {}
+    raw_bonds: list[tuple[int, int, float]] = []
+    section = ""
+    molecule_seen = False
+    header_rows = 0
+    n_atoms: int | None = None
+    n_bonds: int | None = None
+    order_map = {"1": 1.0, "2": 2.0, "3": 3.0, "ar": 1.5, "am": 1.5}
 
-    for line in text.splitlines():
+    # Tripos SYBYL Mol2 specification: counts belong to each MOLECULE;
+    # BOND endpoints reference arbitrary integer ATOM IDs, not row numbers.
+    # https://www.aideepmed.com/DockRMSD/mol2.pdf
+    for line_number, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
-            in_atom = False
-            in_bond = False
             continue
-        if line.startswith("@<TRIPOS>ATOM"):
-            in_atom = True
-            in_bond = False
-            continue
-        if line.startswith("@<TRIPOS>BOND"):
-            in_atom = False
-            in_bond = True
-            continue
+        if line == "@<TRIPOS>MOLECULE":
+            if molecule_seen:
+                break  # Later molecules have independent atom-ID namespaces.
+            molecule_seen = True
         if line.startswith("@<TRIPOS>"):
-            in_atom = False
-            in_bond = False
+            section = line
             continue
 
-        if in_atom:
-            parts = line.split()
+        parts = line.split()
+        if section == "@<TRIPOS>MOLECULE":
+            if header_rows == 1:
+                try:
+                    n_atoms = int(parts[0])
+                    n_bonds = int(parts[1]) if len(parts) > 1 else None
+                except ValueError as exc:
+                    raise ValueError("invalid Mol2 molecule counts") from exc
+                if n_atoms < 0 or (n_bonds is not None and n_bonds < 0):
+                    raise ValueError("invalid Mol2 molecule counts: negative count")
+            header_rows += 1
+        elif section == "@<TRIPOS>ATOM":
             if len(parts) < 6:
-                continue
-            # Format: id name x y z type [subst_id [subst_name [charge]]]
+                raise ValueError(f"invalid Mol2 atom record at line {line_number}")
             try:
-                x = float(parts[2])
-                y = float(parts[3])
-                z = float(parts[4])
-            except (ValueError, IndexError):
-                continue
-            # Atom type field (parts[5]) often contains the element symbol
-            # with optional hybridization (e.g. "C.3", "N.am", "O.2").
+                atom_id = int(parts[0])
+                x, y, z = (float(value) for value in parts[2:5])
+            except ValueError as exc:
+                raise ValueError(f"invalid Mol2 atom record at line {line_number}") from exc
+            if not np.isfinite([x, y, z]).all():
+                raise ValueError(f"non-finite Mol2 atom coordinates at line {line_number}")
+            if atom_id in atom_indices:
+                raise ValueError(f"duplicate Mol2 atom ID {atom_id}")
+            # Atom types often include hybridization, e.g. C.3, N.am, O.2.
             atype = parts[5].split(".")[0].capitalize()
-            # Fall back to atom name (parts[1]) if type looks wrong.
-            name = parts[1]
             if len(atype) > 2 or atype not in _SYMBOL_TO_Z:
-                # Try to extract element from atom name.
-                name_clean = "".join(c for c in name if not c.isdigit()).strip()
+                name_clean = "".join(c for c in parts[1] if not c.isdigit()).strip()
                 if name_clean.capitalize() in _SYMBOL_TO_Z:
                     atype = name_clean.capitalize()
-            atom: dict = {
+            if not atype:
+                raise ValueError(f"empty Mol2 atom label at line {line_number}")
+            atom_indices[atom_id] = len(atoms)
+            atoms.append({
                 "symbol": atype,
                 "position": [x, y, z],
-                # QVFReader.read_structure requires atomic_number; 0 = unknown.
                 "atomic_number": _SYMBOL_TO_Z.get(atype, 0),
-            }
-            atoms.append(atom)
-        elif in_bond:
-            parts = line.split()
+            })
+        elif section == "@<TRIPOS>BOND":
             if len(parts) < 4:
-                continue
+                raise ValueError(f"invalid Mol2 bond record at line {line_number}")
             try:
-                i = int(parts[1]) - 1  # Mol2 is 1-based
-                j = int(parts[2]) - 1
-                order = parts[3]  # "1", "2", "3", "ar", "am"
-                order_map = {"1": 1.0, "2": 2.0, "3": 3.0, "ar": 1.5, "am": 1.5}
-                bond_pairs.append({"i": i, "j": j, "order": order_map.get(order, 1.0)})
-            except (ValueError, IndexError):
-                continue
+                int(parts[0])  # Bond IDs are integers, but need not be sequential.
+                origin, target = int(parts[1]), int(parts[2])
+            except ValueError as exc:
+                raise ValueError(f"invalid Mol2 bond record at line {line_number}") from exc
+            raw_bonds.append((origin, target, order_map.get(parts[3], 1.0)))
 
+    if molecule_seen and n_atoms is None:
+        raise ValueError("missing Mol2 molecule counts")
+    if n_atoms is not None and len(atoms) != n_atoms:
+        raise ValueError(f"Mol2 atom count mismatch: expected {n_atoms}, found {len(atoms)}")
+    if n_bonds is not None and len(raw_bonds) != n_bonds:
+        raise ValueError(f"Mol2 bond count mismatch: expected {n_bonds}, found {len(raw_bonds)}")
     if not atoms:
         raise ValueError("no atoms found in Mol2 file")
+    bond_pairs: list[dict[str, Any]] = []
+    for origin, target, order in raw_bonds:
+        if origin not in atom_indices or target not in atom_indices:
+            raise ValueError(f"Mol2 bond references unknown atom ID: {origin}, {target}")
+        if origin == target:
+            raise ValueError(f"Mol2 bond references the same atom ID: {origin}")
+        bond_pairs.append({"i": atom_indices[origin], "j": atom_indices[target], "order": order})
 
-    struct: dict = {"atoms": atoms, "pbc": [False, False, False]}
-    bonds_section = None
-    if bond_pairs:
-        struct["bonds"] = [(p["i"], p["j"], p["order"]) for p in bond_pairs]
-        bonds_json = json.dumps({"pairs": bond_pairs}, indent=2).encode()
-        bonds_section = bonds_json
-
-    struct_json = json.dumps(struct, indent=2).encode()
     name = Path(source).stem if isinstance(source, (str, Path)) else "mol2"
+    return structure_archive(
+        atoms, MOLECULE,
+        bonds=bond_pairs if n_bonds is not None else (bond_pairs or None),
+        calculation=f"mol2:{name}",
+    ).to_bytesio()
 
-    if bonds_section:
-        manifest = {
-            "qvf_version": 1,
-            "source": {"program": "vibe-view", "version": "0", "calculation": f"mol2:{name}"},
-            "sections": [
-                {
-                    "id": "structure",
-                    "kind": "structure",
-                    "members": {
-                        "structure": {
-                            "path": "sections/structure.json",
-                            "format": "json",
-                            "sha256": hashlib.sha256(struct_json).hexdigest(),
-                        }
-                    },
-                },
-                {
-                    "id": "bonds0",
-                    "kind": "bonds",
-                    "members": {
-                        "bonds": {
-                            "path": "bonds/connectivity.json",
-                            "format": "json",
-                            "sha256": hashlib.sha256(bonds_json).hexdigest(),
-                        }
-                    },
-                },
-            ],
-        }
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", json.dumps(manifest))
-            zf.writestr("sections/structure.json", struct_json)
-            zf.writestr("bonds/connectivity.json", bonds_json)
-        buf.seek(0)
-        return buf
 
-    return _make_qvf_zip(struct_json, f"mol2:{name}")
+def _gaussian_element(label: str) -> str | None:
+    """Element of a Gaussian molecule-specification label, or None.
+
+    Gaussian "Molecule Specification": the element label is the chemical
+    symbol or the atomic number, optionally followed by other alphanumeric
+    characters (``C1``, ``C2``), by parenthesised parameters
+    (``C(Fragment=1)``, ``C(Iso=13)``), or by an MM atom type and charge
+    (``C-CA-0.25``). Every labelled form was dropped before (#40-6).
+    """
+    core = label.split("(", 1)[0].split("-", 1)[0]
+    if core.isdigit():
+        return _Z_TO_SYMBOL.get(int(core))
+    letters = re.match(r"[A-Za-z]+", core)
+    if not letters:
+        return None
+    run = letters.group(0)
+    if len(run) >= 2 and run[:2].capitalize() in _SYMBOL_TO_Z:
+        return run[:2].capitalize()
+    one = run[0].upper()
+    return one if one in _SYMBOL_TO_Z else None
+
+
+def fchk_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
+    from vibeview.fchk_reader import add_fchk
+    from vibeview.qvf_writer import QVFArchiveBuilder
+
+    builder = QVFArchiveBuilder(calculation="fchk import")
+    add_fchk(builder, _read_source(source))
+    return builder.to_bytesio()
+
+
+def molden_to_qvf(source: str | Path | IO[bytes] | bytes, *, natural: bool = False) -> io.BytesIO:
+    from vibeview.molden_reader import add_molden
+    from vibeview.qvf_writer import QVFArchiveBuilder
+
+    builder = QVFArchiveBuilder(calculation="Molden import")
+    add_molden(builder, _read_source(source), natural=natural)
+    return builder.to_bytesio()
+
+
+def zmatrix_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
+    """Open standalone Gaussian/ORCA/MOPAC internal coordinate blocks (.zmat/.zmt)."""
+    from vibeview.zmatrix import parse_zmatrix
+
+    text = _read_source(source)
+    first = next((line.split("!")[0].strip() for line in text.splitlines()
+                  if line.split("!")[0].strip()), "")
+    count = len(first.split())
+    if count == 1:
+        matrix = parse_zmatrix(text, "gaussian")
+    elif count == 7:
+        matrix = parse_zmatrix(text, "orca")
+    elif count == 10:
+        matrix = parse_zmatrix(text, "mopac")
+    else:
+        raise ValueError("Use a standalone Gaussian, ORCA or MOPAC Z-matrix coordinate block")
+    symbols, positions = matrix.cartesian()
+    atoms = [{"symbol": s, "atomic_number": _SYMBOL_TO_Z[s], "position": p.tolist()}
+             for s, p in zip(symbols, positions, strict=True)]
+    return structure_archive(atoms, MOLECULE, calculation="zmatrix").to_bytesio()
 
 
 def gjf_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
@@ -964,63 +1044,128 @@ def gjf_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
 
     Extracts atom coordinates from the molecule specification section.
     Link0 commands (%mem, %chk, etc.) and route lines (#p ...) are
-    skipped.  The charge/multiplicity line is skipped.  Coordinates
-    are in angstroms.
+    skipped.  The charge/multiplicity line is kept in ``provenance``.
+    Coordinates are in angstroms.
     """
-    if isinstance(source, (str, Path)):
-        content = Path(source).read_bytes()
-    elif isinstance(source, bytes):
-        content = source
+    text = _read_source(source)
+
+    atoms: list[dict[str, Any]] = []
+    charge: int | None = None
+    multiplicity: int | None = None
+    # Gaussian's route, title and molecule sections end at blank lines.
+    # Numeric title text must never start the molecule specification.
+    # https://gaussian.com/input/
+    lines = iter(text.splitlines())
+    if not any(line.lstrip().startswith("#") for line in lines):
+        raise ValueError("no atoms found in Gaussian input file")
+    for _ in range(2):  # route, then title (which may be empty)
+        for line in lines:
+            if not line.strip():
+                break
+        else:
+            raise ValueError("no atoms found in Gaussian input file")
+    header = next((line for line in lines if line.strip()), None)
+    if header is None:
+        raise ValueError("no atoms found in Gaussian input file")
+    parts = header.split()
+    if len(parts) != 2:
+        raise ValueError("invalid Gaussian charge/multiplicity line: expected two integers")
+    try:
+        charge, multiplicity = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise ValueError(
+            "invalid Gaussian charge/multiplicity line: expected two integers"
+        ) from exc
+    if multiplicity < 1:
+        multiplicity = None
+    geometry = []
+    for line in lines:
+        if not line.strip():
+            break
+        geometry.append(line.strip())
+    # A Z-matrix begins with a bare atom label, unlike Cartesian coordinates.
+    if geometry and len(geometry[0].split()) == 1:
+        from vibeview.zmatrix import parse_zmatrix
+
+        definitions = []
+        for line in lines:
+            value = line.strip()
+            if not value:
+                continue
+            if value.lower() not in ("variables:", "constants:") and not re.fullmatch(
+                r"[A-Za-z]\w*\s*(?:=|\s)\s*[+-]?[\d.]+(?:[eEdD][+-]?\d+)?", value
+            ):
+                break  # Later basis/connectivity sections are not variable definitions.
+            definitions.append(value)
+        matrix = parse_zmatrix("\n".join(geometry + [""] + definitions))
+        symbols, positions = matrix.cartesian()
+        atoms = [{"symbol": symbol, "position": position.tolist(),
+                  "atomic_number": _SYMBOL_TO_Z[symbol]}
+                 for symbol, position in zip(symbols, positions, strict=True)]
     else:
-        content = source.read()
-    text = content.decode("utf-8", errors="replace")
-
-    atoms: list[dict] = []
-    # State machine: skip Link0 commands, route line, title, charge/mult,
-    # then read atoms until a blank line or end.
-    reading_atoms = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            if reading_atoms:
-                break  # blank line ends atom list
-            continue
-        if stripped.startswith("%"):
-            continue  # Link0 command
-        if stripped.startswith("#"):
-            continue  # route line
-        if not reading_atoms:
-            # Title line or charge/multiplicity.
+        for line in geometry:
+            stripped = line.strip()
+            if not stripped:
+                break
+            # Atom line: Element-label [Freeze-code] x y z (Cartesian).
             parts = stripped.split()
-            if len(parts) == 2 and all(p.lstrip("-").isdigit() for p in parts):
-                reading_atoms = True  # charge/mult → start reading atoms next line
-            continue
-        # Atom line: element x y z
-        parts = stripped.split()
-        if len(parts) < 4:
-            continue
-        symbol = parts[0].capitalize()
-        if symbol not in _SYMBOL_TO_Z:
-            continue
-        try:
-            x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-        except ValueError:
-            continue
-        z_num = _SYMBOL_TO_Z.get(symbol)
-        atom: dict = {"symbol": symbol, "position": [x, y, z]}
-        if z_num is not None:
-            atom["atomic_number"] = z_num
-        atoms.append(atom)
-
+            symbol = _gaussian_element(parts[0])
+            numbers: list[float] = []
+            for part in parts[1:]:
+                try:
+                    numbers.append(float(part))
+                except ValueError:
+                    break
+            # A freeze code (0 or -1) may precede the three coordinates.
+            if len(numbers) == 4 and numbers[0] in (0.0, -1.0) and "." not in parts[1]:
+                numbers = numbers[1:]
+            if symbol is None or len(numbers) != 3:
+                raise ValueError(
+                    f"Gaussian input atom line {len(atoms) + 1} is not a Cartesian "
+                    f"'Element-label x y z' line: {stripped!r}"
+                )
+            atoms.append(
+                {"symbol": symbol, "position": numbers, "atomic_number": _SYMBOL_TO_Z[symbol]}
+            )
     if not atoms:
         raise ValueError("no atoms found in Gaussian input file")
 
-    struct = json.dumps(
-        {"atoms": atoms, "pbc": [False, False, False]},
-        indent=2,
-    ).encode()
     name = Path(source).stem if isinstance(source, (str, Path)) else "gjf"
-    return _make_qvf_zip(struct, f"gjf:{name}")
+    return structure_archive(
+        atoms, MOLECULE, calculation=f"gjf:{name}", charge=charge, multiplicity=multiplicity
+    ).to_bytesio()
+
+
+# Elements whose atom names in a force field begin with a two-letter symbol
+# that is also a one-letter organic element followed by a position letter.
+# CA is a C-alpha, NA a heme nitrogen, HE a histidine hydrogen: only a
+# one-atom residue (an ion) reads those as calcium, sodium or helium.
+_GRO_ORGANIC_FIRST_LETTERS = frozenset("CHNOSP")
+
+
+def _gro_element(atom_name: str, residue_name: str, *, single_atom_residue: bool) -> str:
+    """Element for a GROMACS atom name, which is a force-field name.
+
+    A .gro file has no element column (GROMACS manual, File formats, gro),
+    and names such as ``CA``, ``HE1`` and ``ND2`` are a C-alpha, a
+    histidine hydrogen and an asparagine nitrogen, not calcium, helium and
+    neodymium (#40-1). The first letter is the element, except that a
+    two-letter element is accepted for an ion -- a one-atom residue named
+    after it (``NA``/``NA``, ``CL``/``CLA``, ``CA``/``CAL``) -- or when the
+    first letter cannot start an organic force-field name (``FE``, ``ZN``,
+    ``MG``, ``BR``).
+    """
+    letters = re.match(r"\d*([A-Za-z]+)", atom_name)
+    if not letters:
+        return "X"
+    run = letters.group(1)
+    two = run[:2].capitalize()
+    if len(run) >= 2 and two in _SYMBOL_TO_Z:
+        is_ion = single_atom_residue and residue_name.upper().startswith(run[:2].upper())
+        if is_ion or run[0].upper() not in _GRO_ORGANIC_FIRST_LETTERS:
+            return two
+    one = run[0].upper()
+    return one if one in _SYMBOL_TO_Z else "X"
 
 
 def gro_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
@@ -1028,81 +1173,155 @@ def gro_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
 
     Format: title line, n_atoms, then per-atom lines:
     residue_number residue_name atom_name atom_number x y z [vx vy vz]
-    Positions are in nm; converted to Å.  Unit cell vector on final line.
+    Coordinates and the 3- or 9-value box of the first complete frame are
+    converted from nm to Å. Later frames and velocities are ignored.
     """
-    if isinstance(source, (str, Path)):
-        content = Path(source).read_bytes()
-    elif isinstance(source, bytes):
-        content = source
-    else:
-        content = source.read()
-    text = content.decode("utf-8", errors="replace")
-    lines = text.strip().splitlines()
+    text = _read_source(source)
+    lines = text.splitlines()
     if len(lines) < 3:
-        raise ValueError("gro file too short")
+        raise ValueError("GRO file too short")
+    try:
+        n_atoms = int(lines[1])
+    except ValueError as exc:
+        raise ValueError("invalid GRO atom count") from exc
+    if n_atoms <= 0:
+        raise ValueError("no atoms in GRO first frame: count must be positive")
+    if len(lines) < n_atoms + 3:
+        raise ValueError("truncated GRO first frame: missing atom records or box")
 
-    # Lines: title, n_atoms, atoms..., box vector
-    n_atoms = int(lines[1].strip())
-    atoms: list[dict] = []
-    for i in range(2, min(2 + n_atoms, len(lines) - 1)):
-        line = lines[i]
-        if len(line) < 36:  # minimum for x/y/z columns
-            continue
-        # GROMACS .gro columns (fixed-width):
-        # 1-5   residue number
-        # 6-10  residue name
-        # 11-15 atom name
-        # 16-20 atom number
-        # 21-28 x (nm)
-        # 29-36 y (nm)
-        # 37-44 z (nm)
+    # GROMACS file-format manual: fixed 5-character metadata fields, then
+    # three coordinate fields of width precision+5, inferred from decimal
+    # spacing. Packed negative values need not have whitespace separators.
+    # https://manual.gromacs.org/current/reference-manual/file-formats.html#gro
+    parsed: list[tuple[str, str, str, list[float]]] = []
+    coordinate_width: int | None = None
+    for line_number, line in enumerate(lines[2:n_atoms + 2], 3):
+        if len(line) < 20 or not line[5:10].strip() or not line[10:15].strip():
+            raise ValueError(f"invalid GRO atom record at line {line_number}")
         try:
-            x = float(line[20:28]) * 10.0  # nm → Å
-            y = float(line[28:36]) * 10.0
-            z = float(line[36:44]) * 10.0
-        except (ValueError, IndexError):
-            continue
-        atom_name = line[10:15].strip()
-        # Extract element from atom name (e.g. "OW" → "O", "HW1" → "H", "NA" → "Na").
-        # Try the full name first, then first letter.
-        name_clean = "".join(c for c in atom_name if c.isalpha())
-        elem = name_clean.capitalize()
-        if elem not in _SYMBOL_TO_Z:
-            # Try just the first letter.
-            first = name_clean[0].upper() if name_clean else "X"
-            elem = first if first in _SYMBOL_TO_Z else "X"
-        z_num = _SYMBOL_TO_Z.get(elem)
-        atom: dict = {"symbol": elem, "position": [x, y, z]}
-        if z_num is not None:
-            atom["atomic_number"] = z_num
-        else:
-            atom["atomic_number"] = 0  # unknown element
-        atoms.append(atom)
-
-    if not atoms:
-        raise ValueError("no atoms found in gro file")
-
-    # Check for unit cell on the last line.
-    pbc: list[bool] = [False, False, False]
-    lattice = None
-    box_line = lines[-1].strip()
-    box_parts = box_line.split()
-    if len(box_parts) >= 3:
+            int(line[:5])  # IDs may wrap and need not be unique or sequential.
+            int(line[15:20])
+        except ValueError as exc:
+            raise ValueError(f"invalid GRO atom identifiers at line {line_number}") from exc
+        decimals = [i for i, char in enumerate(line[20:]) if char == "."][:3]
+        if len(decimals) != 3:
+            raise ValueError(f"invalid GRO coordinate fields at line {line_number}")
+        width = decimals[1] - decimals[0]
+        if (width < 6 or decimals != [4, 4 + width, 4 + 2 * width]
+                or len(line) < 20 + 3 * width
+                or (coordinate_width is not None and coordinate_width != width)):
+            raise ValueError(f"inconsistent GRO coordinate precision at line {line_number}")
+        coordinate_width = width
         try:
-            vx = float(box_parts[0]) * 10.0
-            vy = float(box_parts[1]) * 10.0
-            vz = float(box_parts[2]) * 10.0
-            lattice = [[vx, 0.0, 0.0], [0.0, vy, 0.0], [0.0, 0.0, vz]]
-            pbc = [True, True, True]
-        except (ValueError, IndexError):
-            pass
+            position = [float(line[20 + j * width:20 + (j + 1) * width]) * 10.0
+                        for j in range(3)]
+        except ValueError as exc:
+            raise ValueError(f"invalid GRO coordinates at line {line_number}") from exc
+        if not np.isfinite(position).all():
+            raise ValueError(f"non-finite GRO coordinates at line {line_number}")
+        parsed.append((line[:5].strip(), line[5:10].strip(), line[10:15].strip(), position))
 
-    struct = json.dumps(
-        {"atoms": atoms, "pbc": pbc, "lattice_vectors": lattice},
-        indent=2,
-    ).encode()
+    residue_sizes: dict[tuple[str, str], int] = {}
+    for resnr, resname, _name, _pos in parsed:
+        residue_sizes[(resnr, resname)] = residue_sizes.get((resnr, resname), 0) + 1
+
+    atoms: list[dict[str, Any]] = []
+    for resnr, resname, atom_name, position in parsed:
+        elem = _gro_element(
+            atom_name, resname, single_atom_residue=residue_sizes[(resnr, resname)] == 1
+        )
+        atoms.append(
+            {"symbol": elem, "position": position, "atomic_number": _SYMBOL_TO_Z.get(elem, 0)}
+        )
+
+    # The box follows this frame's atoms, never the final line of a trajectory.
+    box_parts = lines[n_atoms + 2].split()
+    if len(box_parts) not in {3, 9}:
+        raise ValueError("GRO box must contain exactly 3 or 9 values")
+    try:
+        box = [float(value) * 10.0 for value in box_parts]
+    except ValueError as exc:
+        raise ValueError("invalid GRO box values") from exc
+    if not np.isfinite(box).all():
+        raise ValueError("GRO box values must be finite")
+    if len(box) == 3:
+        cell = [[box[0], 0.0, 0.0], [0.0, box[1], 0.0], [0.0, 0.0, box[2]]]
+    else:
+        # GRO order: v1x v2y v3z v1y v1z v2x v2z v3x v3y.
+        cell = [[box[0], box[3], box[4]], [box[5], box[1], box[6]],
+                [box[7], box[8], box[2]]]
+    lattice: list[list[float]] | None = None
+    pbc = [False, False, False]
+    # Exact zero represents no box, consistent with GROMACS guessPbcType:
+    # https://github.com/gromacs/gromacs/blob/main/src/gromacs/pbcutil/pbc.cpp
+    if any(value != 0.0 for value in box):
+        try:
+            np.linalg.inv(cell)
+        except np.linalg.LinAlgError as exc:
+            # QVF requires a full invertible lattice for any periodic axis.
+            raise ValueError("singular GRO box: periodic QVF cells must be invertible") from exc
+        lattice = cell
+        pbc = [True, True, True]
+
     name = Path(source).stem if isinstance(source, (str, Path)) else "gro"
-    return _make_qvf_zip(struct, f"gro:{name}")
+    return structure_archive(atoms, pbc, lattice, calculation=f"gro:{name}").to_bytesio()
+
+
+# BIOVIA CTfile Formats (2020), V2000: the atom block's ccc field encodes a
+# formal charge (1=+3, 2=+2, 3=+1, 5=-1, 6=-2, 7=-3) or a doublet radical (4).
+# "M  CHG" and "M  RAD" records, when present, supersede every charge and
+# radical value in the atom block. RAD values: 1 singlet, 2 doublet, 3 triplet.
+_SDF_ATOM_CHARGE = {1: 3, 2: 2, 3: 1, 5: -1, 6: -2, 7: -3}
+_SDF_ATOM_DOUBLET = 4
+_SDF_RADICAL_UNPAIRED = {1: 0, 2: 1, 3: 2}
+
+
+def _sdf_property_pairs(line: str) -> list[tuple[int, int]]:
+    """``(atom, value)`` pairs of one ``M  CHG`` / ``M  RAD`` record; [] if malformed."""
+    tokens = line[6:].split()
+    try:
+        count = int(tokens[0])
+        values = [int(token) for token in tokens[1:1 + 2 * count]]
+    except (IndexError, ValueError):
+        return []
+    if count < 0 or len(values) != 2 * count:
+        return []
+    return list(zip(values[0::2], values[1::2], strict=True))
+
+
+def _sdf_charge_multiplicity(
+    atom_lines: list[str], property_lines: list[str]
+) -> tuple[int, int | None]:
+    """Net formal charge, and the multiplicity when radicals are declared (#89).
+
+    A molecule with no radical record gets no multiplicity: the file does not
+    state one, and an odd-electron species must not be recorded as a singlet.
+    """
+    charges: list[tuple[int, int]] = []
+    radicals: list[tuple[int, int]] = []
+    superseded = False
+    for line in property_lines:
+        if line.startswith("M  END"):
+            break
+        if line.startswith("M  CHG"):
+            superseded = True
+            charges.extend(_sdf_property_pairs(line))
+        elif line.startswith("M  RAD"):
+            superseded = True
+            radicals.extend(_sdf_property_pairs(line))
+    if superseded:
+        charge = sum(value for _, value in charges)
+        unpaired = sum(_SDF_RADICAL_UNPAIRED.get(value, 0) for _, value in radicals)
+        declared = bool(radicals)
+    else:
+        charge = unpaired = 0
+        for line in atom_lines:
+            text = line[36:39].strip()
+            code = int(text) if text.isdigit() else 0
+            charge += _SDF_ATOM_CHARGE.get(code, 0)
+            unpaired += code == _SDF_ATOM_DOUBLET
+        declared = unpaired > 0
+    return charge, (unpaired + 1 if declared else None)
 
 
 def sdf_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
@@ -1110,152 +1329,103 @@ def sdf_to_qvf(source: str | Path | IO[bytes] | bytes) -> io.BytesIO:
 
     Reads the first molecule only (multi-molecule SDFs take the first).
     Atom block columns: x y z symbol (Å).  Bond block columns:
-    i j type (1=single, 2=double, 3=triple, 4=aromatic).
+    i j type (1=single, 2=double, 3=triple, 4=aromatic). The net formal
+    charge, and a declared radical multiplicity, go into ``provenance``.
     """
-    if isinstance(source, (str, Path)):
-        content = Path(source).read_bytes()
-    elif isinstance(source, bytes):
-        content = source
-    else:
-        content = source.read()
-    text = content.decode("utf-8", errors="replace")
+    text = _read_source(source)
 
-    # Find the counts line (aaabbblllfffccc... format: 3+3 digits for atoms/bonds).
+    # BIOVIA CTfile Formats: three header lines precede fixed-width V2000
+    # counts, followed by exactly that many atom and bond records. Bond
+    # endpoints are one-based atom row numbers. Read only the first SD record.
+    # https://discover.3ds.com/sites/default/files/2020-08/biovia_ctfileformats_2020.pdf
     lines = text.splitlines()
-    counts_line = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        # SDF counts line: first 6 chars after stripping should be digits
-        # (format: aaabbb where aaa=n_atoms, bbb=n_bonds, right-justified).
-        if len(stripped) >= 6:
-            first6 = stripped[:6].replace(" ", "")
-            if first6.isdigit() and i >= 2:
-                counts_line = i
-                break
-    if counts_line is None:
+    if "$$$$" in lines:
+        lines = lines[:lines.index("$$$$")]
+    if len(lines) < 4:
         raise ValueError("no counts line found in SDF file")
+    counts = lines[3]
+    if "V3000" in counts:
+        raise ValueError("SDF V3000 is not supported")
+    try:
+        n_atoms = int(counts[:3])
+        n_bonds = int(counts[3:6])
+    except ValueError as exc:
+        raise ValueError("no counts line with valid atom/bond counts found in SDF file") from exc
+    if n_atoms < 0 or n_bonds < 0:
+        raise ValueError("invalid SDF counts: negative count")
+    if len(lines) < 4 + n_atoms + n_bonds:
+        raise ValueError("truncated SDF atom or bond block")
 
-    # V2000 counts line has fixed 3-char columns (aaabbblll...); slice the
-    # raw line — strip() shifts the columns and breaks e.g. '  8 12'
-    # (→ int('8 1') crash) or '  8100' (→ n_bonds parsed as 0).
-    counts = lines[counts_line].rstrip("\r\n")
-    n_atoms = int(counts[:3])
-    n_bonds = int(counts[3:6]) if len(counts) >= 6 else 0
-
-    # Read atom block.
-    atoms: list[dict] = []
-    for i in range(counts_line + 1, counts_line + 1 + n_atoms):
-        if i >= len(lines):
-            break
+    atoms: list[dict[str, Any]] = []
+    for i in range(4, 4 + n_atoms):
         line = lines[i]
-        if len(line) < 32:
-            continue
+        if len(line) < 32 or not line[31:34].strip():
+            raise ValueError(f"invalid SDF atom record at line {i + 1}")
         try:
-            x = float(line[:10])
-            y = float(line[10:20])
-            z = float(line[20:30])
-            symbol = line[31:34].strip()
-            if not symbol:
-                continue
-            symbol = symbol.capitalize()
-            z_num = _SYMBOL_TO_Z.get(symbol)
-            atom: dict = {"symbol": symbol, "position": [x, y, z]}
-            if z_num is not None:
-                atom["atomic_number"] = z_num
-            else:
-                atom["atomic_number"] = 0
-            atoms.append(atom)
-        except (ValueError, IndexError):
-            continue
-
+            x, y, z = float(line[:10]), float(line[10:20]), float(line[20:30])
+        except ValueError as exc:
+            raise ValueError(f"invalid SDF atom record at line {i + 1}") from exc
+        if not np.isfinite([x, y, z]).all():
+            raise ValueError(f"non-finite SDF atom coordinates at line {i + 1}")
+        symbol = line[31:34].strip().capitalize()
+        atoms.append({
+            "symbol": symbol, "position": [x, y, z],
+            "atomic_number": _SYMBOL_TO_Z.get(symbol, 0),
+        })
     if not atoms:
         raise ValueError("no atoms found in SDF file")
 
-    # Read bond block.
-    bond_pairs: list[dict] = []
-    bond_start = counts_line + 1 + n_atoms
+    bond_pairs: list[dict[str, Any]] = []
+    bond_start = 4 + n_atoms
     bond_type_map = {1: 1.0, 2: 2.0, 3: 3.0, 4: 1.5}
     for i in range(bond_start, bond_start + n_bonds):
-        if i >= len(lines):
-            break
         line = lines[i]
         if len(line) < 9:
-            continue
+            raise ValueError(f"invalid SDF bond record at line {i + 1}")
         try:
-            a1 = int(line[:3]) - 1  # 1-based → 0-based
-            a2 = int(line[3:6]) - 1
-            btype = int(line[6:9])
-            bond_pairs.append({"i": a1, "j": a2, "order": bond_type_map.get(btype, 1.0)})
-        except (ValueError, IndexError):
+            a1, a2, btype = int(line[:3]), int(line[3:6]), int(line[6:9])
+        except ValueError as exc:
+            raise ValueError(f"invalid SDF bond record at line {i + 1}") from exc
+        if not (1 <= a1 <= n_atoms and 1 <= a2 <= n_atoms) or a1 == a2:
+            raise ValueError(f"invalid SDF bond atom references at line {i + 1}: {a1}, {a2}")
+        bond_pairs.append({"i": a1 - 1, "j": a2 - 1, "order": bond_type_map.get(btype, 1.0)})
+
+    # An extra atom/bond before properties means the declared counts are wrong.
+    # Check only the first nonblank trailing record: legacy atom lists and
+    # M/A/V/G/S property records start non-connectivity content, whose payload
+    # may legitimately look numeric (e.g. an atom alias). Do not parse it.
+    for line in lines[bond_start + n_bonds:]:
+        if not line.strip():
             continue
+        extra_atom = extra_bond = False
+        if len(line) >= 32 and line[31:34].strip():
+            try:
+                float(line[:10]), float(line[10:20]), float(line[20:30])
+                extra_atom = True
+            except ValueError:
+                pass
+        if len(line) >= 9:
+            try:
+                int(line[:3]), int(line[3:6]), int(line[6:9])
+                extra_bond = True
+            except ValueError:
+                pass
+        if extra_atom or extra_bond:
+            raise ValueError("SDF count mismatch: undeclared atom or bond record")
+        break
 
-    struct: dict = {"atoms": atoms, "pbc": [False, False, False]}
-    if bond_pairs:
-        struct["bonds"] = [(p["i"], p["j"], p["order"]) for p in bond_pairs]
-
-    struct_json = json.dumps(struct, indent=2).encode()
     name = Path(source).stem if isinstance(source, (str, Path)) else "sdf"
+    charge, multiplicity = _sdf_charge_multiplicity(
+        lines[4:4 + n_atoms], lines[bond_start + n_bonds:]
+    )
+    return structure_archive(
+        atoms, MOLECULE, bonds=bond_pairs, calculation=f"sdf:{name}",
+        charge=charge, multiplicity=multiplicity,
+    ).to_bytesio()
 
-    if bond_pairs:
-        bonds_json = json.dumps({"pairs": bond_pairs}, indent=2).encode()
-        manifest = {
-            "qvf_version": 1,
-            "source": {"program": "vibe-view", "version": "0", "calculation": f"sdf:{name}"},
-            "sections": [
-                {
-                    "id": "structure",
-                    "kind": "structure",
-                    "members": {
-                        "structure": {
-                            "path": "s.json",
-                            "format": "json",
-                            "sha256": hashlib.sha256(struct_json).hexdigest(),
-                        }
-                    },
-                },
-                {
-                    "id": "bonds0",
-                    "kind": "bonds",
-                    "members": {
-                        "bonds": {
-                            "path": "b.json",
-                            "format": "json",
-                            "sha256": hashlib.sha256(bonds_json).hexdigest(),
-                        }
-                    },
-                },
-            ],
-        }
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", json.dumps(manifest))
-            zf.writestr("s.json", struct_json)
-            zf.writestr("b.json", bonds_json)
-        buf.seek(0)
-        return buf
-
-    return _make_qvf_zip(struct_json, f"sdf:{name}")
-
-
-# Reverse lookup for cube files (Z → symbol).
-_Z_TO_SYMBOL: dict[int, str] = {v: k for k, v in _SYMBOL_TO_Z.items()}
 
 # All supported import extensions (used by directory scanner + filter).
 # Formats vibe-view reads itself.
-_NATIVE_EXTENSIONS = (
-    ".qvf",
-    ".xyz",
-    ".cif",
-    ".cube",
-    ".pdb",
-    ".mol2",
-    ".gjf",
-    ".com",
-    ".gro",
-    ".sdf",
-    ".mol",
-    ".py",
-)
 
 # Formats delegated to ``ase.io.read`` (roadmap decision 4, F1). Listing one
 # here is a claim that ``detect_format`` routes it to ASE — it is not a claim
@@ -1263,7 +1433,6 @@ _NATIVE_EXTENSIONS = (
 # naming the extra.
 _ASE_EXTENSIONS = (
     ".traj",
-    ".extxyz",
     ".vasp",
     ".poscar",
 )
@@ -1273,10 +1442,6 @@ _ASE_EXTENSIONS = (
 # as VASP writes them, so an unrelated `contcar.txt` is not swept in.
 _ASE_STEMS = ("POSCAR", "CONTCAR")
 
-# What the browse page globs for. It previously listed only the native set,
-# so files `detect_format` could happily open were never offered — the
-# inconsistency the 2026-07-02 audit flagged (F2).
-_SUPPORTED_EXTENSIONS = _NATIVE_EXTENSIONS + _ASE_EXTENSIONS + TREXIO_EXTENSIONS
 
 
 @dataclass(frozen=True)
@@ -1294,14 +1459,27 @@ class FormatCapability:
 
 
 _BUILTIN_FORMATS: tuple[FormatCapability, ...] = (
+    FormatCapability("fchk", (".fchk", ".fch"), "built-in", True,
+                     ("structure", "wavefunction.gto", "vibrations", "atom_properties"),
+                     "Formatted checkpoint wavefunctions and observables"),
+    FormatCapability("molden", (".molden", ".molden.input"), "built-in", True,
+                     ("structure", "wavefunction.gto"), "Molden real molecular orbitals"),
+    FormatCapability("mrc", (".mrc", ".ccp4", ".map"), "built-in", True,
+                     ("volume.generic",), "Experimental map (bounded interaction grid)"),
     FormatCapability("qvf", (".qvf",), "built-in", True, ("all QVF sections",), "QVF archive"),
-    FormatCapability("xyz", (".xyz",), "built-in", True, ("structure",), "XYZ structure"),
+    FormatCapability("xyz", (".xyz", ".extxyz"), "built-in", True,
+                     ("structure", "trajectory"), "XYZ and extended-XYZ frames"),
     FormatCapability(
         "cif", (".cif",), "built-in", True, ("structure", "lattice"), "CIF structure"
     ),
     FormatCapability(
         "cube", (".cube",), "built-in", True, ("structure", "volume"), "Gaussian cube"
     ),
+    FormatCapability("mmcif", (".mmcif", ".mcif"), "Gemmi optional extra",
+                     find_spec("gemmi") is not None, ("structure", "trajectory", "biomolecule"),
+                     "PDBx/mmCIF models and conformers"),
+    FormatCapability("zmatrix", (".zmat", ".zmt"), "built-in", True,
+                     ("structure",), "Internal coordinate block"),
     FormatCapability(
         "pdb", (".pdb",), "built-in", True, ("structure", "biomolecule"), "PDB structure"
     ),
@@ -1320,14 +1498,38 @@ _BUILTIN_FORMATS: tuple[FormatCapability, ...] = (
     FormatCapability(
         "py", (".py",), "built-in", True, ("structure", "input"), "vibe-qc Python input"
     ),
+    FormatCapability(
+        "orca", ORCA_EXTENSIONS, "built-in", True,
+        ("structure", "wavefunction.gto", "vibrations", "spectra",
+         "atom_properties", "bond_orders"),
+        "ORCA properties, orbitals, vibrations, IR/Raman/VCD and MCD; GBW needs orca_2json",
+    ),
 )
+
+#: Every extension a built-in converter claims, and the format each names.
+_EXTENSION_TO_FORMAT: dict[str, str] = {
+    ext: capability.format_name
+    for capability in _BUILTIN_FORMATS
+    if capability.provider in ("built-in", "Gemmi optional extra")
+    for ext in capability.extensions
+}
+_NATIVE_EXTENSIONS: tuple[str, ...] = tuple(_EXTENSION_TO_FORMAT)
+# What the browse page globs for. It previously listed only the native set,
+# so files `detect_format` could happily open were never offered — the
+# inconsistency the 2026-07-02 audit flagged (F2).
+_SUPPORTED_EXTENSIONS = _NATIVE_EXTENSIONS + _ASE_EXTENSIONS + TREXIO_EXTENSIONS
 
 
 def format_capabilities() -> tuple[FormatCapability, ...]:
     """Describe built-in, optional, and installed plugin importers."""
     from vibeview.install_hints import install_hint
 
-    capabilities = list(_BUILTIN_FORMATS)
+    capabilities = [
+        replace(cap, available=find_spec("gemmi") is not None,
+                install_hint=None if find_spec("gemmi") is not None
+                else install_hint("biomolecule"))
+        if cap.format_name == "mmcif" else cap for cap in _BUILTIN_FORMATS
+    ]
     ase_available = find_spec("ase") is not None
     capabilities.append(
         FormatCapability(
@@ -1341,6 +1543,13 @@ def format_capabilities() -> tuple[FormatCapability, ...]:
         )
     )
 
+    available = find_spec("cclib") is not None
+    capabilities.append(FormatCapability(
+        "results", RESULT_EXTENSIONS, "cclib optional extra", available,
+        ("structure", "trajectory", "vibrations", "spectra", "atom_properties"),
+        "Quantum-chemistry output via cclib; native ORCA takes precedence",
+        None if available else install_hint("results"),
+    ))
     trexio_available = find_spec("trexio") is not None
     capabilities.append(
         FormatCapability(
@@ -1398,38 +1607,30 @@ def is_supported_path(path: str | Path) -> bool:
 def detect_format(path: str | Path) -> str | None:
     """Return the format string for a file, or None if unknown.
 
-    Detects by extension:
-    - ``.qvf`` → ``"qvf"``
-    - ``.xyz`` → ``"xyz"``
-    - ``.cif`` → ``"cif"``
-    - ``.cube`` → ``"cube"``
-    - ``.pdb`` → ``"pdb"``
-    - ``.mol2`` → ``"mol2"``
-    - ``.gjf`` / ``.com`` → ``"gjf"``
-    - ``.gro`` → ``"gro"``
-    - ``.sdf`` / ``.mol`` → ``"sdf"``
-    - ``.trexio`` / ``.h5`` / ``.hdf5`` or a TREXIO text directory → ``"trexio"``
+    Detects by extension, in this order:
+
+    - a TREXIO text directory, or ``.trexio`` / ``.h5`` / ``.hdf5`` → ``"trexio"``
+    - a built-in extension (``vibe-view formats`` lists them: ``.qvf``,
+      ``.xyz``, ``.cif``, ``.cube``, ``.pdb``, ``.mol2``, ``.gjf`` / ``.com``,
+      ``.gro``, ``.sdf`` / ``.mol``, ``.py``) → that format's name
+    - an ASE extension, or the stems ``POSCAR`` / ``CONTCAR`` → ``"ase"``
+    - an extension an installed ``vibeview.importers`` plugin claims →
+      ``"plugin:<name>"``
+
+    Returns None for anything else.
     """
+    if str(path).lower().endswith(".molden.input"):
+        return "molden"
     if is_trexio_directory(path):
         return "trexio"
+    if is_orca_path(path):
+        return "orca"
     ext = Path(path).suffix.lower()
+    if ext in RESULT_EXTENSIONS:
+        return "results"
     if ext in TREXIO_EXTENSIONS:
         return "trexio"
-    known = {
-        ".qvf": "qvf",
-        ".xyz": "xyz",
-        ".cif": "cif",
-        ".cube": "cube",
-        ".pdb": "pdb",
-        ".mol2": "mol2",
-        ".gjf": "gjf",
-        ".com": "gjf",
-        ".gro": "gro",
-        ".sdf": "sdf",
-        ".mol": "sdf",
-        ".py": "py",
-    }
-    result = known.get(ext)
+    result = _EXTENSION_TO_FORMAT.get(ext)
     if result:
         return result
     if ext in _ASE_EXTENSIONS:
@@ -1448,6 +1649,40 @@ def detect_format(path: str | Path) -> str | None:
     return None
 
 
+def _builtin_converters() -> dict[str, Callable[[Any], io.BytesIO]]:
+    """Built-in format name -> converter; one table for paths and uploads."""
+    return {
+        "results": result_to_qvf,
+        "xyz": xyz_to_qvf,
+        "cif": cif_to_qvf,
+        "cube": cube_to_qvf,
+        "mrc": map_to_qvf,
+        "pdb": pdb_to_qvf,
+        "mmcif": mmcif_to_qvf,
+        "fchk": fchk_to_qvf,
+        "molden": molden_to_qvf,
+        "zmatrix": zmatrix_to_qvf,
+        "mol2": mol2_to_qvf,
+        "gjf": gjf_to_qvf,
+        "gro": gro_to_qvf,
+        "sdf": sdf_to_qvf,
+        "qvf": lambda p: io.BytesIO(Path(p).read_bytes()),
+        "py": py_to_qvf,
+        "ase": ase_to_qvf,
+        "trexio": trexio_to_qvf,
+        "orca": orca_to_qvf,
+    }
+
+
+# Converters that read their input from bytes as well as from a path. The
+# rest (the Python-input parser, ASE, importer plugins) need a file, so an
+# upload in one of those formats goes through a temporary copy.
+_BYTES_FORMATS = frozenset({
+    "xyz", "cif", "cube", "pdb", "mmcif", "zmatrix", "mol2", "fchk", "molden",
+    "gjf", "gro", "sdf", "trexio",
+})
+
+
 def convert_to_qvf(path: str | Path, *, format_name: str | None = None) -> io.BytesIO:
     """Auto-detect format and convert to an in-memory QVF.
 
@@ -1458,21 +1693,7 @@ def convert_to_qvf(path: str | Path, *, format_name: str | None = None) -> io.By
     fmt = format_name or detect_format(path)
     if fmt is None:
         raise ValueError(f"unsupported file format: {Path(path).suffix}")
-    _CONVERTERS = {
-        "xyz": xyz_to_qvf,
-        "cif": cif_to_qvf,
-        "cube": cube_to_qvf,
-        "pdb": pdb_to_qvf,
-        "mol2": mol2_to_qvf,
-        "gjf": gjf_to_qvf,
-        "gro": gro_to_qvf,
-        "sdf": sdf_to_qvf,
-        "qvf": lambda p: io.BytesIO(Path(p).read_bytes()),
-        "py": py_to_qvf,
-        "ase": ase_to_qvf,
-        "trexio": trexio_to_qvf,
-    }
-    converter = _CONVERTERS.get(fmt)
+    converter = _builtin_converters().get(fmt)
     if converter is not None:
         return converter(path)
 
@@ -1486,88 +1707,92 @@ def convert_to_qvf(path: str | Path, *, format_name: str | None = None) -> io.By
     return convert_with_importer(importer, path)
 
 
+def convert_bytes_to_qvf(
+    data: bytes, filename: str, *, format_name: str | None = None
+) -> io.BytesIO:
+    """Convert an uploaded file's ``data`` to an in-memory QVF.
+
+    ``filename`` supplies the format (as :func:`convert_to_qvf` detects it
+    from a path) unless ``format_name`` is given. The browser upload used its
+    own nine-entry converter table, which knew nothing of Python inputs, ASE
+    formats or importer plugins (#37-29); it goes through the same table as
+    a path now. Raises ``ValueError`` for an unsupported format.
+    """
+    # Uploaded ORCA wavefunction JSON has no distinctive suffix, and the
+    # filename need not exist on the server. Probe the upload itself.
+    from vibeview.orca_output import is_output
+
+    fmt = format_name or (
+        "orca" if ((Path(filename).suffix.lower() == ".json" and is_orca_json(data))
+                   or (Path(filename).suffix.lower() in {".out", ".log"}
+                       and is_output(data.decode("utf-8-sig", errors="replace"))))
+        else detect_format(filename)
+    )
+    if fmt is None:
+        raise ValueError(f"unsupported file format: {Path(filename).suffix}")
+    if fmt == "qvf":
+        return io.BytesIO(data)
+    if fmt in _BYTES_FORMATS:
+        return _builtin_converters()[fmt](data)
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="vibeview-upload-") as directory:
+        path = Path(directory) / (Path(filename).name or "upload")
+        path.write_bytes(data)
+        return convert_to_qvf(path, format_name=fmt)
+
+
 def py_to_qvf(path: str | Path) -> io.BytesIO:
     """Convert a vibe-qc Python input file to an in-memory QVF."""
-    import hashlib
-    import json as _json
-    import zipfile
 
     from vibeview.input_parser import parse_input_file
 
     result = parse_input_file(path)
+    if result.is_periodic and result.lattice_vectors is None:
+        raise ValueError(
+            "periodic lattice could not be resolved statically; "
+            "provide an explicit 3x3 lattice matrix or import a structure file"
+        )
 
     # vibe-qc inputs carry positions in BOHR and a lattice matrix whose
     # COLUMNS are the lattice vectors (PeriodicSystem convention); the
     # QVF structure contract is Å with lattice vectors as ROWS. Convert,
     # or the viewer renders the geometry inflated 1.89x with no bonds.
-    bohr = 0.529177210903
     atoms = [
-        {**a, "position": [c * bohr for c in a["position"]]} for a in result.atoms
+        {**a, "position": [c * BOHR_TO_ANGSTROM for c in a["position"]]} for a in result.atoms
     ]
     lattice = None
     if result.lattice_vectors is not None:
         cols = result.lattice_vectors
         lattice = [
-            [cols[0][i] * bohr, cols[1][i] * bohr, cols[2][i] * bohr] for i in range(3)
+            [cols[j][i] * BOHR_TO_ANGSTROM for j in range(3)] for i in range(3)
         ]
 
-    dimensionality = result.dimensionality if result.is_periodic else 0
-    if result.is_periodic and dimensionality is None:
+    dimensionality = 0
+    if result.is_periodic:
         # Preserve the historical assumption for input styles whose
         # PeriodicSystem dimension the restricted parser cannot resolve.
-        dimensionality = 3
-    structure = _json.dumps(
+        dimensionality = 3 if result.dimensionality is None else int(result.dimensionality)
+    builder = structure_archive(
+        atoms,
+        [axis < dimensionality for axis in range(3)],
+        lattice,
+        calculation=Path(path).stem,
+    )
+    builder.set_provenance(
         {
-            "atoms": atoms,
-            "pbc": [axis < dimensionality for axis in range(3)],
-            "dimensionality": dimensionality,
-            "lattice_vectors": lattice,
+            "method": result.method,
+            "functional": result.functional,
+            "basis": result.basis,
+            "charge": result.charge,
+            "multiplicity": result.multiplicity,
         }
-    ).encode()
-
-    sections = [
-        {
-            "id": "structure",
-            "kind": "structure",
-            "members": {
-                "structure": {
-                    "path": "sections/structure.json",
-                    "format": "json",
-                    "sha256": hashlib.sha256(structure).hexdigest(),
-                }
-            },
-        }
-    ]
-
-    prov = {
-        "method": result.method,
-        "functional": result.functional,
-        "basis": result.basis,
-        "charge": result.charge,
-        "multiplicity": result.multiplicity,
-    }
-    prov = {k: v for k, v in prov.items() if v is not None}
-
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "vibe-qc", "version": "1.0", "calculation": Path(path).stem},
-        "sections": sections,
-        "provenance": prov,
-    }
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("manifest.json", _json.dumps(manifest))
-        zf.writestr("sections/structure.json", structure)
-    buf.seek(0)
-    return buf
+    )
+    return builder.to_bytesio()
 
 
 def ase_to_qvf(path: str | Path) -> io.BytesIO:
     """Convert any ASE-supported format to an in-memory QVF."""
-    import hashlib
-    import json as _json
-    import zipfile
 
     try:
         from ase.io import read as ase_read
@@ -1579,17 +1804,15 @@ def ase_to_qvf(path: str | Path) -> io.BytesIO:
             f"Install it with:  {install_hint('ase')}"
         ) from None
     atoms = ase_read(str(path))
-    payload: dict = {
-        "atoms": [
-            {
-                "symbol": atoms.symbols[i],
-                "atomic_number": int(atoms.numbers[i]),
-                "position": [float(atoms.positions[i][j]) for j in range(3)],
-            }
-            for i in range(len(atoms))
-        ],
-        "pbc": [bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2])],
-    }
+    records = [
+        {
+            "symbol": atoms.symbols[i],
+            "atomic_number": int(atoms.numbers[i]),
+            "position": [float(atoms.positions[i][j]) for j in range(3)],
+        }
+        for i in range(len(atoms))
+    ]
+    pbc = [bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2])]
     # Carry the cell. Without it a POSCAR arrived flagged periodic with no
     # lattice, which is not a structure anyone can use: `is_periodic` tests
     # for a lattice *and* a pbc flag, so the file rendered as a molecule with
@@ -1599,31 +1822,5 @@ def ase_to_qvf(path: str | Path) -> io.BytesIO:
     # ASE rows are the lattice vectors, which is the convention the rest of
     # the reader uses (frac = cart @ inv(cell)).
     cell = np.asarray(atoms.cell, dtype=float)
-    if cell.shape == (3, 3) and bool(np.any(cell)):
-        payload["lattice_vectors"] = cell.tolist()
-        payload["dim"] = int(sum(payload["pbc"])) or 3
-    structure = _json.dumps(payload).encode()
-    sections = [
-        {
-            "id": "structure",
-            "kind": "structure",
-            "members": {
-                "structure": {
-                    "path": "sections/structure.json",
-                    "format": "json",
-                    "sha256": hashlib.sha256(structure).hexdigest(),
-                }
-            },
-        }
-    ]
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "ASE", "version": "1.0", "calculation": Path(path).stem},
-        "sections": sections,
-    }
-    buf2 = io.BytesIO()
-    with zipfile.ZipFile(buf2, "w") as zf:
-        zf.writestr("manifest.json", _json.dumps(manifest))
-        zf.writestr("sections/structure.json", structure)
-    buf2.seek(0)
-    return buf2
+    lattice = cell if cell.shape == (3, 3) and bool(np.any(cell)) else None
+    return structure_archive(records, pbc, lattice, calculation=Path(path).stem).to_bytesio()

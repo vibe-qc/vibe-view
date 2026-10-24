@@ -30,13 +30,63 @@ from vibeview.qvf import BasisShell, QVFReader, WavefunctionGTOData  # noqa: E40
 from vibeview.renderers.wavefunction import (  # noqa: E402
     WavefunctionRenderer,
     _angular_terms,
-    _cartesian_factors,
     _differentiate_terms,
     _evaluate_terms,
-    _spherical_factors,
 )
 
 ANGSTROM_TO_BOHR = 1.8897261254578281
+
+
+# ── reference angular factors ─────────────────────────────────────────────
+#
+# The closed-form real solid harmonics and libint-ordered Cartesian monomials
+# the renderer used before the monomial table became its one representation
+# (#46). They stay here as the oracle the table is checked against.
+
+
+def _reference_cartesian_factors(l, x, y, z):  # noqa: E741 — angular momentum
+    """x^i y^j z^k in libint order: i+j+k=l, i descending then j descending."""
+    for i in range(l, -1, -1):
+        for j in range(l - i, -1, -1):
+            yield (x**i) * (y**j) * (z ** (l - i - j))
+
+
+def _reference_spherical_factors(l, x, y, z):  # noqa: E741 — angular momentum
+    """Surface-normalised real spherical harmonics times r^l, m = -l..+l."""
+    if l == 0:
+        yield np.ones_like(x) * (1.0 / math.sqrt(4.0 * math.pi))
+        return
+    if l == 1:
+        c = math.sqrt(3.0 / (4.0 * math.pi))
+        yield c * y
+        yield c * z
+        yield c * x
+        return
+    r2 = x * x + y * y + z * z
+    if l == 2:
+        c2 = math.sqrt(15.0 / (4.0 * math.pi))
+        c1 = math.sqrt(15.0 / (4.0 * math.pi))
+        c0 = math.sqrt(5.0 / (16.0 * math.pi))
+        yield c2 * x * y
+        yield c1 * y * z
+        yield c0 * (3.0 * z * z - r2)
+        yield c1 * x * z
+        yield 0.5 * c2 * (x * x - y * y)
+        return
+    if l == 3:
+        c3 = math.sqrt(35.0 / (32.0 * math.pi))
+        c2 = math.sqrt(105.0 / (4.0 * math.pi))
+        c1 = math.sqrt(21.0 / (32.0 * math.pi))
+        c0 = math.sqrt(7.0 / (16.0 * math.pi))
+        yield c3 * y * (3.0 * x * x - y * y)
+        yield c2 * x * y * z
+        yield c1 * y * (5.0 * z * z - r2)
+        yield c0 * z * (5.0 * z * z - 3.0 * r2)
+        yield c1 * x * (5.0 * z * z - r2)
+        yield 0.5 * c2 * z * (x * x - y * y)
+        yield c3 * x * (x * x - 3.0 * y * y)
+        return
+    raise ValueError(f"l={l} not supported")
 
 
 # ── the monomial table against the functions it mirrors ──────────────────
@@ -44,7 +94,7 @@ ANGSTROM_TO_BOHR = 1.8897261254578281
 
 @pytest.mark.parametrize("l", [0, 1, 2, 3])
 @pytest.mark.parametrize("pure", [True, False])
-def test_monomial_table_reproduces_the_angular_factors(l, pure):
+def test_monomial_table_reproduces_the_angular_factors(l, pure):  # noqa: E741 — `l` is the angular-momentum quantum number
     rng = np.random.default_rng(0)
     x, y, z = (rng.normal(size=300) for _ in range(3))
     shell = BasisShell(
@@ -56,9 +106,9 @@ def test_monomial_table_reproduces_the_angular_factors(l, pure):
     )
     if pure:
         racah = math.sqrt(4.0 * math.pi / (2 * l + 1))
-        reference = [racah * f for f in _spherical_factors(l, x, y, z)]
+        reference = [racah * f for f in _reference_spherical_factors(l, x, y, z)]
     else:
-        reference = list(_cartesian_factors(l, x, y, z))
+        reference = list(_reference_cartesian_factors(l, x, y, z))
 
     produced = [_evaluate_terms(terms, x, y, z) for terms in _angular_terms(shell)]
     assert len(produced) == len(reference)
@@ -81,7 +131,7 @@ def test_solid_harmonics_are_harmonic():
     the gradient is built from, by differentiating twice."""
     rng = np.random.default_rng(3)
     x, y, z = (rng.normal(size=200) for _ in range(3))
-    for l in range(4):
+    for l in range(4):  # noqa: E741 — angular momentum
         shell = BasisShell(
             center=0, l=l,
             exponents=np.array([1.0]), coefficients=np.array([1.0]), pure=True,
@@ -159,7 +209,7 @@ def _finite_difference_check(renderer, wf, coeffs, atom_pos, probes, h=1e-5):
 
 @pytest.mark.parametrize("l", [0, 1, 2, 3])
 @pytest.mark.parametrize("pure", [True, False])
-def test_gradient_matches_finite_differences_per_shell(l, pure):
+def test_gradient_matches_finite_differences_per_shell(l, pure):  # noqa: E741 — angular momentum
     """Every l and both shell types, one shell at a time so a failure names
     the culprit instead of pointing at a whole basis."""
     shell = BasisShell(
@@ -181,17 +231,19 @@ def test_gradient_matches_finite_differences_per_shell(l, pure):
 
 def test_gradient_matches_finite_differences_on_a_real_wavefunction(tmp_path):
     """End to end on a converged UHF wavefunction whose basis carries
-    s, p, d and f shells together, with two off-origin centres."""
+    s, p, d and f shells together, with two distinct centres."""
     vibeqc = pytest.importorskip("vibeqc", reason="needs vibe-qc")
     from pathlib import Path
 
+    # NH triplet converges with the default UHF settings. The former CN
+    # doublet could exhaust the SCF iterations before testing any gradients.
     molecule = vibeqc.Molecule(
         [
-            vibeqc.Atom(6, [0.0, 0.0, 0.0]),
-            vibeqc.Atom(7, [0.0, 0.0, 1.17 * ANGSTROM_TO_BOHR]),
+            vibeqc.Atom(7, [0.0, 0.0, 0.0]),
+            vibeqc.Atom(1, [0.0, 0.0, 1.04 * ANGSTROM_TO_BOHR]),
         ],
         charge=0,
-        multiplicity=2,
+        multiplicity=3,
     )
     cwd = os.getcwd()
     os.chdir(tmp_path)
@@ -202,25 +254,29 @@ def test_gradient_matches_finite_differences_on_a_real_wavefunction(tmp_path):
     finally:
         os.chdir(cwd)
 
-    reader = QVFReader(str(next(Path(tmp_path).glob("*.qvf"))))
-    section = next(s for s in reader.sections if s.kind == "wavefunction.gto")
-    renderer = WavefunctionRenderer(section, reader)
-    wf = renderer.load()
-    assert {s.l for s in wf.shells} >= {0, 1, 2, 3}, "fixture must reach f shells"
+    with QVFReader(str(next(Path(tmp_path).glob("*.qvf")))) as reader:
+        section = next(s for s in reader.sections if s.kind == "wavefunction.gto")
+        renderer = WavefunctionRenderer(section, reader)
+        wf = renderer.load()
+        assert {s.l for s in wf.shells} >= {0, 1, 2, 3}, "fixture must reach f shells"
+        assert wf.spin == "unrestricted"
+        assert wf.alpha_occupations.sum() == pytest.approx(5)
+        assert wf.beta_occupations.sum() == pytest.approx(3)
 
-    atom_pos = renderer._atom_positions_bohr(wf.structure_ref)
-    coeffs = (
-        wf.mo_coefficients_alpha
-        if wf.mo_coefficients_alpha is not None
-        else wf.mo_coefficients
-    )
-    rng = np.random.default_rng(5)
-    probes = atom_pos.mean(axis=0) + rng.normal(scale=1.2, size=(6, 3))
-    for mo in (0, 3, 6):
-        worst = _finite_difference_check(
-            renderer, wf, coeffs[mo], atom_pos, probes
-        )
-        assert worst < 1e-6, f"MO {mo}: relative error {worst:.2e}"
+        atom_pos = renderer._atom_positions_bohr(wf.structure_ref)
+        rng = np.random.default_rng(5)
+        probes = atom_pos.mean(axis=0) + rng.normal(scale=1.2, size=(6, 3))
+        for spin, coeffs in (
+            ("alpha", wf.mo_coefficients_alpha),
+            ("beta", wf.mo_coefficients_beta),
+        ):
+            assert coeffs is not None, f"fixture must carry {spin} orbitals"
+            assert np.isrealobj(coeffs)
+            for mo in (0, 3, 6):
+                worst = _finite_difference_check(
+                    renderer, wf, coeffs[mo], atom_pos, probes
+                )
+                assert worst < 1e-6, f"{spin} MO {mo}: relative error {worst:.2e}"
 
 
 def test_gradient_pass_returns_the_same_values_as_the_value_pass():
@@ -344,7 +400,7 @@ def test_elf_is_bounded_and_defined_everywhere(tmp_path):
 
 @pytest.mark.parametrize("l", [0, 1, 2, 3])
 @pytest.mark.parametrize("pure", [True, False])
-def test_hessian_matches_finite_differences_of_the_gradient(l, pure):
+def test_hessian_matches_finite_differences_of_the_gradient(l, pure):  # noqa: E741 — angular momentum
     """Second derivatives checked against central differences of the
     already-validated analytic gradient, per shell so a failure names the l."""
     pairs = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))

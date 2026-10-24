@@ -17,8 +17,10 @@ manifest entry rather than an error.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from rich.segment import Segment
@@ -26,20 +28,28 @@ from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.events import Click
+from textual.screen import ModalScreen
 from textual.strip import Strip
+from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, Select, Static
 
+from vibeview.kinds import VOLUME_KINDS as _VOLUME_KINDS
 from vibeview.kinds import classify_section
-from vibeview.qvf import QVFReader
+from vibeview.qvf import QVFError, QVFReader
+from vibeview.renderers.wavefunction import occupation_problem
+from vibeview.settings import get_setting, set_setting
 from vibeview.tui import braille, panes, plots
 from vibeview.tui import scene as scenelib
-from vibeview.tui.raster import Camera, Canvas, rotation_matrix
+from vibeview.tui.raster import DEFAULT_ROTATION, Camera, Canvas, rotation_matrix
 from vibeview.tui.scene import GEOMETRIC_KINDS
-from vibeview.tui.scene import VOLUME_KINDS as _VOLUME_KINDS
+from vibeview.tui.show import render_chart
+from vibeview.units import ENERGY_UNITS, band_energy_unit, energy_label, energy_unit, length_unit
+from vibeview.vibration_amplitude import peak_excursion
 
 if TYPE_CHECKING:
-    from vibeview.qvf import GridData
+    from vibeview.qvf import GridData, Section, WavefunctionGTOData
     from vibeview.renderers.wavefunction import WavefunctionRenderer
 
 REPRESENTATION_CYCLE = [
@@ -56,8 +66,60 @@ _WAVEFUNCTION_KIND = "wavefunction.gto"
 # ample resolution for a braille canvas.
 _WAVEFUNCTION_GRID_SIZE = 48
 _MESH_CACHE_SIZE = 4
-_ELECTRON_OCCUPATION = "electron_occupation"
-_TRANSITION_WEIGHT = "transition_weight"
+_SCENE_CACHE_SIZE = 64
+_FIELD_CACHE_SIZE = 32
+
+
+class SpectrumDialog(ModalScreen[tuple[str, float, str] | None]):
+    """Typed spectrum display settings; stored per selected section."""
+    BINDINGS = [("escape", "dismiss(None)", "Cancel")]
+
+    def __init__(self, shape: str, width: float, unit: str) -> None:
+        super().__init__()
+        self.shape, self.width, self.unit = shape, width, unit
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("Display broadening (stored strengths unchanged)")
+            yield Select([(x.title(), x) for x in ("gaussian", "lorentzian")],
+                         value=self.shape, allow_blank=False, id="shape")
+            yield Input(str(self.width), type="number", placeholder="FWHM", id="width")
+            yield Select([(x, x) for x in ("native", "eV", "cm⁻¹")],
+                         value=self.unit, allow_blank=False, id="unit")
+            yield Button("Apply", id="apply")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "apply":
+            return
+        try:
+            width = float(self.query_one("#width", Input).value)
+            if not np.isfinite(width) or width <= 0:
+                raise ValueError
+        except ValueError:
+            self.notify("FWHM must be finite and positive", severity="error")
+            return
+        self.dismiss((str(self.query_one("#shape", Select).value), width,
+                      str(self.query_one("#unit", Select).value)))
+
+
+class _BoundedCache(dict[Any, Any]):
+    """An insertion-ordered dict that drops its oldest entry past ``limit``.
+
+    The viewer's caches (scenes, meshes, sampled fields) all want the same
+    thing: keep the last few, forget the oldest, and never grow without
+    bound during playback. One policy, one place.
+    """
+
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        if key in self:
+            del self[key]
+        super().__setitem__(key, value)
+        while len(self) > self.limit:
+            del self[next(iter(self))]
 
 
 class GridView(Widget):
@@ -68,7 +130,9 @@ class GridView(Widget):
     not.
     """
 
-    def __init__(self, builder, **kwargs) -> None:
+    def __init__(
+        self, builder: Callable[[int, int], braille.CellGrid | None], **kwargs: Any
+    ) -> None:
         super().__init__(**kwargs)
         self.builder = builder
         self._strips: list[Strip] = []
@@ -113,6 +177,38 @@ class GridView(Widget):
         self._strips = strips
 
 
+# Kinds the terminal shows as text tables (see VibeViewTUI._text_for_current).
+TEXT_PANE_KINDS = frozenset(
+    {
+        "structure",
+        "atom_properties",
+        "bond_orders",
+        "wavefunction.gto",
+        "citations",
+        "run.record",
+        "job.spec",
+        "structure.symmetry",
+        "spectra.nmr",
+        "spectra.epr",
+        "topology.qtaim",
+        "vibrations",
+        "reaction.scheme",
+        "excited_states",
+    }
+)
+
+
+def terminal_renders(kind: str) -> bool:
+    """True when the terminal draws, charts or tabulates ``kind``."""
+    return (
+        kind in GEOMETRIC_KINDS
+        or kind in plots.PLOT_BUILDERS
+        or kind == "scan.surface"
+        or kind == _WAVEFUNCTION_KIND
+        or kind in TEXT_PANE_KINDS
+    )
+
+
 class SectionList(Widget):
     """The section browser. Mirrors ``kinds.classify_section`` verbatim.
 
@@ -122,10 +218,32 @@ class SectionList(Widget):
     than a list of what happens to be implemented.
     """
 
-    def __init__(self, entries, **kwargs) -> None:
+    def __init__(self, entries: list[tuple[str, str, str]], **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.entries = entries
         self.index = 0
+        # First entry shown below the header. Follows the selection so it
+        # stays visible; without it a long archive's selection scrolled off
+        # the bottom and rows past the height were unreachable (#38-36).
+        self.first_row = 0
+
+    def _visible_rows(self) -> int:
+        return max(1, self.size.height - 1)
+
+    def _follow_selection(self) -> None:
+        rows = self._visible_rows()
+        if self.index < self.first_row:
+            self.first_row = self.index
+        elif self.index >= self.first_row + rows:
+            self.first_row = self.index - rows + 1
+        self.first_row = max(0, min(self.first_row, max(0, len(self.entries) - rows)))
+
+    def entry_at(self, y: int) -> int | None:
+        """Entry index drawn on widget row ``y`` (row 0 is the header)."""
+        if y < 1:
+            return None
+        idx = self.first_row + y - 1
+        return idx if 0 <= idx < len(self.entries) else None
 
     def render_line(self, y: int) -> Strip:
         width = self.size.width
@@ -134,7 +252,8 @@ class SectionList(Widget):
                 [Segment("Sections".ljust(width), Style(color="rgb(215,220,232)", bold=True))],
                 width,
             )
-        idx = y - 1
+        self._follow_selection()
+        idx = self.first_row + y - 1
         if idx >= len(self.entries):
             return Strip.blank(width, _BLANK_STYLE)
         section_id, kind, status = self.entries[idx]
@@ -153,7 +272,7 @@ class SectionList(Widget):
         return Strip([Segment(line.ljust(width), style)], width)
 
 
-class ActivatingDataTable(DataTable):
+class ActivatingDataTable(DataTable[Any]):
     """A row table whose first mouse click activates the chosen row.
 
     Textual's default table uses a first click to move the cursor and emits
@@ -162,18 +281,36 @@ class ActivatingDataTable(DataTable):
     their normal inexpensive highlight-only behavior until Enter is pressed.
     """
 
-    async def _on_click(self, event) -> None:
-        before = self.cursor_coordinate
-        await super()._on_click(event)
-        if self.cursor_coordinate != before:
-            row_index, _column_index = self.cursor_coordinate
-            row_key, _column_key = self.coordinate_to_cell_key(
-                self.cursor_coordinate
-            )
-            self.post_message(DataTable.RowSelected(self, row_index, row_key))
+    _click_pending = False
+
+    def on_mouse_down(self, event: object) -> None:
+        # A press starts a click. Textual's own click handler then moves the
+        # cursor, and that move lands in the coordinate watcher below, which
+        # is where the row activates. Public handlers only: Textual runs
+        # this class's ``on_click`` before DataTable's private ``_on_click``,
+        # so the click itself cannot see the moved cursor.
+        self._click_pending = True
+
+    def watch_cursor_coordinate(self, old: Any, new: Any) -> None:
+        super().watch_cursor_coordinate(old, new)
+        if not self._click_pending or old == new:
+            return
+        self._click_pending = False
+        row_index, _column_index = self.cursor_coordinate
+        row_key, _column_key = self.coordinate_to_cell_key(self.cursor_coordinate)
+        self.post_message(DataTable.RowSelected(self, row_index, row_key))
+
+    def on_click(self, event: Click) -> None:
+        # A click on the already highlighted row leaves the cursor where it
+        # is (Textual posts the selection itself); drop the pending flag once
+        # this event has fully dispatched so a later arrow key cannot claim it.
+        self.call_after_refresh(self._forget_click)
+
+    def _forget_click(self) -> None:
+        self._click_pending = False
 
 
-class VibeViewTUI(App):
+class VibeViewTUI(App[None]):
     """Terminal viewer for one QVF archive."""
 
     CSS = """
@@ -236,6 +373,8 @@ class VibeViewTUI(App):
         Binding("p", "step_volume(-1)", "Prev vol/MO", show=False),
         Binding("D", "render_density", "Density", show=False),
         Binding("S", "render_spin_density", "Spin density", show=False),
+        Binding("B", "spectrum_settings", "Spectrum width", show=False),
+        Binding("e", "cycle_energy_unit", "Energy unit", show=False),
         Binding("space", "play", "Play"),
         Binding("right_square_bracket", "step_frame(1)", "Frame+", show=False),
         Binding("left_square_bracket", "step_frame(-1)", "Frame-", show=False),
@@ -248,10 +387,16 @@ class VibeViewTUI(App):
         super().__init__()
         self.path = Path(path)
         self.reader = QVFReader(self.path)
-        self.entries = [
-            (s.id, s.kind, self._status_of(s)) for s in self.reader.sections
-        ]
-        self.selected = self._initial_selection()
+        # on_unmount releases the archive once the app runs; until then a
+        # failing constructor must release it itself (#39-18).
+        try:
+            self.entries = [
+                (s.id, s.kind, self._status_of(s)) for s in self.reader.sections
+            ]
+            self.selected = self._initial_selection()
+        except BaseException:
+            self.reader.close()
+            raise
 
         self.camera = Camera()
         self.pixel_mode = mode if mode in braille.MODES else "braille"
@@ -272,37 +417,61 @@ class VibeViewTUI(App):
         self.mode_index = 0
         self.playing = False
         self.status_text = ""
+        self.spectrum_options: dict[str, dict[str, Any]] = {}
         # Set whenever the framing is stale (new section, new supercell, view
         # reset); the next viewport rebuild re-fits and clears it.
         self._needs_fit = True
-        self._last_scene = None
+        self._last_scene: scenelib.Scene | None = None
 
-        self._scene_cache: dict[tuple, scenelib.Scene] = {}
-        self._mesh_cache: dict[tuple, list[scenelib.Mesh]] = {}
-        self._mesh_details: dict[tuple, str] = {}
+        self._scene_cache: dict[tuple[Any, ...], scenelib.Scene] = _BoundedCache(
+            _SCENE_CACHE_SIZE
+        )
+        self._mesh_cache: dict[tuple[Any, ...], list[scenelib.Mesh]] = _BoundedCache(
+            _MESH_CACHE_SIZE
+        )
+        self._mesh_details: dict[tuple[Any, ...], str] = {}
         self._wavefunction_field_cache: dict[
-            tuple, tuple[GridData, np.ndarray, bool, str]
-        ] = {}
+            tuple[Any, ...], tuple[GridData, np.ndarray, bool, str]
+        ] = _BoundedCache(_FIELD_CACHE_SIZE)
         self._wavefunction_renderers: dict[str, WavefunctionRenderer] = {}
-        self._wavefunction_rows: dict[str, list[dict]] = {}
+        self._wavefunction_rows: dict[str, list[dict[str, Any]]] = {}
+        # The browser's persisted display unit for orbital energies (#58);
+        # an unknown saved value falls back to Hartree.
+        self.energy_unit = energy_unit(get_setting("energy_unit"))
+        # The browser's other display units (#58): lengths in the geometry
+        # tables, and the energy axis of bands and DOS charts.
+        self.length_unit = length_unit(get_setting("measure_unit"))
+        self.band_energy_unit = band_energy_unit(get_setting("band_energy_unit"))
         self._wavefunction_selections: dict[str, str] = {}
         self._wavefunction_density_notes: dict[str, str] = {}
         self._wavefunction_spin_notes: dict[str, str] = {}
         self._wavefunction_table_keys: list[str] = []
         self._frames_cache: dict[str, np.ndarray] = {}
-        self._timer = None
+        self._timer: Timer | None = None
 
     # ── setup ─────────────────────────────────────────────────────────────
 
-    def _status_of(self, section) -> str:
+    def _status_of(self, section: Section) -> str:
         if self.reader.section_error(section.id):
             return "error"
-        return classify_section(section.kind)[0]
+        status = classify_section(section.kind)[0]
+        # The kind registry describes the browser. A kind the terminal can
+        # neither draw nor tabulate (fermi_surface, reaction.waypoints, …)
+        # only gets the generic manifest dump here, so it is not "rendered"
+        # in this viewer (#38-39).
+        if status == "rendered" and not terminal_renders(section.kind):
+            return "skipped"
+        return status
 
     def _initial_selection(self) -> int:
-        """Open on the structure if there is one — it is what a reader wants."""
-        for i, (_id, kind, _status) in enumerate(self.entries):
-            if kind == "structure":
+        """Open on the first structure if there is one — it is what a reader wants.
+
+        The first structure of QVF spec § 4.1: the first one ``auto_open``
+        lists, else the first ``structure`` section.
+        """
+        first = self.reader.first_structure_id
+        for i, (section_id, _kind, _status) in enumerate(self.entries):
+            if section_id == first:
                 return i
         return 0
 
@@ -339,6 +508,14 @@ class VibeViewTUI(App):
         self.title = f"vibe-view · {self.path.name}"
         self._on_selection_changed()
 
+    def on_unmount(self) -> None:
+        """Release the archive when the app exits (#38-41)."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        with contextlib.suppress(Exception):
+            self.reader.close()
+
     # ── current section ───────────────────────────────────────────────────
 
     @property
@@ -369,18 +546,22 @@ class VibeViewTUI(App):
             self._wavefunction_renderers[section_id] = renderer
         return renderer
 
-    def _rows_for_wavefunction(self, section_id: str) -> list[dict]:
+    def _rows_for_wavefunction(self, section_id: str) -> list[dict[str, Any]]:
         rows = self._wavefunction_rows.get(section_id)
         if rows is None:
-            rows = self._wavefunction_renderer(section_id).mo_table()
+            rows = self._wavefunction_renderer(section_id).mo_table(energy_unit=self.energy_unit)
             self._wavefunction_rows[section_id] = rows
         return rows
 
-    def _wavefunction_structure_id(self, section_id: str) -> str:
-        """Resolve the structure whose atoms are centres for this basis."""
+    def _wavefunction_structure_id(self, section_id: str) -> str | None:
+        """Resolve the structure whose atoms are centres for this basis.
+
+        The reader resolves the section's and the basis's ``structure_ref``;
+        one that names nothing falls back to the shown structure.
+        """
         structure_id = self._wavefunction_renderer(section_id).load().structure_ref
         if not structure_id or not self.reader.has_section(structure_id):
-            return "structure"
+            return self.reader.shown_structure_id
         return structure_id
 
     @staticmethod
@@ -401,52 +582,19 @@ class VibeViewTUI(App):
             return row["title"] if row is not None else value
         return key
 
-    def _wavefunction_density_is_physical(self, section_id: str, wavefunction) -> bool:
+    def _wavefunction_density_is_physical(
+        self, section_id: str, wavefunction: WavefunctionGTOData
+    ) -> bool:
         """Whether occupations describe electrons rather than NTO weights."""
-        natural_semantics = (
-            self._wavefunction_renderer(section_id).natural_value_semantics()
-            if wavefunction.orbital_kind == "natural"
-            else None
+        renderer = self._wavefunction_renderer(section_id)
+        semantics = (
+            renderer.natural_value_semantics() if wavefunction.orbital_kind == "natural" else None
         )
-        if natural_semantics == _TRANSITION_WEIGHT:
-            self._wavefunction_density_notes[section_id] = (
-                "total density unavailable: natural transition orbitals carry "
-                "transition weights, not electron occupations"
-            )
-            return False
-        if wavefunction.spin == "unrestricted":
-            occupation_blocks = (
-                wavefunction.alpha_occupations,
-                wavefunction.beta_occupations,
-            )
-        else:
-            occupation_blocks = (wavefunction.occupations,)
-        if any(block is None for block in occupation_blocks):
-            self._wavefunction_density_notes[section_id] = (
-                "total density unavailable: this wavefunction has no occupations"
-            )
-            return False
-        if wavefunction.orbital_kind != "natural":
-            self._wavefunction_density_notes[section_id] = ""
-            return True
-        if natural_semantics != _ELECTRON_OCCUPATION:
-            self._wavefunction_density_notes[section_id] = (
-                "total density unavailable: this natural-orbital section does not "
-                "declare whether its values are electron occupations or transition "
-                "weights"
-            )
-            return False
-        n_electrons = self.reader.provenance.get("n_electrons")
-        total = sum(float(np.asarray(block, dtype=float).sum()) for block in occupation_blocks)
-        if n_electrons is not None and abs(total - float(n_electrons)) > 0.05:
-            self._wavefunction_density_notes[section_id] = (
-                f"total density unavailable: values sum to {total:.4g}, not "
-                f"{n_electrons} electrons; this is a partial or inconsistent "
-                "occupation set"
-            )
-            return False
-        self._wavefunction_density_notes[section_id] = ""
-        return True
+        problem = occupation_problem(wavefunction, semantics, renderer.electron_count())
+        self._wavefunction_density_notes[section_id] = (
+            "" if problem is None else f"total density unavailable: {problem}"
+        )
+        return problem is None
 
     def _activate_wavefunction(self, section_id: str) -> None:
         """Populate the focusable surface picker and choose a default MO."""
@@ -510,40 +658,59 @@ class VibeViewTUI(App):
             f"{kind} set · {len(rows)} orbitals · ↑/↓ then Enter to render"
         )
 
+    def _replication_tuple(self) -> tuple[int, int, int]:
+        r = self.replication
+        return (int(r[0]), int(r[1]), int(r[2]))
+
     # ── scene assembly ────────────────────────────────────────────────────
 
-    def _structure_scene(self, positions=None) -> scenelib.Scene:
+    def _structure_scene(self, positions: np.ndarray | None = None) -> scenelib.Scene:
         section_id, kind, _status = self.current
-        structure_id = (
-            self._wavefunction_structure_id(section_id)
-            if kind == _WAVEFUNCTION_KIND
-            else "structure"
-        )
+        # A selected structure section draws itself; every other kind draws
+        # on the shown structure (the first one until another is selected).
+        if kind == "structure":
+            structure_id: str | None = section_id
+        elif kind == _WAVEFUNCTION_KIND:
+            structure_id = self._wavefunction_structure_id(section_id)
+        else:
+            structure_id = self.reader.shown_structure_id
+        animated = positions is not None and kind in {"trajectory", "reaction.path", "vibrations"}
+        frames = self._frames_for(section_id, kind) if animated else None
+        frame_index = self.frame % len(frames) if frames is not None and len(frames) else 0
         key = (
+            (section_id, kind, frame_index, self.mode_index) if animated else None,
             structure_id,
             self.representation,
             self.color_mode,
             self.show_bonds,
             self.show_cell,
-            tuple(self.replication),
-            None if positions is None else positions.tobytes(),
+            self._replication_tuple(),
         )
         cached = self._scene_cache.get(key)
         if cached is None:
-            cached = scenelib.structure_scene(
-                self.reader,
-                structure_id=structure_id,
-                representation=self.representation,
-                color_mode=self.color_mode,
-                show_bonds=self.show_bonds,
-                show_cell=self.show_cell,
-                replication=tuple(self.replication),
-                positions_override=positions,
-            )
-            # A frame-by-frame animation would otherwise grow this without
-            # bound; the scene for a given frame is cheap to rebuild.
-            if len(self._scene_cache) > 64:
-                self._scene_cache.clear()
+            if animated and positions is not None:
+                cached = scenelib.frame_scene(
+                    self.reader,
+                    section_id,
+                    positions,
+                    frame_index=frame_index,
+                    representation=self.representation,
+                    color_mode=self.color_mode,
+                    show_bonds=self.show_bonds,
+                    show_cell=self.show_cell,
+                    replication=self._replication_tuple(),
+                )
+            else:
+                cached = scenelib.structure_scene(
+                    self.reader,
+                    structure_id=structure_id,
+                    representation=self.representation,
+                    color_mode=self.color_mode,
+                    show_bonds=self.show_bonds,
+                    show_cell=self.show_cell,
+                    replication=self._replication_tuple(),
+                    positions_override=positions,
+                )
             self._scene_cache[key] = cached
         return cached
 
@@ -555,7 +722,10 @@ class VibeViewTUI(App):
                     self.reader, section_id, self.mode_index
                 )
                 self._frames_cache[key] = coords
-                self.status_text = f"mode {self.mode_index + 1}  ω = {freq:.2f} cm⁻¹"
+                self.status_text = (
+                    f"mode {self.mode_index + 1}  ω = {freq:.2f} cm⁻¹  "
+                    f"amplitude ×1.0 (peak {peak_excursion():.2f} Å)"
+                )
             return self._frames_cache[key]
         if kind in {"trajectory", "reaction.path"}:
             if section_id not in self._frames_cache:
@@ -575,16 +745,17 @@ class VibeViewTUI(App):
             section_id,
             surface,
             self.isovalue,
-            tuple(self.replication),
+            self._replication_tuple(),
         )
         cached_meshes = self._mesh_cache.get(mesh_key)
         if cached_meshes is not None:
             cached_field = self._wavefunction_field_cache.get(field_key)
-            detail = self._mesh_details.get(
-                mesh_key,
-                cached_field[3]
-                if cached_field is not None
-                else self._surface_label(section_id, surface),
+            detail = self._surface_detail(
+                section_id,
+                surface,
+                self._mesh_details.get(
+                    mesh_key, cached_field[3] if cached_field is not None else ""
+                ),
             )
             if cached_meshes:
                 self.status_text = (
@@ -596,7 +767,7 @@ class VibeViewTUI(App):
                     f"{detail}: no surface crosses |iso|={self.isovalue:.4g}; "
                     "press i to lower it (cached)"
                 )
-            if self.is_mounted:
+            if self.is_running:
                 self._update_status()
             return cached_meshes
 
@@ -625,18 +796,19 @@ class VibeViewTUI(App):
                         n_per_dim=_WAVEFUNCTION_GRID_SIZE,
                     )
                     signed = True
-                    detail = self._surface_label(section_id, surface)
+                    # The orbital's title carries its energy in the display
+                    # unit, so it is added when shown, never cached (#58).
+                    detail = ""
                 sampling_notes = self._wavefunction_sampling_notes(
                     renderer, section_id
                 )
                 if sampling_notes:
                     detail += " · " + " · ".join(sampling_notes)
                 field = (grid, values, signed, detail)
-                if len(self._wavefunction_field_cache) >= 32:
-                    self._wavefunction_field_cache.clear()
                 self._wavefunction_field_cache[field_key] = field
 
             grid, values, signed, detail = field
+            shown = self._surface_detail(section_id, surface, detail)
             try:
                 structure_id = self._wavefunction_structure_id(section_id)
                 structure = self.reader.read_structure(structure_id)
@@ -649,16 +821,15 @@ class VibeViewTUI(App):
                 values,
                 isovalue=self.isovalue,
                 signed=signed,
-                grid_units="angstrom",
-                replication=tuple(self.replication),
+                replication=self._replication_tuple(),
                 lattice_vectors=lattice,
                 pbc=pbc,
             )
             if meshes:
-                self.status_text = f"rendered {detail} at |iso|={self.isovalue:.4g}"
+                self.status_text = f"rendered {shown} at |iso|={self.isovalue:.4g}"
             else:
                 self.status_text = (
-                    f"{detail}: no surface crosses |iso|={self.isovalue:.4g}; "
+                    f"{shown}: no surface crosses |iso|={self.isovalue:.4g}; "
                     "press i to lower it"
                 )
         except Exception as exc:  # noqa: BLE001 — preserve geometry and report in place
@@ -668,11 +839,24 @@ class VibeViewTUI(App):
 
         if cacheable:
             self._remember_meshes(mesh_key, meshes, detail=detail)
-        if self.is_mounted:
+        if self.is_running:
             self._update_status()
         return meshes
 
-    def _wavefunction_sampling_notes(self, renderer, section_id: str) -> list[str]:
+    def _surface_detail(self, section_id: str, surface: str, cached: str) -> str:
+        """The status-line description of a surface from its cached part.
+
+        Density details (their integrals) are cached whole. An orbital's
+        cached part is only its sampling notes; its title is looked up now,
+        so it follows the current energy unit.
+        """
+        if not surface.startswith("mo:"):
+            return cached
+        return self._surface_label(section_id, surface) + cached
+
+    def _wavefunction_sampling_notes(
+        self, renderer: WavefunctionRenderer, section_id: str
+    ) -> list[str]:
         """Accuracy qualifications for the scalar field just sampled."""
         notes = []
         fraction = float(getattr(renderer, "last_dropped_l_fraction", 0.0))
@@ -695,22 +879,19 @@ class VibeViewTUI(App):
 
     def _remember_meshes(
         self,
-        key: tuple,
+        key: tuple[Any, ...],
         meshes: list[scenelib.Mesh],
         *,
         detail: str | None = None,
     ) -> None:
-        """Keep a small insertion-ordered mesh cache; contours can be large."""
-        self._mesh_cache.pop(key, None)
+        """Keep a small mesh cache; contours can be large."""
         self._mesh_cache[key] = meshes
         if detail is None:
             self._mesh_details.pop(key, None)
         else:
             self._mesh_details[key] = detail
-        while len(self._mesh_cache) > _MESH_CACHE_SIZE:
-            oldest = next(iter(self._mesh_cache))
-            del self._mesh_cache[oldest]
-            self._mesh_details.pop(oldest, None)
+        for stale in [k for k in self._mesh_details if k not in self._mesh_cache]:
+            del self._mesh_details[stale]
 
     @staticmethod
     def _scene_with_meshes(
@@ -744,7 +925,7 @@ class VibeViewTUI(App):
 
         meshes = None
         if kind in _VOLUME_KINDS and self.show_iso:
-            key = ("volume", section_id, self.isovalue, tuple(self.replication))
+            key = ("volume", section_id, self.isovalue, self._replication_tuple())
             meshes = self._mesh_cache.get(key)
             if meshes is None:
                 try:
@@ -752,7 +933,7 @@ class VibeViewTUI(App):
                         self.reader,
                         section_id,
                         isovalue=self.isovalue,
-                        replication=tuple(self.replication),
+                        replication=self._replication_tuple(),
                     )
                 except Exception as exc:  # noqa: BLE001 — report, don't crash the UI
                     meshes = []
@@ -766,26 +947,40 @@ class VibeViewTUI(App):
 
     # ── grid building ─────────────────────────────────────────────────────
 
-    def _build_grid(self, cols: int, rows: int):
+    def _build_grid(self, cols: int, rows: int) -> braille.CellGrid | None:
         section_id, kind, _status = self.current
-        if kind == "scan.surface":
-            return plots.scan_surface_plot(self.reader, section_id, cols, rows)
-        builder = plots.PLOT_BUILDERS.get(kind)
-        # A reaction path and a trajectory have both a geometry and an energy
-        # profile. Geometry wins by default; `g` swaps to the chart.
-        charting = self.show_chart and kind in plots.DUAL_KINDS
-        if builder is not None and (charting or kind not in GEOMETRIC_KINDS):
+        # Geometry wins for a reaction path or trajectory; `g` swaps to the
+        # chart. The dispatch itself is the one `vibe-view show` uses.
+        try:
+            chart = render_chart(
+                self.reader,
+                section_id,
+                cols,
+                rows,
+                mode=self.pixel_mode,
+                chart=self.show_chart,
+                band_energy_unit=self.band_energy_unit,
+                spectrum_options=self.spectrum_options.get(section_id),
+            )
+        except Exception as exc:  # noqa: BLE001 — a bad section must not kill the app
+            grid = braille.CellGrid(cols, rows)
+            grid.text(1, 1, f"{kind}: {exc}", (235, 110, 110))
+            return grid
+        if chart is not None:
+            return chart
+        if self._is_geometric():
             try:
-                return builder(self.reader, section_id, cols, rows).render()
-            except Exception as exc:  # noqa: BLE001 — a bad section must not kill the app
+                return self._build_3d(cols, rows)
+            except Exception as exc:  # noqa: BLE001 — an unreadable member must not kill the app
+                # A structure member that fails its CRC (or cannot be decoded)
+                # used to escape here and end the session with a traceback
+                # (#39-35); report it in the viewport like a failed chart.
                 grid = braille.CellGrid(cols, rows)
                 grid.text(1, 1, f"{kind}: {exc}", (235, 110, 110))
                 return grid
-        if self._is_geometric():
-            return self._build_3d(cols, rows)
         return None
 
-    def _build_3d(self, cols: int, rows: int):
+    def _build_3d(self, cols: int, rows: int) -> braille.CellGrid:
         grid = braille.CellGrid(cols, rows)
         scene = self._current_scene()
         self._last_scene = scene
@@ -801,26 +996,15 @@ class VibeViewTUI(App):
             self._overlay_labels(grid, scene, canvas, cols, rows)
         return grid
 
-    def _overlay_labels(self, grid, scene, canvas, cols, rows) -> None:
-        """Print atom indices above their projected centre.
-
-        Placed in *character* cells, not pixels — a braille dot cannot carry
-        a digit. Nearer atoms are drawn last so their label wins the cell.
-        """
-        xy, z = scenelib.atom_screen_positions(scene, canvas, self.camera)
-        px_per_col, px_per_row = (
-            (2, 4) if self.pixel_mode == "braille" else (1, 2)
-        )
-        order = np.argsort(-z)
-        for idx in order:
-            if not np.isfinite(xy[idx]).all() or z[idx] <= 0:
-                continue
-            col = int(xy[idx, 0] // px_per_col)
-            row = int(xy[idx, 1] // px_per_row) - 1
-            if not (0 <= row < rows and 0 <= col < cols):
-                continue
-            label = scene.labels[idx] if idx < len(scene.labels) else str(idx + 1)
-            grid.text(row, col, label, (245, 245, 245))
+    def _overlay_labels(
+        self,
+        grid: braille.CellGrid,
+        scene: scenelib.Scene,
+        canvas: Canvas,
+        cols: int,
+        rows: int,
+    ) -> None:
+        scenelib.label_atoms(grid, scene, canvas, self.camera, cols, rows, self.pixel_mode)
 
     # ── text pane ─────────────────────────────────────────────────────────
 
@@ -828,13 +1012,22 @@ class VibeViewTUI(App):
         section_id, kind, _status = self.current
         try:
             if kind == "structure":
-                return panes.structure_table(self.reader)
+                return panes.structure_table(
+                    self.reader, structure_id=section_id, length_unit=self.length_unit
+                )
+            if kind == "reaction.scheme":
+                return panes.reaction_scheme(self.reader, section_id)
             if kind == "atom_properties":
                 return panes.atom_properties(self.reader, section_id)
             if kind == "bond_orders":
-                return panes.bond_orders(self.reader, section_id)
+                return panes.bond_orders(self.reader, section_id, length_unit=self.length_unit)
             if kind == "wavefunction.gto":
-                return panes.wavefunction(self.reader, section_id)
+                return panes.wavefunction(
+                    self.reader,
+                    section_id,
+                    energy_unit=self.energy_unit,
+                    length_unit=self.length_unit,
+                )
             if kind == "citations":
                 return panes.citations(self.reader, section_id)
             if kind == "run.record":
@@ -850,7 +1043,9 @@ class VibeViewTUI(App):
             if kind == "topology.qtaim":
                 return panes.qtaim(self.reader, section_id)
             if kind == "vibrations":
-                return panes.vibrations_table(self.reader, section_id)
+                return panes.vibrations_table(self.reader, section_id, self.mode_index)
+            if kind == "excited_states":
+                return panes.excited_states(self.reader, section_id)
             return panes.generic_section(self.reader, section_id)
         except Exception as exc:  # noqa: BLE001 — surface the failure in place
             return f"[bold #eb6e6e]{type(exc).__name__}: {exc}[/]"
@@ -862,6 +1057,11 @@ class VibeViewTUI(App):
         self.section_list.index = self.selected
         self.section_list.refresh()
         section_id, kind, _status = self.current
+        if kind == "structure":
+            # Selecting a structure shows it, as in the browser (#90); the
+            # volumes and frames that follow draw on it.
+            with contextlib.suppress(QVFError):
+                self.reader.show_structure(section_id)
         if kind == _WAVEFUNCTION_KIND:
             try:
                 self._activate_wavefunction(section_id)
@@ -905,7 +1105,7 @@ class VibeViewTUI(App):
             # is not showing.
             for note in getattr(self._last_scene, "color_notes", []) or []:
                 bits.append(note)
-            if tuple(self.replication) != (1, 1, 1):
+            if self._replication_tuple() != (1, 1, 1):
                 bits.append("×".join(str(r) for r in self.replication))
             if kind in _VOLUME_KINDS or kind == _WAVEFUNCTION_KIND:
                 bits.append(f"iso={self.isovalue:.4g}{'' if self.show_iso else ' (off)'}")
@@ -913,6 +1113,9 @@ class VibeViewTUI(App):
                 bits.append(self._surface_label(section_id, self.wavefunction_surface))
         if kind in plots.DUAL_KINDS:
             bits.append("energy profile" if self.show_chart else "geometry (g for energy)")
+        if kind in plots.DUAL_KINDS or kind == "vibrations":
+            # Vibrations animate too; their counter sat inside the DUAL_KINDS
+            # branch, which vibrations is not part of (#38-34).
             frames = self._frames_cache.get(
                 f"{section_id}:{self.mode_index}" if kind == "vibrations" else section_id
             )
@@ -967,7 +1170,7 @@ class VibeViewTUI(App):
         self.viewport.invalidate()
 
     def action_reset_view(self) -> None:
-        self.camera.rotation = rotation_matrix(-0.25, -0.55, 0.0)
+        self.camera.rotation = rotation_matrix(*DEFAULT_ROTATION)
         self.camera.pan = (0.0, 0.0)
         self._needs_fit = True
         self.viewport.invalidate()
@@ -978,13 +1181,67 @@ class VibeViewTUI(App):
         self.viewport.invalidate()
         self._update_status()
 
+    def action_spectrum_settings(self) -> None:
+        section_id, kind, _ = self.current
+        if not kind.startswith("spectra.") or kind not in plots.PLOT_BUILDERS:
+            return
+        from vibeview.spectrum import spectrum_style
+
+        section = self.reader.get_section(section_id)
+        style = spectrum_style(section, self.reader.read_spectra(section_id).frequencies)
+        opts = self.spectrum_options.get(section_id, {})
+
+        def apply(result: tuple[str, float, str] | None) -> None:
+            if result is not None:
+                shape, width, unit = result
+                self.spectrum_options[section_id] = {
+                    "lineshape": shape, "fwhm": width, "unit": unit,
+                }
+                self._refresh_all()
+
+        self.push_screen(SpectrumDialog(opts.get("lineshape", "lorentzian"),
+                                        opts.get("fwhm", 2 * style.gamma),
+                                        opts.get("unit", style.x_unit_short or "native")), apply)
+
+    def action_cycle_energy_unit(self) -> None:
+        """Step the orbital-energy unit and save it, as the browser's
+        Settings -> Energy unit does (#58). The orbital table is relabelled
+        in place; the chosen surface stays selected."""
+        keys = list(ENERGY_UNITS)
+        self.energy_unit = keys[(keys.index(self.energy_unit) + 1) % len(keys)]
+        self._wavefunction_rows.clear()
+        # A toast, not the status line: the viewport rewrites that as soon
+        # as it redraws.
+        label = energy_label(self.energy_unit)
+        try:
+            set_setting("energy_unit", self.energy_unit)
+        except OSError as exc:
+            self.notify(f"energy unit: {label} (not saved: {exc})", severity="warning")
+        else:
+            self.notify(f"energy unit: {label}")
+        section_id, kind, _status = self.current
+        if kind == _WAVEFUNCTION_KIND and self._wavefunction_table_keys:
+            try:
+                rows = self._rows_for_wavefunction(section_id)
+            except Exception as exc:  # noqa: BLE001 — keep the old labels, say why
+                self.notify(f"orbital table not relabelled: {exc}", severity="error")
+            else:
+                for row in rows:
+                    self.orbital_table.update_cell(
+                        self._mo_surface_key(row["value"]), "surface", row["title"]
+                    )
+        self._refresh_all()
+
     def action_cycle_colors(self) -> None:
         idx = COLOR_CYCLE.index(self.color_mode)
         self.color_mode = COLOR_CYCLE[(idx + 1) % len(COLOR_CYCLE)]
         self.viewport.invalidate()
         self._update_status()
 
-    def action_toggle(self, what: str) -> None:
+    async def action_toggle(self, what: str) -> None:
+        # ``async`` because Textual's DOMNode declares ``action_toggle`` as a
+        # coroutine (it toggles a reactive by name); a sync override fails the
+        # type gate. Nothing here awaits (#38-43).
         if what == "bonds":
             self.show_bonds = not self.show_bonds
         elif what == "cell":
@@ -1016,9 +1273,9 @@ class VibeViewTUI(App):
         self._refresh_all()
 
     def action_isovalue(self, factor: float) -> None:
+        # Mesh keys carry the isovalue, so an earlier level stays cached for
+        # the way back; nothing to wipe here.
         self.isovalue = float(np.clip(self.isovalue * factor, 1e-6, 1e3))
-        self._mesh_cache.clear()
-        self._mesh_details.clear()
         self.viewport.invalidate()
         self._update_status()
 
@@ -1100,9 +1357,16 @@ class VibeViewTUI(App):
         self._update_status()
 
     def action_step_mode(self, delta: int) -> None:
-        if self.current[1] != "vibrations":
+        section_id, kind, _status = self.current
+        if kind != "vibrations":
             return
-        self.mode_index = max(0, self.mode_index + delta)
+        try:
+            n_modes = len(self.reader.read_vibrations(section_id).frequencies)
+        except Exception:  # noqa: BLE001 — an unreadable section has no modes to step
+            n_modes = 0
+        # Clamp at both ends: past the last mode the status read "mode 10" on
+        # a 6-mode molecule and '<' had to be pressed repeatedly (#38-35).
+        self.mode_index = int(np.clip(self.mode_index + delta, 0, max(0, n_modes - 1)))
         self._frames_cache.clear()
         self.frame = 0
         self.viewport.invalidate()
@@ -1149,19 +1413,26 @@ class VibeViewTUI(App):
 
     # ── mouse ─────────────────────────────────────────────────────────────
 
-    def on_click(self, event) -> None:
+    def on_click(self, event: Click) -> None:
         """Clicking the sidebar selects a section."""
         if not self.show_sidebar:
             return
         widget = getattr(event, "widget", None)
         if widget is not self.section_list:
             return
-        idx = event.y - 1
-        if 0 <= idx < len(self.entries):
+        idx = self.section_list.entry_at(event.y)
+        if idx is not None:
             self.selected = idx
             self._on_selection_changed()
 
 
 def run(path: str | Path, mode: str = "braille") -> None:
     """Entry point used by ``vibe-view tui``."""
-    VibeViewTUI(path, mode=mode).run()
+    app = VibeViewTUI(path, mode=mode)
+    try:
+        app.run()
+    finally:
+        # on_unmount already closed it after a normal session; this covers a
+        # run() that fails before the app mounts (#39-18). close() is idempotent.
+        with contextlib.suppress(Exception):
+            app.reader.close()

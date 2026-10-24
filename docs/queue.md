@@ -16,7 +16,8 @@ viewer starts, opens files and renders exactly as it otherwise would.
 * **Live checkpoints.** Open a running job's checkpoint QVF and watch the
   calculation progress in the viewer.
 * **Submission.** Send a structure or a QVF container to the queue from
-  inside the viewer.
+  inside the viewer. Native ORCA input submission and completed-result opening
+  are covered in the [ORCA tutorial](orca.md#prepare-save-and-submit-an-orca-input).
 * **`vibe-view from-vq JOB...`** — fetch one or more finished jobs' QVF output
   to a local directory.
 * **`vibe-view vq-features`** — report which visualizations a producer has
@@ -24,7 +25,10 @@ viewer starts, opens files and renders exactly as it otherwise would.
 
 What the panel shows, how submission and QVF containers work, and how live
 reload follows a running job are on [Jobs and live results](jobs.md). This
-page is about the extra itself.
+page is about the extra itself. Setting up vq itself, on a workstation with no batch
+system or in front of SLURM and PBS/Torque, is on
+[Clusters and remote machines](cluster.md), and registering programs is on
+[Supported programs and calculations](calculations.md#register-a-program-with-vq).
 
 ## Installing it
 
@@ -50,34 +54,24 @@ things about this extra are unusual, and both are deliberate.
 viewer, tui, ase, smiles and jupyter —
 but **not** `queue`.
 
-The extra requires the distribution `vq`, which is what vibe-queue's own
-`pyproject.toml` names it. `vq` is published on **no package index**. If it
-were listed in `all`, then `pip install vibeview[all]` would fail to resolve
-for every user, whether or not they wanted the queue. So it stays out until
-vibe-queue publishes.
+The extra requires the distribution `vibe-queue` (version 0.26.10 or newer),
+which is what vibe-queue's own `pyproject.toml` names it. It is published on
+**no package index**. If it were listed in `all`, then
+`pip install vibeview[all]` would fail to resolve for every user, whether or
+not they wanted the queue. So it stays out until vibe-queue publishes.
 
 :::{note}
-The requirement names the **distribution**, `vq` — not `vibe-queue`, which is
-the pre-split monorepo *directory* name and is a package that exists nowhere.
-It read `vibe-queue` until 2026-09-08, which is why
-`pip install vibeview[queue]` used to fail even with a real vibe-queue
-checkout already installed. If vibe-queue ever publishes under a different
-name, it renames there first and this pin follows; the two have to agree.
+The requirement names the **distribution**, `vibe-queue`. Through 0.26.9
+vibe-queue shipped as the distribution `vq`, and the extra required `vq`; a
+current vibe-queue install does not satisfy that name. The import package and
+the `vq` command are still `vq`. If vibe-queue ever publishes under a
+different name, it renames there first and this pin follows; the two have to
+agree.
 :::
-
-### It cannot resolve at all on Python 3.11
-
-vibe-view supports Python **3.11** and newer. `vq` requires Python **3.12**
-and newer. On a 3.11 interpreter the extra therefore cannot be satisfied by
-anything, which is why the resolver error you get on 3.11 reads differently
-from the one on 3.12.
-
-That is vq's floor to relax, not vibe-view's to work around. If you need the
-queue integration, run the viewer on Python 3.12 or newer.
 
 ## Without the extra
 
-Every one of the seven places vibe-view reaches for `vq` is a lazy import
+Every one of the eight places vibe-view reaches for `vq` is a lazy import
 inside a try/except, and every one of them has a remediation path. You get a
 message naming the extra and the install command — not a traceback, not a
 blank panel:
@@ -98,7 +92,7 @@ package and a dead daemon are different problems and now say so.
 extra, with a note explaining that the extra alone is not actionable for a
 dependency that is on no index.
 
-Two tests keep this honest: one asserts that all seven `from vq...` sites are
+Two tests keep this honest: one asserts that all eight `from vq...` sites are
 inside a guard that catches `ImportError`, and one that every such site
-reaches a `queue_missing_message()`. An unguarded eighth site would take the
+reaches a `queue_missing_message()`. An unguarded additional site would take the
 whole viewer down when the extra is absent, so it fails the suite instead.

@@ -13,7 +13,8 @@ Two layers, which you can use separately:
   vibe-queue itself; [Queue integration](queue.md) covers the install and
   why that extra is unusual.
 
-Neither needs vibe-qc, with one exception noted below.
+Neither needs vibe-qc, with one exception noted below. For jobs on a SLURM or PBS cluster, which the panel
+does not submit to directly, see [Clusters and remote machines](cluster.md).
 
 ## Live reload
 
@@ -80,7 +81,7 @@ above the list with the job's state and the tail of its stdout and stderr,
 which advances with the queue while the monitor is on. **Fetch results
 into** sets the directory finished jobs are pulled to, `vq-fetched/` under
 the launch directory by default; opening a completed job runs `vq fetch`
-under the hood and opens every archive it produced.
+under the hood and opens its QVF archives and ORCA calculation datasets.
 
 **Watch live**, the eye icon on a running job that has written a
 checkpoint, opens that job's checkpoint archive and turns auto-reload on for
@@ -98,6 +99,11 @@ vibe-view from-vq JOB_A JOB_B -o results/  # several, into a directory
 ```
 
 ## Submitting from the viewer
+
+Choose **Calculation engine → ORCA** to prepare and submit a native ORCA
+input. The [ORCA tutorial](orca.md#prepare-save-and-submit-an-orca-input)
+covers preview, saving, local vq setup, resource budgets and opening results.
+The remaining instructions in this section describe the **vibe-qc** engine.
 
 With a structure on screen, set the method, functional, basis, charge,
 multiplicity and calculation type in the **Calculation Parameters** panel
@@ -127,6 +133,16 @@ the container in place: results, the full log, the citations and the system
 manifest all land inside the same file, and its status becomes *converged*
 or *failed*. The Job Manager's open action then loads that settled archive
 with its **Job Spec** and **Run Info** panels intact.
+
+The queue runs a container on a vibe-qc program registered with it (see
+`vq programs`) and pins the submission to that runtime's git revision. The
+viewer chooses the program: the one named by the `VIBEVIEW_VQ_PROGRAM`
+environment variable if set, otherwise the registered program whose
+environment is the one running the viewer, otherwise the only registered
+vibe-qc program. Without the variable only vibe-qc programs count, which vq
+identifies by the module its import check loads (`vibeqc`); the queue's own
+runtime and other registered environments are never chosen. When none or
+several qualify, the status line says so and nothing is submitted.
 
 Why you would want it: the request travels with the numbers, so a result
 is reproducible from the file alone; one file moves each way instead of a

@@ -1,0 +1,17 @@
+molecule mol {
+0 1
+O 0.000000000000 0.000000000000 0.000000000000
+H 0.758000000000 0.000000000000 0.504000000000
+H -0.758000000000 0.000000000000 0.504000000000
+units angstrom
+symmetry c1
+}
+set basis def2-svp
+set reference rhf
+freeze_list = """
+1 xyz
+3 xyz
+"""
+set optking frozen_cartesian $freeze_list
+
+optimize('pbe0')

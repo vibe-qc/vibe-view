@@ -15,9 +15,11 @@ archive itself — this gates the DOM, not the data).
 from __future__ import annotations
 
 import html
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from vibeview._fmt import human_size
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._html import banner, elide, heading, kv_table, panel_document, preformatted
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader, RunRecordData, Section
@@ -69,44 +71,12 @@ class RunRecordRenderer(BaseRenderer):
                 else f" (superseded by run #{total})"
             )
             meta_rows.insert(0, ("Run", label))
-        parts = [
-            "<!doctype html><html><head><meta charset='utf-8'><style>"
-            "html,body{margin:0;padding:0;"
-            "font-family:system-ui,sans-serif;}"
-            "table.meta{border-collapse:collapse;margin:8px 12px;"
-            "font-size:0.85em;}"
-            "table.meta td{padding:1px 10px 1px 0;vertical-align:top;}"
-            "table.meta td:first-child{opacity:0.6;white-space:nowrap;}"
-            "h2{font-size:0.9em;margin:10px 12px 4px;opacity:0.75;}"
-            "pre{margin:0 12px 10px;padding:8px 10px;"
-            "border:1px solid #ddd;border-radius:4px;overflow:auto;"
-            "max-height:45vh;font-family:ui-monospace,Menlo,monospace;"
-            "font-size:12px;line-height:1.4;white-space:pre-wrap;"
-            "word-break:break-word;}"
-            ".elide{margin:0 12px;padding:2px 10px;font-size:0.8em;"
-            "opacity:0.6;font-style:italic;}"
-            ".warn{margin:8px 12px 2px;padding:6px 10px;font-size:0.85em;"
-            "background:#fff3e0;border:1px solid #ffb74d;border-radius:4px;}"
-            "table.events{border-collapse:collapse;margin:0 12px 10px;"
-            "font-size:11px;font-family:ui-monospace,Menlo,monospace;}"
-            "table.events td{padding:1px 8px 1px 0;vertical-align:top;"
-            "border-bottom:1px solid #eee;word-break:break-word;}"
-            "table.events td:first-child{opacity:0.5;white-space:nowrap;}"
-            "</style></head><body>",
-        ]
+        parts: list[str] = []
         # Lifecycle consistency: a terminal container whose latest record
         # is incomplete gets an explicit warning instead of silence.
         for warning in self.reader.lifecycle_warnings():
-            parts.append(
-                f"<div class='warn'>&#9888; {html.escape(warning)}</div>"
-            )
-        parts.append("<table class='meta'>")
-        for key, value in meta_rows:
-            parts.append(
-                f"<tr><td>{html.escape(key)}</td>"
-                f"<td>{html.escape(value)}</td></tr>"
-            )
-        parts.append("</table>")
+            parts.append(banner(f"\u26a0 {warning}", "warn"))
+        parts.append(kv_table(meta_rows))
 
         if data.input_text is not None:
             label = "Input"
@@ -116,8 +86,8 @@ class RunRecordRenderer(BaseRenderer):
             description = _description(data, "input")
             if description:
                 label += f" ({description})"
-            parts.append(f"<h2>{html.escape(label)}</h2>")
-            parts.append(f"<pre>{html.escape(data.input_text)}</pre>")
+            parts.append(heading(label))
+            parts.append(preformatted(data.input_text))
 
         if data.log_text is not None:
             label = "Log"
@@ -129,16 +99,14 @@ class RunRecordRenderer(BaseRenderer):
                 # run that failed before its output channel opened logged
                 # exactly zero bytes (spec § 5.9 container lifecycle).
                 label += " (empty — the run ended before output began)"
-                parts.append(f"<h2>{html.escape(label)}</h2>")
-                parts.append(
-                    "<div class='elide'>no output was produced</div>"
-                )
+                parts.append(heading(label))
+                parts.append(elide("no output was produced"))
             else:
-                label += f" ({_human_size(data.log_size)}"
+                label += f" ({human_size(data.log_size)}"
                 if _truncated_flag(data):
                     label += ", truncated at archive time"
                 label += ")"
-                parts.append(f"<h2>{html.escape(label)}</h2>")
+                parts.append(heading(label))
                 parts.extend(_log_blocks(data.log_text))
 
         unrendered: list[str] = []
@@ -157,7 +125,7 @@ class RunRecordRenderer(BaseRenderer):
                     label = _TEXT_ATTACHMENTS[role]
                     if entry.get("filename"):
                         label += f" — {entry['filename']}"
-                    parts.append(f"<h2>{html.escape(label)}</h2>")
+                    parts.append(heading(label))
                     parts.extend(_log_blocks(text))
                     rendered = True
             elif role == _NDJSON_ATTACHMENT:
@@ -168,21 +136,20 @@ class RunRecordRenderer(BaseRenderer):
                     label = "Structured events"
                     if entry.get("filename"):
                         label += f" — {entry['filename']}"
-                    parts.append(f"<h2>{html.escape(label)}</h2>")
+                    parts.append(heading(label))
                     parts.extend(_ndjson_blocks(text))
                     rendered = True
             if not rendered:
                 unrendered.append(str(name))
         if unrendered:
-            parts.append("<h2>Attachments (not rendered)</h2>")
+            parts.append(heading("Attachments (not rendered)"))
             parts.append(
-                "<div class='elide'>"
-                + html.escape(", ".join(unrendered))
-                + " — stored as opaque bytes in the archive; extract "
-                "with any zip tool</div>"
+                elide(
+                    ", ".join(unrendered)
+                    + " — stored as opaque bytes in the archive; extract with any zip tool"
+                )
             )
-        parts.append("</body></html>")
-        return "".join(parts)
+        return panel_document("".join(parts))
 
 
 def _meta_rows(data: RunRecordData) -> list[tuple[str, str]]:
@@ -246,7 +213,7 @@ def _ndjson_blocks(text: str) -> list[str]:
     import json as _json
 
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
     unparsed = 0
     for ln in lines:
         try:
@@ -266,7 +233,7 @@ def _ndjson_blocks(text: str) -> list[str]:
             *_log_blocks(text),
         ]
 
-    def _rows(chunk: list[dict], start: int) -> list[str]:
+    def _rows(chunk: list[dict[str, Any]], start: int) -> list[str]:
         out = []
         for i, event in enumerate(chunk, start=start):
             compact = _json.dumps(
@@ -329,11 +296,3 @@ def _log_blocks(log_text: str) -> list[str]:
         "— the full log is stored in the archive …</div>",
         f"<pre>{html.escape(tail)}</pre>",
     ]
-
-
-def _human_size(n_bytes: int) -> str:
-    if n_bytes >= 1024 * 1024:
-        return f"{n_bytes / (1024 * 1024):.1f} MB"
-    if n_bytes >= 1024:
-        return f"{n_bytes / 1024:.1f} kB"
-    return f"{n_bytes} B"

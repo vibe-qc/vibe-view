@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from vibeview.cli import main
 from vibeview.converters import (
     cif_to_qvf,
     cube_to_qvf,
@@ -60,7 +63,10 @@ class TestDetectFormat:
 
 class TestXYZConverter:
     def test_water(self) -> None:
-        xyz = "3\nwater\nO   0.000   0.000   0.117\nH   0.757   0.000  -0.469\nH  -0.757   0.000  -0.469\n"
+        xyz = (
+            "3\nwater\nO   0.000   0.000   0.117\n"
+            "H   0.757   0.000  -0.469\nH  -0.757   0.000  -0.469\n"
+        )
         buf = xyz_to_qvf(xyz.encode())
         reader = QVFReader(buf)
         struct = reader.read_structure()
@@ -100,6 +106,126 @@ class TestXYZConverter:
 
 
 class TestCIFConverter:
+    @staticmethod
+    def _coordinate_input(family: str, rows: list[str], axes: str = "xyz") -> str:
+        return (
+            "data_sites\n"
+            "_cell_length_a 8\n_cell_length_b 9\n_cell_length_c 10\n"
+            "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+            "loop_\n_atom_site_label\n_atom_site_type_symbol\n"
+            + "".join(f"_atom_site_{family}_{axis}\n" for axis in axes)
+            + "\n".join(rows) + "\n"
+        )
+
+    @pytest.mark.parametrize("family", ["fract", "Cartn"])
+    @pytest.mark.parametrize("axis", range(3))
+    @pytest.mark.parametrize("value", ["?", ".", "nan", "inf", "-inf", "1e309"])
+    def test_invalid_site_coordinate_refuses_archive(self, tmp_path, family, axis, value):
+        coordinates = ["0.25", "0.5", "0.75"]
+        coordinates[axis] = value
+        text = self._coordinate_input(
+            family, ["O1 O 0 0 0", "H1 H " + " ".join(coordinates), "H2 H 1 1 1"]
+        )
+        with pytest.raises(ValueError, match="CIF atom site H1.*coordinate"):
+            cif_to_qvf(text.encode())
+
+        source = tmp_path / "unknown.cif"
+        output = tmp_path / "output.qvf"
+        source.write_text(text, encoding="utf-8")
+        output.write_bytes(b"existing output")
+        result = CliRunner().invoke(main, ["import", str(source), "-o", str(output), "--force"])
+        assert result.exit_code == 1, result.output
+        assert "CIF atom site H1" in result.output
+        assert output.read_bytes() == b"existing output"
+
+    @pytest.mark.parametrize("family", ["fract", "Cartn"])
+    @pytest.mark.parametrize("missing_axis", "xyz")
+    def test_missing_coordinate_column_is_an_error(self, family, missing_axis):
+        axes = "xyz".replace(missing_axis, "")
+        text = self._coordinate_input(family, ["H1 H 0.25 0.75"], axes)
+        with pytest.raises(ValueError, match="CIF atom site H1.*coordinate"):
+            cif_to_qvf(text.encode())
+
+    @pytest.mark.parametrize("family", ["fract", "Cartn"])
+    def test_zero_and_uncertainty_coordinates_still_import(self, family):
+        text = self._coordinate_input(family, ["O1 O 0.0(2) -0.25(3) 5E-1(1)"])
+        with QVFReader(cif_to_qvf(text.encode())) as reader:
+            atoms = reader.read_structure().atoms
+            assert [atom.symbol for atom in atoms] == ["O"]
+            expected = [0, -2.25, 5] if family == "fract" else [0, -0.25, 0.5]
+            assert atoms[0].position == pytest.approx(expected)
+
+    def test_complete_cartesian_alternative_is_converted_per_site(self):
+        text = self._coordinate_input("fract", []).replace(
+            "_atom_site_fract_z\n",
+            "_atom_site_fract_z\n"
+            "_atom_site_Cartn_x\n_atom_site_Cartn_y\n_atom_site_Cartn_z\n",
+        )
+        text += "O1 O 0.25 0.5 0.75 . . .\nH1 H ? ? ? 1 2 3\n"
+        with QVFReader(cif_to_qvf(text.encode())) as reader:
+            atoms = reader.read_structure().atoms
+            assert [atom.symbol for atom in atoms] == ["O", "H"]
+            assert atoms[0].position == pytest.approx([2, 4.5, 7.5])
+            assert atoms[1].position == pytest.approx([1, 2, 3])
+
+    @pytest.mark.parametrize("later_sites", [False, True])
+    @pytest.mark.parametrize("cell_after_sites", [False, True])
+    def test_multiple_data_blocks_keep_first_structure_cell(
+        self, tmp_path, later_sites, cell_after_sites
+    ):
+        first = self._coordinate_input("fract", ["C1 C 0.25 0.5 0.75"])
+        if cell_after_sites:
+            header, sites = first.split("loop_\n", 1)
+            first = "data_sites\nloop_\n" + sites + header.split("\n", 1)[1]
+        later = self._coordinate_input("fract", ["O1 O 0 0 0"])
+        if not later_sites:
+            later = later.split("loop_\n", 1)[0]
+        later = later.replace("data_sites", "DaTa_other")
+        for axis, length in zip("abc", [8, 9, 10], strict=True):
+            later = later.replace(f"_cell_length_{axis} {length}\n",
+                                  f"_cell_length_{axis} {length * 10}\n")
+        source = tmp_path / "structures.cif"
+        output = tmp_path / "output.qvf"
+        source.write_text(first + later, encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["import", str(source), "-o", str(output)])
+
+        assert result.exit_code == 0, result.output
+        with QVFReader(output) as reader:
+            structure = reader.read_structure()
+            assert [atom.symbol for atom in structure.atoms] == ["C"]
+            assert structure.atoms[0].position == pytest.approx([2, 4.5, 7.5])
+            for vector, expected in zip(
+                structure.lattice_vectors, [[8, 0, 0], [0, 9, 0], [0, 0, 10]], strict=True
+            ):
+                assert vector == pytest.approx(expected)
+
+    @pytest.mark.parametrize("metadata_position", ["none", "before", "after", "both"])
+    def test_molecular_sites_do_not_inherit_another_blocks_cell(self, metadata_position):
+        periodic = self._coordinate_input("Cartn", ["C1 C 1 2 3"])
+        header, sites = periodic.split("loop_\n", 1)
+        metadata = header.replace("data_sites", "data_metadata")
+        molecule = "data_molecule\nloop_\n" + sites
+        text = (
+            (metadata if metadata_position in ("before", "both") else "")
+            + molecule
+            + (metadata.replace("data_metadata", "data_later")
+               if metadata_position in ("after", "both") else "")
+        )
+        with QVFReader(cif_to_qvf(text.encode())) as reader:
+            structure = reader.read_structure()
+            assert structure.pbc == (False, False, False)
+            assert structure.atoms[0].position == pytest.approx([1, 2, 3])
+
+    @pytest.mark.parametrize("delimiter", ["'", '"', ";"])
+    def test_data_header_inside_text_is_not_a_block_boundary(self, delimiter):
+        text = self._coordinate_input("fract", ["C1 C 0.25 0.5 0.75"])
+        value = ("\n;\ndata_other\n;\n" if delimiter == ";"
+                 else f" {delimiter}data_other{delimiter}\n")
+        text = text.replace("_cell_length_b 9\n", f"_note{value}_cell_length_b 9\n")
+        with QVFReader(cif_to_qvf(text.encode())) as reader:
+            assert reader.read_structure().atoms[0].position == pytest.approx([2, 4.5, 7.5])
+
     def test_diamond_loop(self) -> None:
         """CIF with loop_ construct — standard crystallographic format."""
         cif = """data_diamond
@@ -226,9 +352,49 @@ END
 
 
 class TestGJFConverter:
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    @pytest.mark.parametrize("title", ["", "water", "0 1", "1 2", "scan\n0 1", "0 1\nscan"])
+    def test_title_is_separate_from_charge_multiplicity(self, title, newline) -> None:
+        source = (
+            f"%mem=1GB\n#p HF/sto-3g\n  scf=tight\n\n{title}\n \t\n"
+            "-1 2\nO 1.0 2.0 3.0\n\n"
+        ).replace("\n", newline)
+
+        with QVFReader(gjf_to_qvf(source.encode())) as reader:
+            structure = reader.read_structure()
+            assert [atom.symbol for atom in structure.atoms] == ["O"]
+            assert structure.atoms[0].position == pytest.approx([1, 2, 3])
+            assert reader.provenance["charge"] == -1
+            assert reader.provenance["multiplicity"] == 2
+
+    @pytest.mark.parametrize("suffix", ["gjf", "com"])
+    def test_cli_import_numeric_title_keeps_the_geometry(self, tmp_path, suffix) -> None:
+        from click.testing import CliRunner
+
+        from vibeview.cli import main
+
+        source = tmp_path / f"input.{suffix}"
+        output = tmp_path / "output.qvf"
+        source.write_text(
+            "#p HF/sto-3g\n\n0 1\n\n-1 2\nO 1 2 3\n\n"
+            "--Link1--\n#p HF/sto-3g\n\nlater job\n\n0 1\nHe 5 6 7\n\n",
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(main, ["import", str(source), "-o", str(output)])
+
+        assert result.exit_code == 0, result.output
+        with QVFReader(output) as reader:
+            structure = reader.read_structure()
+            assert [atom.symbol for atom in structure.atoms] == ["O"]
+            assert structure.atoms[0].position == pytest.approx([1, 2, 3])
+            assert reader.provenance["charge"] == -1
+            assert reader.provenance["multiplicity"] == 2
+
     def test_water(self) -> None:
         gjf = """%mem=1GB
 #p B3LYP/6-31G*
+
 water
 
 0 1
@@ -254,8 +420,8 @@ class TestGROConverter:
         gro = """water
     3
     1WATER  OW1    1   0.000   0.000   0.012
-    1WATER HW2    2   0.076   0.000  -0.047
-    1WATER HW3    3  -0.076   0.000  -0.047
+    1WATER  HW2    2   0.076   0.000  -0.047
+    1WATER  HW3    3  -0.076   0.000  -0.047
    3.00000   3.00000   3.00000
 """
         buf = gro_to_qvf(gro.encode())
@@ -616,3 +782,81 @@ class TestPDBResidueModel:
         assert sd.backbone_trace().shape == (0, 3)
         assert all(a.atom_name is None for a in sd.atoms)
         p.unlink()
+
+
+class TestConvertersExtended:
+    def test_symbol_to_z(self):
+        from vibeview.converters import _SYMBOL_TO_Z
+
+        assert _SYMBOL_TO_Z["H"] == 1
+        assert _SYMBOL_TO_Z["C"] == 6
+        assert _SYMBOL_TO_Z["O"] == 8
+        assert _SYMBOL_TO_Z["He"] == 2
+
+    def test_xyz_to_qvf_with_helium(self):
+        from vibeview.converters import xyz_to_qvf
+
+        xyz = b"1\n\nHe  0.0  0.0  0.0\n"
+        buf = xyz_to_qvf(xyz)
+        import zipfile
+
+        zf = zipfile.ZipFile(buf)
+        assert "manifest.json" in zf.namelist()
+
+    def test_xyz_to_qvf_water(self):
+        from vibeview.converters import xyz_to_qvf
+
+        xyz = (
+            b"3\n\nO   0.000   0.000   0.117\n"
+            b"H   0.000   0.757  -0.469\nH   0.000  -0.757  -0.469\n"
+        )
+        buf = xyz_to_qvf(xyz)
+        import zipfile
+
+        zf = zipfile.ZipFile(buf)
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["qvf_version"] == 1
+
+
+class TestConverterEdgeCases:
+    def test_xyz_to_qvf_empty_raises(self):
+        from vibeview.converters import xyz_to_qvf
+
+        # XYZ with 0 atoms should raise ValueError
+        with pytest.raises(ValueError, match="no atoms"):
+            xyz_to_qvf(b"0\n\n")
+
+    def test_xyz_to_qvf_large(self):
+        from vibeview.converters import xyz_to_qvf
+
+        # 100-atom molecule
+        xyz = b"100\nLarge molecule\n"
+        for i in range(100):
+            xyz += f"C    {i * 1.5:.6f}    0.000000    0.000000\n".encode()
+        buf = xyz_to_qvf(xyz)
+        import zipfile
+
+        zf = zipfile.ZipFile(buf)
+        assert "manifest.json" in zf.namelist()
+
+
+class TestConverterFormats:
+    """Test format converters for import."""
+
+    def test_xyz_to_qvf(self):
+        from vibeview.converters import xyz_to_qvf
+
+        xyz_content = b"""3
+Water molecule
+O    0.000000    0.000000    0.117790
+H    0.000000    0.755450   -0.471160
+H    0.000000   -0.755450   -0.471160
+"""
+        buf = xyz_to_qvf(xyz_content)
+        assert buf is not None
+        # Verify it's a valid zip
+        import zipfile
+
+        zf = zipfile.ZipFile(buf)
+        names = zf.namelist()
+        assert "manifest.json" in names

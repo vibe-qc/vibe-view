@@ -1,7 +1,7 @@
 {
   "name": "vibe-view",
   "productName": "vibe-view",
-  "version": "2.17.1",
+  "version": "3.0.0",
   "description": "GPU-accelerated interactive 3D viewer for quantum-chemistry data",
   "main": "main.js",
   "scripts": {
@@ -19,8 +19,22 @@
   "build": {
     "appId": "com.vibeqc.vibeview",
     "productName": "vibe-view",
-    "directories": { "output": "dist" },
-    "files": ["main.js", "preload.js", "setup.html", "icon.png"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "setup.html",
+      "icon.png",
+      "python-runtime.cjs",
+      "console-process.cjs",
+      "python-console.cjs",
+      "console-preload.js",
+      "console.html",
+      "console.css",
+      "console.js"
+    ],
     "publish": {
       "provider": "generic",
       "url": "https://vibe-qc.com/updates/vibe-view/"
@@ -28,14 +42,68 @@
     "mac": {
       "category": "public.app-category.science",
       "icon": "icon.icns",
-      "target": ["dmg", "zip"]
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "minimumSystemVersion": "14.0",
+      "extraResources": [
+        {
+          "from": ".runtime/macos-arm64/python",
+          "to": "python"
+        },
+        {
+          "from": ".runtime/macos-arm64/runtime.json",
+          "to": "runtime.json"
+        },
+        {
+          "from": ".runtime/macos-arm64/notices",
+          "to": "third-party/python"
+        }
+      ]
     },
     "linux": {
       "icon": "icon.png",
       "category": "Science",
-      "target": ["AppImage"]
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": ".runtime/linux-x64/python",
+          "to": "python"
+        },
+        {
+          "from": ".runtime/linux-x64/notices",
+          "to": "third-party/python"
+        },
+        {
+          "from": ".runtime/linux-x64/runtime.json",
+          "to": "runtime.json"
+        }
+      ]
     },
-    "win": { "icon": "icon.png", "target": ["nsis"] },
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        "nsis"
+      ]
+    },
     "fileAssociations": [
       {
         "ext": "qvf",
@@ -49,12 +117,35 @@
         "role": "Viewer"
       },
       {
-        "ext": ["xyz", "cif", "cube", "pdb", "mol2", "sdf", "mol", "gjf", "com", "gro"],
+        "ext": [
+          "gbw",
+          "mcd",
+          "hess"
+        ],
+        "name": "ORCA Calculation",
+        "description": "ORCA GBW orbitals, HESS vibrations or MCD transitions",
+        "role": "Viewer"
+      },
+      {
+        "ext": [
+          "xyz",
+          "cif",
+          "cube",
+          "pdb",
+          "mol2",
+          "sdf",
+          "mol",
+          "gjf",
+          "com",
+          "gro"
+        ],
         "name": "Chemistry Structure File",
         "description": "Chemistry structure and volume formats",
         "role": "Viewer"
       }
-    ]
+    ],
+    "beforePack": "./before-pack.cjs",
+    "afterPack": "./after-pack.cjs"
   },
   "author": "vibe-qc",
   "license": "MPL-2.0"

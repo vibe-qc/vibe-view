@@ -37,15 +37,26 @@ import os
 import threading
 import time
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+
+from vibeview.qvf import _ARCHIVE_READ_ERRORS
 
 __all__ = ["QVFChange", "QVFChangeTracker", "QVFFileWatcher", "watch_qvf"]
 
 # Fingerprint tuple: (mode, root_digest, {section_id: section_digest})
 # mode is "qvf" (parsed manifest) or "raw" (whole-file hash fallback).
 _Fingerprint = tuple[str, str, dict[str, str]]
+
+# What reading and parsing the manifest of a half-written or damaged archive
+# can raise; the fingerprint then falls back to the raw bytes.
+_NOT_A_READABLE_QVF: tuple[type[BaseException], ...] = (
+    *_ARCHIVE_READ_ERRORS,
+    KeyError,
+    ValueError,
+    MemoryError,
+)
 
 
 @dataclass(frozen=True)
@@ -86,8 +97,12 @@ def _fingerprint_file(path: Path) -> _Fingerprint | None:
         root = {k: v for k, v in manifest.items() if k != "sections"}
         root_blob = json.dumps(root, sort_keys=True, default=str)
         return ("qvf", hashlib.sha256(root_blob.encode()).hexdigest(), sections)
-    except (OSError, zipfile.BadZipFile, KeyError, ValueError):
-        pass  # not (yet) a readable QVF archive — try raw bytes below
+    except _NOT_A_READABLE_QVF:
+        # Not (yet) a readable QVF archive — try raw bytes below. The archive
+        # errors include a deflate error, an encrypted or unsupported entry
+        # and RecursionError from a deeply nested manifest (#39-35), any of
+        # which used to escape into the watcher.
+        pass
 
     try:
         h = hashlib.sha256()
@@ -270,7 +285,7 @@ class QVFFileWatcher:
                 event = tracker.poll()
                 if event is not None:
                     self.last_event = event
-                    if self._callback:
+                    if self._callback is not None:
                         self._callback(str(self._path))
                     if self._on_event:
                         self._on_event(event)

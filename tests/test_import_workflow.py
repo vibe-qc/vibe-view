@@ -147,7 +147,7 @@ def test_qvf_cannot_overwrite_itself_by_default(tmp_path: Path) -> None:
 
 
 def test_unsupported_explicit_file_has_actionable_error(tmp_path: Path) -> None:
-    source = tmp_path / "calculation.out"
+    source = tmp_path / "calculation.unknown-format"
     source.write_text("unknown output", encoding="utf-8")
     with pytest.raises(ImportWorkflowError, match="vibe-view formats"):
         plan_imports((source,))

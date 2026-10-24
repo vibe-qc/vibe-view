@@ -36,8 +36,12 @@ look for it in the viewer.
 ## 2. Open it
 
 ```sh
-vibe-view open calculation.qvf
+vibe-view open water.qvf
 ```
+
+For your own data, replace `water.qvf` with the archive you inspected in
+step 1. From the density section onward, the examples describe a calculated
+archive; those panels will not appear in the structure-only water demo.
 
 The terminal prints the startup banner, one row per section with its render
 status, and your browser opens at `http://127.0.0.1:8080`. The server stays
@@ -47,7 +51,8 @@ in the foreground until you press <kbd>Ctrl</kbd>+<kbd>C</kbd>.
 :alt: Formaldehyde displayed as red oxygen, grey carbon and white hydrogen atoms in the browser structure view.
 
 The structure panel. Sidebar on the left, viewport in the centre, the
-section's controls on the right.
+section's controls on the right. Scientific charts and tables open in the
+resizable result panel below the viewport.
 ```
 
 Rotate with a left drag, pan with a middle drag, zoom with the wheel,
@@ -73,10 +78,11 @@ Formaldehyde in ball-and-stick.
 
 Click a `volume.density` section. The payload is read from the archive now,
 not at open time, and the isosurface appears translucent over the structure
-at the default isovalue of 0.05 e/bohr³. Drag **Volume isovalue** down and
-the surface grows outward; drag it up and it collapses onto the nuclei. The
-lone-pair region is where the density stays largest as you raise the
-isovalue.
+at the default isovalue of 0.05 (in the field's stored units). Lower the
+**Isovalue** and the surface generally grows outward; raise it to restrict
+the contour to regions of higher density. Use the archive's units when
+reporting a contour value; changing the contour changes the view, not the
+electron density in the archive.
 
 ```{figure} images/02-density.png
 :alt: A computed formaldehyde electron-density surface surrounding its ball-and-stick geometry, beside the volume controls.
@@ -108,8 +114,14 @@ A stored orbital grid.
 A `wavefunction.gto` section is different, and better: it carries the basis
 and the coefficient matrix, and the **Molecular Orbitals** panel evaluates
 whichever orbital you click. Press the HOMO button, then the next-orbital
-arrow a few times. Nothing was pre-computed; each surface is sampled when you
-ask for it, and cached after that.
+arrow a few times. The basis and coefficients came from the producer; the
+viewer evaluates each orbital on a grid when you ask for it, and asking for
+the same orbital again evaluates it again.
+
+The orbital play button advances through the picker and stops at the final
+orbital. Starting on the final (or only) orbital renders it once. Scheduled
+frames update the surface and picker without requiring another click; stopping
+playback or switching sections cancels the pending frame.
 
 ```{figure} images/15-orbital-homo.png
 :alt: The positive and negative formaldehyde HOMO lobes evaluated from the stored wavefunction.
@@ -120,6 +132,46 @@ The HOMO, evaluated on demand.
 **Compute total density** sums the occupied orbitals and reports the
 integrated electron count, a quick sanity check that the wavefunction in the
 file is the one the producer meant to write.
+
+### Excited states and natural transition orbitals
+
+A TD-DFT, CIS or ADC calculation adds an `excited_states` section: the
+states of the calculation with their energies and transition properties.
+The manual ships a small example, water TD-DFT from the qvf reference
+corpus, under `docs/examples/tddft-water/`:
+
+```sh
+vibe-view open docs/examples/tddft-water/tddft-water.qvf
+```
+
+Select **Excited States** in the sidebar. The details panel lists one row
+per state: the excitation energy in eV and as a wavelength in nm, the
+oscillator strength *f*, the rotatory strength *R*, the multiplicity, the
+symmetry label, and the dominant orbital contributions as `from→to (weight)`,
+rows of the ground-state wavefunction's coefficients. The last two columns
+name the sections a state links to.
+
+```{figure} images/19-excited-states.png
+:alt: The Excited States details panel listing three singlet states of water with their energies, strengths, symmetries and orbital contributions.
+
+The excited-state table of the water example.
+```
+
+State 1 links to two more sections of the archive. Its hole and particle
+**natural transition orbitals** are `wavefunction.gto` sections like any
+other, so selecting `nto_s1_hole` or `nto_s1_particle` evaluates them in the
+**Molecular Orbitals** panel, labelled with the state and its transition
+weight. Its **transition density**, `tden_s1`, is a signed volume and
+renders with both lobes, as the difference density did above. The UV-Vis
+spectrum of the same calculation is a `spectra.uvvis` section; its peaks
+name the states by their number.
+
+The same table is available without a window:
+
+```sh
+vibe-view table docs/examples/tddft-water/tddft-water.qvf --kind excited_states
+vibe-view tui docs/examples/tddft-water/tddft-water.qvf     # select Excited States
+```
 
 ## 6. Charges
 
@@ -222,13 +274,16 @@ Difference** card draws ρ_A − ρ_B as a two-colour surface.
 
 Set up a view, type a name in the **Bookmarks** card and press **Save
 View**. Do it for the structure, the density and the HOMO, then **Save
-Session**. Next time, **Load Session** brings every bookmark back, and
+Session**. A bookmark keeps the computed surface too, so selecting the HOMO
+bookmark evaluates the HOMO again rather than showing a bare structure. Next time, **Load Session** brings every bookmark back, and
 <kbd>p</kbd> turns them into a slideshow.
 
 ## 13. The same archive, elsewhere
 
-Everything above came out of one file, and the file does not care which
-surface reads it:
+Use an archive with the sections shown by `vibe-view info`. The following
+commands assume its section IDs are `homo` and `density`; replace them with
+your file's IDs. A *kind* describes the data; an *ID* selects one particular
+section.
 
 ```sh
 vibe-view show calculation.qvf                     # one braille frame, no display needed
@@ -249,6 +304,8 @@ headers, rows = get_table("calculation.qvf", "atom_properties")
 
 ## Where next
 
+* [From input to a shareable result](workflows.md), for commands you can run
+  from a fresh install without a computed showcase archive.
 * [The browser viewer](browser.md), the reference for every control on this
   tour.
 * [Building and editing](editing.md), for changing the structure rather than

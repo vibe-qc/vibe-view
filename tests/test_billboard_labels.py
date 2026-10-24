@@ -201,3 +201,232 @@ class TestCameraSyncRebuildsLabels:
         app.controller.sync_client_camera(
             [5.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 3.0
         )
+
+
+class TestFollowerArrays:
+    """The mesh carries what the browser needs to re-face each glyph (#111)."""
+
+    ANCHORS = [np.zeros(3), np.array([3.0, 1.0, -2.0])]
+    CAM = ((0.0, -14.0, 3.0), (3.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+
+    def _arrays(self, mesh):
+        from vibeview.renderers.structure import LABEL_ANCHOR_ARRAY, LABEL_LOCAL_ARRAY
+
+        return (
+            np.asarray(mesh.point_data[LABEL_ANCHOR_ARRAY]),
+            np.asarray(mesh.point_data[LABEL_LOCAL_ARRAY]),
+            np.asarray(mesh.points),
+        )
+
+    def test_arrays_are_plain_float32_point_data(self):
+        mesh = build_label_mesh(self.ANCHORS, ["O1", "H2"], camera=self.CAM)
+        anchors, local, points = self._arrays(mesh)
+        assert anchors.dtype == np.float32 and local.dtype == np.float32
+        assert anchors.shape == local.shape == points.shape
+        # Not the active scalars: the mapper must not colour by them.
+        assert mesh.point_data.active_scalars_name is None
+
+    def test_each_glyph_has_one_anchor(self):
+        mesh = build_label_mesh(self.ANCHORS, ["O1", "H2"], camera=self.CAM)
+        anchors, _local, _points = self._arrays(mesh)
+        distinct = np.unique(anchors, axis=0)
+        assert len(distinct) == 2
+        for anchor in self.ANCHORS:
+            assert any(np.allclose(anchor, d) for d in distinct)
+
+    def test_basis_times_local_rebuilds_the_billboarded_points(self):
+        """What the client computes per camera change must equal the mesh."""
+        mesh = build_label_mesh(self.ANCHORS, ["O1", "H2"], camera=self.CAM, lift=0.55)
+        anchors, local, points = self._arrays(mesh)
+        for anchor in np.unique(anchors, axis=0):
+            sel = np.all(anchors == anchor, axis=1)
+            right, up, forward = _billboard_basis(anchor.astype(float), self.CAM)
+            rebuilt = anchor + local[sel] @ np.vstack((right, up, forward))
+            assert np.allclose(rebuilt, points[sel], atol=1e-5)
+
+    def test_lift_is_folded_into_local_y(self):
+        mesh = build_label_mesh([ORIGIN], ["X"], camera=self.CAM, lift=5.0)
+        _anchors, local, _points = self._arrays(mesh)
+        assert local[:, 1].mean() == pytest.approx(5.0, abs=0.5)
+
+    def test_unoriented_mesh_carries_the_same_frame(self):
+        """The flat placement lifts along world z; the local frame still
+        describes the glyph so the client can face it once it moves."""
+        mesh = build_label_mesh(self.ANCHORS, ["O1", "H2"], camera=None, lift=0.55)
+        anchors, local, points = self._arrays(mesh)
+        flat = anchors + local - [0.0, 0.55, 0.0] + [0.0, 0.0, 0.55]
+        assert np.allclose(flat, points, atol=1e-5)
+
+
+class TestFollowerSerializer:
+    """trame-vtk drops unused arrays; the hook sends the label arrays (#111)."""
+
+    @pytest.fixture
+    def registry(self):
+        pytest.importorskip("trame_vtk")
+        from trame_vtk.modules.vtk.serializers import initialize_serializers, registry
+
+        initialize_serializers()
+        yield registry
+        initialize_serializers()  # drop the wrapper again
+
+    def _fields(self, actor):
+        from trame_vtk.modules.vtk.serializers import SynchronizationContext, serialize
+
+        out = serialize(None, actor, "label-actor", SynchronizationContext(), 0)
+
+        def walk(node):
+            for dep in node.get("dependencies", []):
+                if "fields" in dep.get("properties", {}):
+                    return dep["properties"]["fields"]
+                found = walk(dep)
+                if found is not None:
+                    return found
+            return None
+
+        return walk(out) or []
+
+    def test_install_is_idempotent_and_marks_the_registry(self, registry):
+        from vibeview.app.label_followers import install_label_array_serializer
+
+        assert install_label_array_serializer() is True
+        wrapper = registry.SERIALIZERS["vtkPolyData"]
+        assert install_label_array_serializer() is True
+        assert registry.SERIALIZERS["vtkPolyData"] is wrapper
+
+    def test_install_accepts_trame_server_ready_arguments(self, registry):
+        """trame calls ``on_server_ready`` with the whole state as kwargs."""
+        from vibeview.app.label_followers import install_label_array_serializer
+
+        assert install_label_array_serializer(trame__scripts=[], show_atom_labels=True)
+
+    def test_install_is_a_no_op_on_an_empty_registry(self, registry):
+        from vibeview.app.label_followers import install_label_array_serializer
+
+        registry.SERIALIZERS.clear()
+        assert install_label_array_serializer() is False
+        assert "vtkPolyData" not in registry.SERIALIZERS
+
+    def test_label_mesh_is_sent_with_both_arrays(self, registry):
+        import pyvista as pv
+
+        from vibeview.app.label_followers import install_label_array_serializer
+        from vibeview.renderers.structure import LABEL_ANCHOR_ARRAY, LABEL_LOCAL_ARRAY
+
+        install_label_array_serializer()
+        p = pv.Plotter(off_screen=True)
+        try:
+            actor = p.add_mesh(
+                build_label_mesh([ORIGIN], ["O1"], camera=CAM_X),
+                color="white",
+                lighting=False,
+                name="atom_index_labels",
+            )
+            fields = {f["name"]: f for f in self._fields(actor)}
+        finally:
+            p.close()
+        assert set(fields) == {LABEL_ANCHOR_ARRAY, LABEL_LOCAL_ARRAY}
+        for field in fields.values():
+            assert field["location"] == "pointData"
+            assert field["registration"] == "addArray"
+            assert field["numberOfComponents"] == 3
+
+    def test_other_meshes_are_serialized_as_before(self, registry):
+        import pyvista as pv
+
+        from vibeview.app.label_followers import install_label_array_serializer
+
+        install_label_array_serializer()
+        p = pv.Plotter(off_screen=True)
+        try:
+            sphere = pv.Sphere()
+            sphere.point_data.set_array(np.zeros(sphere.n_points, dtype=np.float32), "unused")
+            actor = p.add_mesh(sphere, color="red", name="atom_0_0")
+            names = [f["name"] for f in self._fields(actor)]
+        finally:
+            p.close()
+        assert "unused" not in names
+
+
+@pytest.fixture(scope="module")
+def served():
+    pytest.importorskip("trame")
+    from tests._served import served_viewer
+
+    return served_viewer()
+
+
+class TestServedFollower:
+    """The page the browser receives carries the follower (#111)."""
+
+    def test_script_and_arrays_are_in_the_page(self, served):
+        assert "window.vvLabelFollow = function" in served
+        assert "'vv_label_anchor'" in served and "'vv_label_local'" in served
+
+    def test_glyphs_are_placed_in_the_vertex_shader(self, served):
+        """The arrays become vertex attributes and every vtk.js position
+        product is pointed at the camera-facing position."""
+        assert "attribute vec3 vv_label_anchorMC;" in served
+        assert "attribute vec3 vv_label_localMC;" in served
+        assert "'MCPCMatrix * vvLabelMC'" in served
+        assert "'MCVCMatrix * vvLabelMC'" in served
+        assert "setCustomShaderAttributes" in served
+        assert "ShadersCallbacks" in served
+
+    def test_no_geometry_is_rewritten_on_the_client(self, served):
+        """The CPU follower rewrote point coordinates every camera change;
+        the shader follower never touches the mesh."""
+        script = served.split("window.vvLabelFollow = function", 1)[0]
+        assert "getPoints()" not in script.split("var ANCHOR", 1)[1]
+
+    def test_view_hands_the_follower_its_renderer(self, served):
+        handlers = {
+            "StartAnimation": "window.vvLabelFollow($event, true)",
+            "MouseEnter": "window.vvLabelFollow($event)",
+            "MouseMove": "window.vvLabelFollow($event)",
+        }
+        for event, call in handlers.items():
+            assert f'@{event}="' in served, event
+            tag = served.split(f'@{event}="', 1)[1].split('"', 1)[0]
+            assert call in tag, (event, tag)
+        # After each scene load, new label meshes go onto the shader without
+        # waiting for an interaction (#111, found by the #112 lane).
+        loaded = served.split('@afterSceneLoaded="', 1)[1].split('"', 1)[0]
+        assert "window.vvLabelFollow.rescan()" in loaded
+        # Nothing runs on every animation frame: the GPU follows the camera.
+        animation = served.split('@Animation="', 1)
+        assert len(animation) == 1 or "vvLabelFollow" not in animation[1].split('"', 1)[0]
+
+
+class TestInteractionEndKeepsTheClientCopy:
+    """The client faced its labels throughout the drag (#111), so the
+    server rebuilds its own copy for captures and pushes nothing back."""
+
+    def test_sync_rebuilds_server_labels_without_a_push(self, monkeypatch):
+        import tempfile
+        from pathlib import Path
+
+        import vibeview.app.helpers as helpers
+        import vibeview.renderers.structure as structure
+        from vibeview.app import create_app
+        from vibeview.converters import xyz_to_qvf
+        from vibeview.qvf import QVFReader
+
+        q = Path(tempfile.mktemp(suffix=".qvf"))
+        q.write_bytes(xyz_to_qvf(b"2\nc\nO 0 0 0\nH 0 0 1\n").getvalue())
+        try:
+            app = create_app(QVFReader(q))
+        finally:
+            q.unlink(missing_ok=True)
+
+        rebuilt: list[object] = []
+        pushes: list[object] = []
+        monkeypatch.setattr(
+            structure, "reorient_labels", lambda plotter: rebuilt.append(plotter) or 1
+        )
+        monkeypatch.setattr(helpers, "_push_view", lambda plotter: pushes.append(plotter))
+        app.controller.sync_client_camera(
+            [5.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 3.0
+        )
+        assert len(rebuilt) == 1
+        assert pushes == []
