@@ -10,82 +10,53 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibeview.headless import render_structure_frame
+
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
 
 
-def render_structure_png(reader: QVFReader, path: Path, size: tuple[int, int] = (900, 600)) -> bool:
+def render_structure_png(
+    reader: QVFReader,
+    path: Path,
+    size: tuple[int, int] = (900, 600),
+    representation: str = "ball_and_stick",
+) -> bool:
     """Render reader's structure to a PNG at path (offscreen)."""
-    import pyvista as pv
-
-    from vibeview.renderers.structure import StructureRenderer
-
-    section = next((s for s in reader.sections if s.kind == "structure"), None)
-    if section is None:
-        return False
-    plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
-    try:
-        plotter.set_background("#1a1a2e")
-        StructureRenderer(section, reader).add_to_plotter(plotter)
-        plotter.view_isometric()
-        plotter.reset_camera()
-        plotter.screenshot(str(path))
-    finally:
-        plotter.close()
-    return True
+    return bool(render_structure_frame(reader, path, size=size, representation=representation))
 
 
 def render_volume_png(
     reader: QVFReader,
     path: Path,
     section_id: str,
-    isovalue: float = 0.05,
-    colormap: str = "viridis",
+    isovalue: float | None = None,
+    colormap: str | None = None,
     size: tuple[int, int] = (900, 600),
 ) -> bool:
-    """Render a volume section to PNG (density, orbital, etc.)."""
-    from vibeview.renderers.structure import StructureRenderer
-    from vibeview.renderers.volume import VolumeRenderer, build_isosurface_mesh
-    from vibeview.viewer_defaults import VolumeHints
+    """Render a volume section to PNG (density, orbital, etc.).
 
-    section = reader.get_section(section_id) if reader.has_section(section_id) else None
-    if section is None:
+    The same render as ``vibe-view capture``: signed fields get both lobes,
+    and the isosurface is tiled and clamped to the periodic axes. This used
+    to be a second, simpler renderer with a single unsigned surface (#39-25).
+    ``isovalue`` and ``colormap`` default to the section's viewer hints.
+    """
+    from vibeview.capture import capture_volume
+    from vibeview.viewer_defaults import section_volume_hints
+
+    if not reader.has_section(section_id):
         return False
-
-    renderer = VolumeRenderer(section, reader)
-    try:
-        grid = renderer.load_grid()
-        data = renderer.load_data()
-    except Exception:
-        return False
-
-    hints = VolumeHints(isovalue=isovalue, colormap=colormap, opacity=0.6)
-    import numpy as np
-    import pyvista as pv
-
-    plotter = pv.Plotter(off_screen=True, window_size=[int(size[0]), int(size[1])])
-    try:
-        plotter.set_background("#1a1a2e")
-        # Draw structure for context
-        struct_sec = next((s for s in reader.sections if s.kind == "structure"), None)
-        if struct_sec:
-            StructureRenderer(struct_sec, reader).add_to_plotter(plotter)
-        mesh = renderer.make_mesh(hints)
-        if mesh is not None and mesh.n_points:
-            plotter.add_mesh(
-                mesh,
-                scalars="values",
-                cmap=colormap,
-                opacity=0.6,
-                name="vol",
-                show_scalar_bar=False,
-            )
-        plotter.view_isometric()
-        plotter.reset_camera()
-        plotter.screenshot(str(path))
-    finally:
-        plotter.close()
-    return True
+    hints = section_volume_hints(reader, section_id)
+    return capture_volume(
+        reader,
+        section_id,
+        path,
+        isovalue=hints.isovalue if isovalue is None else isovalue,
+        colormap=colormap or hints.colormap,
+        opacity=hints.opacity,
+        size=size,
+        render=hints.render,  # a file hinted for volume mode batches the same way
+    )
 
 
 def render_all_png(
@@ -93,33 +64,41 @@ def render_all_png(
     out_dir: Path,
     size: tuple[int, int] = (900, 600),
     include_volumes: bool = False,
+    representation: str = "ball_and_stick",
 ) -> list[str]:
     """Render structure + optionally each volume section to PNG files.
 
     Returns list of paths written."""
-    import pyvista as pv
 
     written: list[str] = []
 
     # Always render structure
     struct_path = out_dir / "structure.png"
-    if render_structure_png(reader, struct_path, size=size):
+    if render_structure_png(reader, struct_path, size=size, representation=representation):
         written.append(str(struct_path))
 
     if include_volumes:
         for sec in reader.sections:
-            if sec.kind.startswith("volume.") or sec.kind == "basis.ao":
-                vol_path = out_dir / f"{sec.id}.png"
-                hints = {
-                    "volume.density": (0.05, "viridis"),
-                    "volume.orbital": (0.04, "coolwarm"),
-                    "volume.spin": (0.005, "RdBu"),
-                    "volume.elf": (0.5, "plasma"),
-                    "volume.potential": (0.03, "coolwarm"),
-                    "volume.rdg": (0.3, "coolwarm"),
-                }.get(sec.kind, (0.05, "viridis"))
-                if render_volume_png(
-                    reader, vol_path, sec.id, isovalue=hints[0], colormap=hints[1], size=size
-                ):
+            vol_path = out_dir / f"{sec.id}.png"
+            if sec.kind == "volume.series":
+                # The first slab (#158).
+                from vibeview.capture import capture_volume_series
+
+                if capture_volume_series(reader, sec.id, vol_path, size=size):
+                    written.append(str(vol_path))
+            elif sec.kind == "volume.complex":
+                # The real part, as the browser opens it (#157).
+                from vibeview.capture import capture_complex_field
+
+                if capture_complex_field(reader, sec.id, vol_path, size=size):
+                    written.append(str(vol_path))
+            elif sec.kind == "volume.vector":
+                # Arrows, through the browser's glyphs (#156).
+                from vibeview.capture import capture_vector_field
+
+                if capture_vector_field(reader, sec.id, vol_path, size=size):
+                    written.append(str(vol_path))
+            elif sec.kind.startswith("volume.") or sec.kind == "basis.ao":
+                if render_volume_png(reader, vol_path, sec.id, size=size):
                     written.append(str(vol_path))
     return written

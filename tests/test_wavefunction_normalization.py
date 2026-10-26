@@ -34,7 +34,10 @@ from vibeview.renderers.wavefunction import (
 )
 
 _ALPHA = 0.8
-_N = 160
+# 48 points resolve the Gaussian/polynomial through f shells: maximum norm
+# error is below 4e-15, versus 8e-16 at 160, far below the unchanged tolerance.
+# Avoid allocating 160^3 grids for each normalization assertion.
+_N = 48
 _L = 8.0  # half-box in bohr; exp(-0.8·64) is negligible at the edge
 
 
@@ -45,7 +48,7 @@ def _grid():
     return gx, gy, gz, d
 
 
-def _ao_components(l: int, pure: bool):
+def _ao_components(l: int, pure: bool):  # noqa: E741 — `l` is the angular-momentum quantum number
     """Return the list of normalized AO grids for one shell of momentum l."""
     gx, gy, gz, d = _grid()
     r2 = gx * gx + gy * gy + gz * gz
@@ -62,16 +65,7 @@ def _ao_components(l: int, pure: bool):
     return [radial * a for a in angs], d
 
 
-def test_pure_ao_self_overlap_is_unit():
-    for l in range(4):
-        aos, d = _ao_components(l, pure=True)
-        assert len(aos) == 2 * l + 1
-        for m, ao in enumerate(aos):
-            ov = float(np.sum(ao * ao) * d**3)
-            assert abs(ov - 1.0) < 0.01, f"pure l={l} m={m} self-overlap={ov}"
-
-
-def _cart_triples(l: int):
+def _cart_triples(l: int):  # noqa: E741 — angular momentum
     """libint lexicographic (i, j, k): i descending, then j descending."""
     return [(i, j, l - i - j) for i in range(l, -1, -1) for j in range(l - i, -1, -1)]
 
@@ -102,11 +96,11 @@ def test_cartesian_ao_self_overlap_follows_spec_a1():
     rendered density by 3. Asserting unit norm here is what let that stand,
     so the assertion is inverted rather than deleted.
     """
-    for l in range(4):
+    for l in range(4):  # noqa: E741 — angular momentum
         aos, d = _ao_components(l, pure=False)
         triples = _cart_triples(l)
         assert len(aos) == (l + 1) * (l + 2) // 2 == len(triples)
-        for (i, j, k), ao in zip(triples, aos):
+        for (i, j, k), ao in zip(triples, aos, strict=True):
             expected = (
                 _df_odd(2 * i - 1) * _df_odd(2 * j - 1) * _df_odd(2 * k - 1)
             ) / _df_odd(2 * l - 1)
@@ -116,18 +110,6 @@ def test_cartesian_ao_self_overlap_follows_spec_a1():
             )
 
 
-def test_cartesian_axial_components_are_unit_normalized():
-    """The axial components are the ones A.1's ``N_i`` is defined against,
-    so they -- and only they -- come out at unit norm."""
-    for l in range(4):
-        aos, d = _ao_components(l, pure=False)
-        for (i, j, k), ao in zip(_cart_triples(l), aos):
-            if max(i, j, k) != l:
-                continue
-            ov = float(np.sum(ao * ao) * d**3)
-            assert abs(ov - 1.0) < 0.01, f"axial l={l} ({i},{j},{k}) -> {ov}"
-
-
 def test_pure_within_shell_components_orthonormal():
     """The (2l+1) real solid harmonics of one shell are orthonormal — the
     Gram matrix is the identity. This pins the angular *form*, not just the
@@ -135,13 +117,18 @@ def test_pure_within_shell_components_orthonormal():
     unit-norm. (Cartesian components of the same l are deliberately *not*
     mutually orthogonal — e.g. ⟨x²|y²⟩ = 1/3 — which is exactly why the
     spherical basis is preferred; we only assert their unit self-overlap.)"""
-    for l in range(4):
+    for l in range(4):  # noqa: E741 — angular momentum
         aos, d = _ao_components(l, pure=True)
         n = len(aos)
+        assert n == 2 * l + 1
         gram = np.empty((n, n))
         for a in range(n):
             for b in range(n):
                 gram[a, b] = float(np.sum(aos[a] * aos[b]) * d**3)
+        # The diagonal subsumes the former separate self-overlap test,
+        # keeping its stricter tolerance; Cartesian axial norms are already
+        # included in test_cartesian_ao_self_overlap_follows_spec_a1.
+        np.testing.assert_allclose(np.diag(gram), np.ones(n), atol=0.01, rtol=0)
         np.testing.assert_allclose(gram, np.eye(n), atol=0.02)
 
 
@@ -188,15 +175,40 @@ def _unrestricted_wf_reader():
         {"id": "wf", "kind": "wavefunction.gto", "members": {
             "basis": {"path": "b.json", "format": "json", "sha256": sha(basis)},
             "mo_metadata": {"path": "m.json", "format": "json", "sha256": sha(mo_meta)},
-            "mo_coefficients_alpha": {"path": "a.dat", "format": "binary", "dtype": "float64", "shape": [2, 2], "sha256": sha(a_c)},
-            "mo_coefficients_beta": {"path": "bc.dat", "format": "binary", "dtype": "float64", "shape": [2, 2], "sha256": sha(b_c)},
+            "mo_coefficients_alpha": {
+                "path": "a.dat",
+                "format": "binary",
+                "dtype": "float64",
+                "shape": [2, 2],
+                "sha256": sha(a_c),
+            },
+            "mo_coefficients_beta": {
+                "path": "bc.dat",
+                "format": "binary",
+                "dtype": "float64",
+                "shape": [2, 2],
+                "sha256": sha(b_c),
+            },
         }},
     ]
-    manifest = {"qvf_version": 1, "source": {"program": "vibe-qc", "version": "0", "calculation": "t"}, "sections": sections}
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
+    manifest = {
+        "qvf_version": 1,
+        "source": {"program": "vibe-qc", "version": "0", "calculation": "t"},
+        "sections": sections,
+    }
+    with (
+        tempfile.NamedTemporaryFile(suffix=".qvf", delete=False) as tmp,
+        zipfile.ZipFile(tmp, "w") as zf,
+    ):
         zf.writestr("manifest.json", json.dumps(manifest))
-        for p, d in {"s.json": structure, "b.json": basis, "m.json": mo_meta, "a.dat": a_c, "bc.dat": b_c}.items():
+        members = {
+            "s.json": structure,
+            "b.json": basis,
+            "m.json": mo_meta,
+            "a.dat": a_c,
+            "bc.dat": b_c,
+        }
+        for p, d in members.items():
             zf.writestr(p, d)
     return QVFReader(Path(tmp.name)), Path(tmp.name)
 

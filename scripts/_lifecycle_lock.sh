@@ -3,8 +3,8 @@
 #
 # Callers provide a trusted Python outside the selected virtualenv. The caller
 # shell holds two descriptors whose shared open-file descriptions carry
-# non-blocking fcntl locks: one for the canonical monorepo checkout and one for
-# the canonical venv target. A one-shot isolated Python validates and locks the
+# non-blocking fcntl locks: one for the caller's canonical source checkout and
+# one for the canonical venv target. A one-shot isolated Python validates and locks the
 # exact SHA-256-derived lock-file inodes. Keeping the descriptors in the caller
 # removes the former helper-process death window while preserving locks across
 # an exec handoff. Persistent lock files are harmless; the kernel releases the
@@ -252,7 +252,7 @@ _vibe_toolset_try_external_python() {
 
 # Select an isolated metadata/locking interpreter without consulting or
 # executing the selected environment. Python 3.8+ is sufficient for these
-# helpers; package creation and installation retain their Python 3.11+ gates.
+# helpers; package creation and installation retain their Python 3.12+ gates.
 vibe_toolset_select_external_python() {
     local out_var="$1"
     local requested="$2"
@@ -287,7 +287,7 @@ vibe_toolset_find_external_python() {
         python3
     )
 
-    for candidate in "${candidates[@]}"; do
+    for candidate in ${candidates[@]+"${candidates[@]}"}; do
         if _vibe_toolset_try_external_python \
             selected "$candidate" "$protected_target" "$min_major" "$min_minor"; then
             printf -v "$out_var" '%s' "$selected"

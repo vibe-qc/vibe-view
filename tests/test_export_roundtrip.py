@@ -114,6 +114,38 @@ class TestEveryFormatExportsFromACrystal:
         _assert_wellformed(fmt, dest)
 
 
+class TestPythonExportNames:
+    @pytest.mark.parametrize("fixture_name", ["molecule_qvf", "crystal_qvf"])
+    @pytest.mark.parametrize(
+        "name", ['sample "copy"', "sample 'copy'", "results\\test", "two\nlines"]
+    )
+    def test_filename_is_preserved_as_an_output_literal(
+        self, request, tmp_path, fixture_name, name
+    ):
+        from vibeview.input_parser import parse_input_source
+        from vibeview.qvf import QVFReader
+
+        source = tmp_path / f"{name}.qvf"
+        source.write_bytes(request.getfixturevalue(fixture_name).read_bytes())
+        output = tmp_path / "input.py"
+
+        _export(source, "py", output)
+
+        script = output.read_text()
+        compile(script, "<exported input>", "exec")
+        parsed = parse_input_source(script)
+        assert parsed.output == name
+        with QVFReader(source) as reader:
+            original = reader.read_structure()
+            assert [a["symbol"] for a in parsed.atoms] == [a.symbol for a in original.atoms]
+            np.testing.assert_allclose(
+                np.array([a["position"] for a in parsed.atoms]) * 0.529177210903,
+                [a.position for a in original.atoms],
+                atol=1e-6,
+            )
+            assert parsed.is_periodic == any(original.pbc)
+
+
 class TestCifRoundTrip:
     """Regression: the molecular CIF export used Cartesian atom sites, which
     is correct — labelling them fract_* would make consumers misread the
@@ -189,3 +221,73 @@ class TestCifRoundTrip:
         q.write_bytes(cif_to_qvf(cif).getvalue())
         sd = QVFReader(q).read_structure()
         np.testing.assert_allclose(sd.atoms[0].position, [5.0, 0.0, 0.0], atol=1e-6)
+
+
+class TestExportPipeline:
+    """End-to-end export pipeline tests."""
+
+    def test_all_cli_formats_registered(self):
+        """Verify all export formats are in the CLI."""
+        import ast
+
+        cli_path = Path(__file__).parent.parent / "src" / "vibeview" / "cli.py"
+        tree = ast.parse(cli_path.read_text())
+        formats = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.List) and len(formats) == 0:
+                elts = [e.value for e in node.elts if isinstance(e, ast.Constant)]
+                if "xyz" in elts and "cif" in elts:
+                    formats = elts
+                    break
+        assert "xyz" in formats
+        assert "pov" in formats
+        assert "blend" in formats
+        assert "svg" in formats
+        assert "pdf" in formats
+
+    def test_export_formats_count(self):
+        """Verify at least 10 export formats are available."""
+        import ast
+
+        cli_path = Path(__file__).parent.parent / "src" / "vibeview" / "cli.py"
+        tree = ast.parse(cli_path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.List):
+                elts = [e.value for e in node.elts if isinstance(e, ast.Constant)]
+                if "xyz" in elts:
+                    assert len(elts) >= 10
+                    break
+
+
+class TestCMLExport:
+    def test_import(self):
+        from vibeview.export_cml import export_cml
+
+        assert callable(export_cml)
+
+    def test_export_creates_file(self, sample_qvf, tmp_path):
+        from vibeview.export_cml import export_cml
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        out = tmp_path / "test.cml"
+        export_cml(reader, str(out))
+        assert out.exists()
+        content = out.read_text()
+        assert "<cml" in content
+        assert "atomArray" in content
+        reader.close()
+
+    def test_export_valid_xml(self, sample_qvf, tmp_path):
+        from xml.etree import ElementTree as ET
+
+        from vibeview.export_cml import export_cml
+        from vibeview.qvf import QVFReader
+
+        reader = QVFReader(sample_qvf)
+        out = tmp_path / "test.cml"
+        export_cml(reader, str(out))
+        # Should parse as valid XML
+        tree = ET.parse(out)
+        assert tree.getroot().tag.endswith("cml")
+        reader.close()

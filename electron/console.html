@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'">
+<title>vibe-view Python Console</title><link rel="stylesheet" href="console.css"></head>
+<body><h1>Python Console</h1>
+<p>Local Python runs with your account’s permissions. Available: <code>api</code>, <code>np</code>, <code>ModelScene</code>, <code>SceneCommands</code>, <code>scene</code>.</p>
+<p>The console has its own scene and variables. Use saved scene JSON to exchange work with the viewer.</p>
+<pre id="output" aria-live="polite" aria-label="Console output"></pre>
+<label for="source">Python code · Ctrl/⌘ Enter to run</label>
+<textarea id="source" spellcheck="false">api.__all__</textarea>
+<div><button id="run">Run</button><button id="reset">Stop and reset</button><button id="clear">Clear output</button><span id="status">Ready</span></div>
+<script src="console.js"></script></body></html>

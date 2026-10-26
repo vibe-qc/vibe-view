@@ -1,0 +1,8 @@
+# A laptop that only runs the vq client and submits to the workstation.
+# Check the connection with:  vq doctor workstation
+
+default_host = "workstation"
+
+[hosts.workstation]
+ssh = "workstation"                                  # ~/.ssh/config alias
+remote_vq = "/home/USER/vibe-queue/.venv/bin/vq"     # absolute: SSH loads no profile

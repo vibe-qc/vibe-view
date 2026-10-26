@@ -1,0 +1,1 @@
+- `vibe-view spectrum` names the file's spectrum sections when `--section` is missing from the file or is not a spectrum, instead of a bare *section not found* or a reader-internal *member 'spectrum' not found* message.

@@ -1,0 +1,29 @@
+{
+  "vdw": {
+    "area_reference": 4248.323647473572,
+    "volume_reference": 3570.1373958591516,
+    "area": 4108.131582464873,
+    "volume": 3568.0338164520463,
+    "area_relative_error": -0.03299938437884087,
+    "volume_relative_error": -0.0005892152524844541,
+    "volume_sampling_standard_error_A3": 16.20384694437964
+  },
+  "sas": {
+    "area_reference": 2971.440478667015,
+    "volume_reference": 8349.968497300928,
+    "area": 2921.6042566529527,
+    "volume": 8355.575433037604,
+    "area_relative_error": -0.016771738277059134,
+    "volume_relative_error": 0.0006714918431713901,
+    "volume_sampling_standard_error_A3": 26.463415088774877
+  },
+  "ses": {
+    "area_reference": 2307.2590794115504,
+    "volume_reference": 4705.374256606714,
+    "area": 2295.158923358316,
+    "volume": 4779.137758854308,
+    "area_relative_error": -0.005244385496717019,
+    "volume_relative_error": 0.015676436819882067,
+    "reference": "same distance-transform method at0.1A; grid-convergence only"
+  }
+}

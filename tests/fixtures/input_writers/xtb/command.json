@@ -1,0 +1,13 @@
+[
+  "xtb",
+  "coord",
+  "--gfn",
+  "2",
+  "--chrg",
+  "0",
+  "--uhf",
+  "0",
+  "--input",
+  "xcontrol",
+  "--opt"
+]

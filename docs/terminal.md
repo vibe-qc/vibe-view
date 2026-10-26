@@ -4,10 +4,10 @@
 scene, the charts and the tables, drawn with Unicode braille characters and
 24-bit colour in whatever terminal you are already sitting in.
 
-The point is where it runs. The browser viewer and the headless PNG capture
-both drive VTK through an OpenGL context. A compute node reached over SSH
-usually has no display server, no GL and no X forwarding, and that node is
-exactly where a `.qvf` lands. The terminal rasterizer is pure NumPy: it
+The point is where it runs. The browser draws its interactive scene through
+WebGL; headless PNG capture needs a server-side graphics context. A compute
+node reached over SSH usually has no display server, no GL and no X
+forwarding, and that node is exactly where a `.qvf` lands. The terminal rasterizer is pure NumPy: it
 paints spheres, bonds, isosurface triangles and plot lines into a
 depth-buffered pixel array and packs that array into braille glyphs.
 Isosurface extraction uses VTK's marching-cubes filter, which is pure
@@ -19,6 +19,16 @@ vibe-view show ~/scratch/job.qvf          # one frame, then exit
 vibe-view tui  ~/scratch/job.qvf          # interactive
 ```
 
+For a first run without a remote calculation, create the bundled geometry:
+
+```sh
+vibe-view demo -o terminal-water.qvf
+vibe-view show terminal-water.qvf --labels
+```
+
+This file contains only a structure. The orbital and spectrum examples below
+need a calculated archive carrying those sections.
+
 ## Two commands
 
 | | `vibe-view show` | `vibe-view tui` |
@@ -27,8 +37,9 @@ vibe-view tui  ~/scratch/job.qvf          # interactive
 | Needs | the core install: no display, no GL | the `[tui]` extra, which adds Textual |
 | Good for | pipes, CI logs, scripts, a quick look | browsing an archive section by section |
 
-Both need a terminal that speaks 24-bit colour and a font with braille
-coverage, which most modern monospace fonts have. If the glyphs come out as
+For the full-colour view, use a terminal with 24-bit colour and a font with
+braille coverage. `show --plain` also works without colour support, but its
+Unicode glyphs still need a suitable font. If the glyphs come out as
 boxes, add `--mode half` (or press <kbd>d</kbd> in the TUI) and the pictures
 switch to block characters.
 
@@ -52,7 +63,7 @@ four down, so an 80×24 terminal is a 160×96 pixel canvas.
 
 | Option | Effect |
 |---|---|
-| `-s ID`, `--section ID` | Section to render; the structure by default. |
+| `-s ID`, `--section ID` | Section to render; the archive's first structure by default. |
 | `--all` | Render every graphable section in turn. |
 | `--info` | Print the archive summary instead of a picture: provenance, run lifecycle, and every section with its status from the kind registry. |
 | `--size COLSxROWS` | Fix the character grid instead of asking the terminal. |
@@ -64,8 +75,25 @@ four down, so an 80×24 terminal is a 160×96 pixel canvas.
 | `--isovalue F` | For volume sections; default 0.05. |
 | `--replicate nx,ny,nz` | Supercell view. Only periodic axes replicate. |
 | `--labels` | Overlay atom indices. |
-| `--frame N` | A frame of a trajectory, reaction path or normal mode. |
+| `--frame N` | Zero-based frame of a trajectory, reaction path, normal-mode animation or volume series. |
+| `--normal-mode N` | Which normal mode `--frame` animates for a vibrations section (1 = the first). |
 | `--chart` | For a reaction path or trajectory, draw the energy profile instead of the geometry. |
+| `--lineshape gaussian\|lorentzian` | Choose the displayed spectrum envelope. |
+| `--fwhm F` | Positive full width at half maximum for that envelope. |
+| `--unit native\|eV\|cm-1` | Unit of the requested spectrum width; `native` follows the spectrum. |
+
+Frame indices start at zero; CLI normal-mode numbers start at one. For
+example, to inspect phase frame 10 of mode 7:
+
+```sh
+vibe-view show modes.qvf -s vibrations --normal-mode 7 --frame 10
+vibe-view show spectra.qvf -s ir --lineshape gaussian --fwhm 10 --unit cm-1
+```
+
+Replace `vibrations` and `ir` with IDs from `vibe-view info`. `show` defaults
+to normal mode 1; unlike `animate`, it does not automatically choose the
+first positive-frequency mode. Spectrum broadening changes the displayed
+envelope, not the stored sticks.
 
 Colour escapes survive a pipe, so `vibe-view show job.qvf | less -R` keeps
 the shading. Because it exits, `show` composes like any other command:
@@ -107,14 +135,15 @@ section the viewer cannot draw still appears with the honest reason.
 :alt: Both signed water-orbital lobes rendered as coloured Unicode braille in the terminal.
 
 An orbital at isovalue 0.05 in licorice representation. Signed fields get
-both lobes, orange positive and blue negative, depth-tested against the
-atoms.
+both lobes, blue positive and red negative (the browser's convention),
+depth-tested against the atoms.
 ```
 
 ## `vibe-view tui`
 
-The interactive viewer opens on the structure with the section browser on
-the left, the viewport in the middle and a status line naming what you are
+The interactive viewer opens on the archive's first structure (the first one
+`viewer_defaults.auto_open` lists, else the first structure section) with the
+section browser on the left, the viewport in the middle and a status line naming what you are
 looking at. Press <kbd>?</kbd> for the key map.
 
 ```{figure} images/tui-01-structure.svg
@@ -143,13 +172,34 @@ status, so one the viewer cannot draw is still visible, with its reason.
 | <kbd>n</kbd> / <kbd>p</kbd> | next / previous stored volume, or next / previous orbital while a wavefunction is active |
 | <kbd>↑</kbd> / <kbd>↓</kbd>, then <kbd>Enter</kbd> | highlight and render a row of the wavefunction surface table |
 | <kbd>D</kbd> / <kbd>S</kbd> | total density / spin density from the active wavefunction |
+| <kbd>B</kbd> | choose spectrum broadening shape, width and units |
+| <kbd>e</kbd> | cycle the orbital-energy unit: Eh, eV, kcal/mol (saved as a setting) |
 | <kbd>Space</kbd> | play / pause an animation |
 | <kbd>[</kbd> / <kbd>]</kbd> | step one frame |
-| <kbd>&lt;</kbd> / <kbd>&gt;</kbd> | previous / next normal mode |
+| <kbd>&lt;</kbd> / <kbd>&gt;</kbd> | previous / next normal mode (drawn with a 0.6 Å peak atomic excursion, as in the browser; the status line shows it) |
 | <kbd>g</kbd> | switch between geometry and energy-profile view (trajectories, reaction paths) |
 | <kbd>s</kbd> / <kbd>t</kbd> | toggle the sidebar / the data table |
-| <kbd>w</kbd> | write the current frame beside the archive as `.txt` |
+| <kbd>w</kbd> | write the current graphical frame as `<archive-stem>.<section-id>.txt` beside the archive |
 | <kbd>q</kbd> | quit |
+
+The wavefunction surface table takes keyboard focus when activated. While
+it is focused, ↑/↓ move through its rows and Enter renders the selection;
+use `h`, `j`, `k`, `l` to rotate without moving the highlighted row. Tab and
+Shift+Tab always change sections rather than traversing ordinary controls.
+The keys are case-sensitive: `s` toggles the sidebar, while `S` requests spin
+density; `b` toggles bonds, while `B` opens spectrum settings.
+
+The `w` export contains ANSI colour escapes and replaces an existing file
+with the same section-based name. It saves a graphical frame, not the data
+pane or a reusable view session. For plain text or numerical data:
+
+```sh
+vibe-view show job.qvf --plain --size 100x30 > frame.txt
+vibe-view table job.qvf --kind atom_properties --format csv > charges.csv
+```
+
+A TUI write needs permission to write beside the archive; shell redirection
+lets you choose another directory.
 
 Clicking a row in the section browser selects it; there is no mouse
 rotation, because terminals report clicks rather than drags.
@@ -165,19 +215,49 @@ and the bond list with orders and lengths.
 ## What each section kind shows
 
 **Drawn in 3-D:** `structure`, `trajectory`, `reaction.path`, `vibrations`,
-every `volume.*`, `basis.ao`, and `wavefunction.gto` in the TUI. Volumes
+every `volume.*`, `basis.ao`, and `wavefunction.gto` in the TUI. A
+`volume.vector` field is drawn as the surface where |v| is half its
+95th-percentile value, since arrows do not read at this resolution, and a
+`volume.complex` field as its real part's two lobes. A `volume.series` is
+drawn one slab at a time on that slab's trajectory frame: `show --frame N`
+picks slab N (counted from 0), and in the TUI <kbd>[</kbd> / <kbd>]</kbd>
+and <kbd>Space</kbd> step and play the slabs as they do trajectory frames. Volumes
 draw their isosurface over the structure; signed fields get both lobes,
-unsigned density one surface. Trajectories and reaction paths also have an
+unsigned density one surface. The browser's volume mode has no terminal
+counterpart, and a `render: volume` hint in the file is ignored here.
+Trajectories and reaction paths also have an
 energy-profile chart (<kbd>g</kbd> in the TUI, `--chart` for `show`).
+A selected structure section draws itself, and in the TUI it becomes the
+structure that volumes and frames are drawn over, as in the browser.
+
+Animated sections use their own atom identities and frame positions, even
+when the archive has a different primary structure or no structure section.
+Display bonds are inferred from those frame atoms. Trajectories and vibrations
+retain the primary structure’s cell and periodic axes when available, as
+legacy display context; the primary atom list and explicit bonds are not
+borrowed. Reaction paths instead use their own selected-frame cell and
+dimensionality. A reaction path without a lattice is molecular and draws no
+cell, even when another section is periodic. Fixed and variable reaction cells
+both use the stored bohr column vectors converted to Å row vectors for display.
 
 **Charted:** `bands`, `dos.total`, `dos.projected`, `dos.coop`, `dos.cohp`,
 every `spectra.*` stick spectrum, `scf_history`, `equation_of_state`,
 `phonon_bands`, `phonon_dos`, and `scan.surface` as a colour heat map. The
-conventions match the browser's Plotly charts so the two tell the same
-story: bands and DOS are Fermi-referenced when E_F falls inside the data
-window and labelled absolute when it does not; SCF convergence is |ΔE| on a
-log axis; spectrum axes carry each kind's native unit, with the Lorentzian
-envelope named in the legend.
+DOS grids are stored in eV relative to E_F = 0 and are displayed without
+subtracting the optional absolute Fermi metadata again, matching the browser.
+Projected DOS uses the producer's channel labels. Bands follow the browser:
+they are plotted relative to E_F whenever the file carries a Fermi level
+(a stored 0.0 is the writer's "no Fermi level" marker and plots absolute
+energies). SCF convergence is |ΔE| on a log axis;
+spectrum axes carry each kind's native unit, with the Lorentzian envelope
+named in the legend. Default Lorentzian half-widths match the browser: 5 cm⁻¹
+for IR/Raman/VCD and 0.1 eV for UV-Vis/ECD; generic spectra use a width based
+on their data span. Changing the terminal width does not broaden spectral
+features. Signed intensities remain signed. Equation-of-state charts evaluate
+the producer’s fitted
+Birch–Murnaghan or Murnaghan parameters in eV/Å³/GPa, using the same curve as
+the browser. Computed points remain separate. Incomplete fit parameters leave
+only the computed points.
 
 ```{figure} images/tui-04-spectrum.svg
 :alt: The formaldehyde IR spectrum rendered as a terminal chart with sticks and an envelope.
@@ -195,9 +275,24 @@ SCF convergence, |ΔE| on a log axis.
 **Tabulated:** `citations` (BibTeX ready to paste), `run.record` (the
 invocation, its verbatim input and the tail of its log), `job.spec`,
 `atom_properties`, `bond_orders`, `structure.symmetry`, `spectra.nmr`,
-`spectra.epr`, `topology.qtaim`.
+`spectra.epr`, `topology.qtaim`, `reaction.scheme` (each step as an equation
+over the archive's species, with reagents, conditions and yield),
+`excited_states` (each state with its energy in eV and nm, oscillator and
+rotatory strengths, multiplicity, symmetry and orbital contributions, and
+the NTO and density sections it links to); and, beside
+their pictures, `structure` (geometry, cell, bonds and the species' chemical
+identity) and `vibrations` (frequencies and intensities).
 
-Any kind the viewer does not draw still appears in the browser with the
+The registry status describes support across the viewer, not a promise
+that every surface has an implementation. `forces`, `hessian`,
+`properties.electric`, `properties.elastic`, `properties.dielectric` and
+`wavefunction.bloch` have no terminal graphical view; use
+`vibe-view table FILE --kind KIND` for their numerical data or the browser
+for their dedicated controls. `show --all` sweeps graphical sections, not
+all scientific tables, and does not evaluate molecular orbitals on demand.
+Use the interactive TUI's wavefunction picker for those orbitals.
+
+Any kind the viewer does not draw still appears in the section browser with the
 reason from the kind registry: *not yet rendered* is a different statement
 from *unsupported*.
 
@@ -234,12 +329,35 @@ transition weight, localized rows by the atoms they sit on, because a
 localized orbital has no meaningful energy ordering. The status line always
 names the rendered row, its spin and the isovalue.
 
+Orbital energies follow the same **Energy unit** setting as the browser
+(see [The browser viewer](browser.md)), Hartree by default. <kbd>e</kbd> steps
+it through Eh, eV and kcal/mol, relabels the surface table in place without
+changing the selection, and saves the choice for both viewers. The data table
+(<kbd>t</kbd>) leads with the chosen unit and keeps a reference column beside
+it: eV next to Hartree, and the stored Hartree value next to any other unit.
+Its HOMO–LUMO gap is in the chosen unit, or in eV while the unit is Hartree.
+The archive itself stays in Hartree.
+
+The browser's other display units apply here too, read when the terminal
+starts. **Length unit** (Å or bohr) sets the geometry table: cell edges and
+their lengths, Cartesian coordinates and bond lengths, and the bond-order
+distances. **Band / DOS energy unit** (eV by default, Hartree or kcal/mol)
+sets the energy axis of bands, DOS, COOP and COHP charts, in `vibe-view tui`
+and in `vibe-view show`. The DOS is rescaled with it, as in the browser. The
+terminal has no key for these two; set them in the browser's **Settings**.
+The archive stays in Å and eV.
+
 Sampling uses a terminal-sized 48³ grid; the first render of a large basis
 takes a moment, and stepping back to a sampled row uses the cache. The
 evaluator covers shells through `l = 3` and marks a surface incomplete when
-an orbital has significant g-or-higher weight. Periodic wavefunctions are
-Gamma-point fields from central-cell atomic orbitals; image tails are not
-added.
+an orbital has significant g-or-higher weight. Explicit Gamma-point orbitals
+in fully periodic 3D cells include neighboring atomic-orbital tails and
+complex coefficients. A `wavefunction.gto` section's nonzero k-points and
+partially periodic cells are not evaluated, and a `wavefunction.bloch`
+section has no terminal view: `vibe-view table --kind wavefunction.bloch`
+lists its orbitals, and the browser draws them. Archives without explicit
+k-point metadata retain central-cell sampling. The {ref}`orbital evaluation limits <orbital-evaluation-limits>`
+also explain why a single k-point block is insufficient for a total periodic density.
 
 ## Biomolecules
 
@@ -256,9 +374,10 @@ vibe-view show protein.qvf --color-by bfactor
 coloured by secondary structure: red helix, yellow strand, grey coil. Chains
 are traced separately, so no bond is ever drawn from one chain's C-terminus
 to the next chain's N-terminus. `bfactor` ramps blue to red across the
-temperature factors and falls back to element colouring when the column
-carries no variation, which is common; the status line says which scheme is
-actually shown and why. See [Biomolecules](biomolecules.md) for how the
+temperature factors, as the browser does: an atom with no b-factor is grey,
+and a column with no variation, which is common, sits at the middle of the
+ramp. The status line says when that happens. `chain` colours chains in
+the same order as the browser. See [Biomolecules](biomolecules.md) for how the
 metadata gets into the file.
 
 ## Rendering modes
@@ -272,6 +391,9 @@ structures and isosurfaces, where shape carries the meaning.
 independently coloured pixels. A quarter of the vertical resolution, but two
 true colours per cell: better for heat maps and anything where colour is the
 data.
+
+Charts follow the chosen mode too. The relaxed-scan heat map uses half-blocks
+unless a mode is chosen explicitly.
 
 ## Consistency with the other surfaces
 
@@ -300,15 +422,26 @@ print(render_terminal("job.qvf", size=(100, 30)))
 print(render_terminal("job.qvf", "vol_mo_3", isovalue=0.03))
 
 # plain=True drops the ANSI colour, for a log file
-open("frame.txt", "w").write(render_terminal("job.qvf", plain=True))
+from pathlib import Path
+Path("frame.txt").write_text(render_terminal("job.qvf", plain=True), encoding="utf-8")
 ```
 
 It accepts a path, a file-like object or an already-open `QVFReader`, and a
 reader you pass in stays open. Keyword arguments match the `show` flags:
 `mode`, `representation`, `color_mode`, `replication`, `isovalue`,
-`rotation`, `show_labels`, `frame`, `chart`. A section with no graphical
-form returns a short explanation rather than raising, so sweeping every
-section needs no pre-filtering by kind.
+`rotation`, `show_labels`, `frame`, `normal_mode`, `chart`. Unlike the CLI's
+`--normal-mode`, the Python `normal_mode` index is **zero-based**: pass 6
+for mode 7. Spectrum settings are grouped in a dictionary:
+
+```python
+print(render_terminal(
+    "spectra.qvf", "ir",
+    spectrum_options={"lineshape": "gaussian", "fwhm": 10.0, "unit": "cm-1"},
+))
+```
+
+A section with no graphical form returns a short explanation rather than
+raising, so sweeping every section needs no pre-filtering by kind.
 
 The layers underneath are importable for finer control:
 `vibeview.tui.show.render_section` returns the cell grid before it is

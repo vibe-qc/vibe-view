@@ -1,8 +1,26 @@
 # Installation
 
-## What you need
+## Choose an installation route
 
-* **Python 3.11 or newer.** Debian and Ubuntu also need the matching
+The self-contained Apple Silicon desktop package includes Python and the
+viewer runtime and requires macOS 14 or newer. It needs no separate Python,
+pip, Homebrew or Node.js installation for normal viewing, editing or image
+capture. See [the desktop app](desktop.md) for package status and limitations;
+a source tag does not imply a signed public installer is available.
+
+The following prerequisites and commands apply to source installations and
+external-runtime desktop shells.
+
+On a cluster login node or another machine without a display, install from
+source into your home directory and choose the extras for what you will do
+there; [Clusters and remote machines](cluster.md) walks through it, together
+with the vq queue for machines with no batch system, SLURM and PBS/Torque.
+
+(what-you-need)=
+
+## What you need for a source installation
+
+* **Python 3.12 or newer.** Debian and Ubuntu also need the matching
   `python3-venv` package.
 * **Git**, to clone the repository.
 
@@ -117,20 +135,36 @@ is deliberately lean so a capture-only host does not drag in a web server.
 | `viewer` | trame, trame-vtk, trame-vuetify, uvicorn | `vibe-view open`, `serve`, `dashboard`, `desktop` |
 | `tui` | textual | `vibe-view tui` (`vibe-view show` is core) |
 | `ase` | ase | The long tail of structure formats, via `ase.io.read` |
+| `results` | cclib | Common quantum-chemistry output structures and available properties |
+| `biomolecule` | gemmi (MPL-2.0) | PDBx/mmCIF, models and alternate conformers; see [biomolecules](biomolecules.md) |
+| `surfaces` | scipy | Molecular VdW/SAS/SES surfaces and numerical morphology |
+| `trexio` | TREXIO | Gaussian wavefunctions and structures from supported TREXIO datasets |
 | `smiles` | rdkit | Build a 3-D structure from a SMILES string |
 | `jupyter` | ipython, ipywidgets | The `%vibeview` notebook magic |
-| `queue` | vq | The vq job panel and `vibe-view from-vq` — see [Queue integration](queue.md) |
-| `all` | viewer + tui + ase + smiles + jupyter | Everything **except** `queue` |
+| `sysinfo` | psutil | CPU and RAM use in the browser viewer's About dialog |
+| `capture` | nothing | Headless capture and export are core; the name documents a capture-only install |
+| `povray` | nothing | The POV-Ray scene export is core; POV-Ray itself is a separate program |
+| `blender` | nothing | The Blender script export is core; Blender itself is a separate program |
+| `validation` | qvf-writer reference validator | Strict QVF validation; install the pinned qvf release package first (see [QVF validation](qvf.md#strict-validation)) |
+| `queue` | vibe-queue (imports as `vq`) | The vq job panel and `vibe-view from-vq` — see [Queue integration](queue.md) |
+| `sketch` | vibesketch | Sketch a molecule in vibe-sketch from the Build molecule dialog — see [Building and editing](editing.md) |
+| `all` | viewer + tui + ase + results + biomolecule + trexio + smiles + jupyter + sysinfo + surfaces | Everything **except** `queue`, `sketch` and `validation` |
 
-Two of these have caveats worth knowing before you hit them:
+These extras have additional setup requirements:
 
-* **`queue` is deliberately not in `all`.** `vq` is published on no package
+* **`queue` is deliberately not in `all`.** vibe-queue is published on no package
   index, so a `pip install vibeview[all]` that tried to pull it would fail to
   resolve for everyone. Install vibe-queue from its own checkout first;
   `python -m pip install -e '.[queue]'` from the viewer root is then satisfied
   by what is already there.
-  [Queue integration](queue.md) has the full story, including why the extra
-  cannot resolve at all on Python 3.11.
+  [Queue integration](queue.md) has the full story.
+* **`sketch` is not in `all` either**, for the same reason: vibe-sketch is
+  published on no index yet. Install it from a vibe-sketch checkout, then
+  `python -m pip install -e '.[sketch]'`.
+* **`validation` needs qvf’s reference package from the pinned release.**
+  It is not included in `all`. Follow [strict validation](qvf.md#strict-validation)
+  before using `vibe-view validate` or the Python `validate()` API. Normal
+  viewing does not require it.
 * **`ase` is large.** vibe-view hand-rolls the common formats — XYZ, CIF,
   PDB, Mol2, GRO, SDF, Cube, Gaussian input — and defers only the long tail
   to ASE. Most users never need it. `vibe-view formats` lists what your
@@ -143,7 +177,7 @@ environment by hand from PowerShell in the checkout root, and repeat the
 `pip install -e` line after updating the checkout:
 
 ```powershell
-py -3.11 -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[viewer,tui]"
 .venv\Scripts\vibe-view.exe --version
 ```
@@ -170,9 +204,11 @@ installation, and re-running `install.sh` with the same flags refreshes them
 after the checkout or environment moves.
 
 The wheel contains the Python browser, terminal and headless surfaces, but not
-the Electron source that `vibe-view desktop` runs. Desktop mode currently
-requires a source checkout; signed standalone desktop artifacts have not
-landed. [The desktop app](desktop.md) covers the setup screen, the Finder
+the Electron source that `vibe-view desktop` runs. That command requires a
+source checkout. Apple Silicon macOS packages built from `electron/` include
+their own Python/PyVista/VTK runtime and need no Python setup; trusted signing
+and notarization remain release steps. [The desktop app](desktop.md) covers
+installation, the setup screen, the Finder
 association and the Linux and Windows notes.
 
 ## Updating
@@ -184,6 +220,10 @@ association and the Linux and Windows notes.
 ./scripts/update.sh --skip-git   # reinstall the checked-out source only
 ./scripts/update-desktop.sh      # source + Python + the Electron app
 ```
+
+Desktop revision checks resolve the installer within the current Git project,
+including standalone and nested source checkouts. A target revision without
+the safe desktop update protocol is refused before switching the checkout.
 
 Quit every desktop window before `update-desktop.sh`. It refreshes the
 source-backed Electron app owned by this checkout — including its displayed

@@ -1,0 +1,25 @@
+# A workstation or group server without a batch system.
+# vq's daemon starts each job itself, within these limits.
+# Install the daemon with:  vq daemon install && vq daemon status
+
+[daemon]
+max_cpus = 16                 # CPU slots the daemon may hand out
+max_jobs = 4                  # jobs running at once
+max_mem_mb = 64000
+default_job_mem_mb = 4000
+
+# Programs the viewer submits to. Absolute paths: the daemon loads no profile.
+
+[programs.orca]               # Submit ORCA to vq
+kind = "binary"
+binary = "/opt/orca/orca"
+
+[programs.xtb]                # Submit serial job to local vq
+kind = "binary"
+binary = "/opt/xtb/bin/xtb"
+
+[programs.vibeqc]             # Submit to vq cluster: QVF job containers
+kind = "venv"
+python = "/home/USER/vibe-qc/.venv/bin/python"
+git_dir = "/home/USER/vibe-qc"
+import_check = "vibeqc"

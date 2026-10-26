@@ -1,0 +1,34 @@
+# The always-on daemon host that drives two clusters over SSH.
+# Clients that submit to the clusters need the same [hosts.*] entries.
+# Find out what a cluster runs first:  vq scheduler-probe slurm-login
+
+[hosts.slurm]
+ssh = "slurm-login"
+remote_vq = "/home/USER/vibe-queue/.venv/bin/vq"
+scheduler = "slurm"
+scheduler_dialect = "slurm"
+scheduler_driver = "workstation"                     # the host whose daemon drives it
+scratch_root = "/work/USER/vq"
+node_scratch_dir = "/tmp/$USER"
+submit_extra = ["--account", "my-group", "--partition", "standard"]
+scheduler_max_wall_time_seconds = 172800
+
+[hosts.slurm.scheduler_program_hooks.orca]           # only for --program orca jobs
+prologue = ["module load orca/6.1.1 openmpi/4.1"]
+
+[hosts.pbs]                                          # PBS/Torque; PBS Pro and SGE are not supported
+ssh = "pbs-login"
+remote_vq = "/home/USER/vibe-queue/.venv/bin/vq"
+scheduler = "pbs"
+scheduler_dialect = "torque"
+scheduler_driver = "workstation"
+scratch_root = "/work/USER/vq"
+scheduler_mem_directive = "omit"                     # if the site rejects -l mem=
+submit_extra = ["-q", "batch"]
+
+# Every hook name needs a program entry here. Where a program is installed
+# only on the clusters, register its name for identity alone; the cluster's
+# own registry (cluster-login.toml) says how it runs.
+
+[programs.orca]
+kind = "scheduler"

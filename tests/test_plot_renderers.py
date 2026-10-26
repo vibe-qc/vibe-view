@@ -1,9 +1,8 @@
 """Regression tests for the 2D plot renderers (bands / DOS / spectra).
 
 Covers audit findings:
-* A4-01 — DOS honours fermi_energy_ev (Fermi line / referencing) and stays
-  readable when the producer ships absolute energies with an out-of-range
-  Fermi level.
+* A4-01 / #25 — DOS preserves its Fermi-relative grid regardless of the
+  optional absolute fermi_energy_ev metadata.
 * A4-02 — bands energy axis is always eV, never mislabeled "a.u." when
   fermi == 0.0.
 * A4-03 — ECD/VCD signed (negative Cotton) bands are NOT dropped.
@@ -13,12 +12,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
-import zipfile
 from pathlib import Path
 
 import numpy as np
 
+from tests._qvf_builders import vibe_qc_source, write_archive
+from tests._qvf_corpus import qvf_corpus_dir, requires_qvf_corpus
 from vibeview.qvf import QVFReader
 
 
@@ -27,17 +26,7 @@ def _sha(b: bytes) -> str:
 
 
 def _make_qvf(sections: list[dict], files: dict[str, bytes]) -> Path:
-    manifest = {
-        "qvf_version": 1,
-        "source": {"program": "vibe-qc", "version": "0", "calculation": "t"},
-        "sections": sections,
-    }
-    tmp = tempfile.NamedTemporaryFile(suffix=".qvf", delete=False)
-    with zipfile.ZipFile(tmp, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-        for p, d in files.items():
-            zf.writestr(p, d)
-    return Path(tmp.name)
+    return write_archive(sections, files, source=vibe_qc_source("0", "t"))
 
 
 def _dos_qvf(energies: np.ndarray, fermi: float) -> Path:
@@ -68,17 +57,16 @@ def test_dos_fermi_referenced_when_in_range():
         path.unlink()
 
 
-def test_dos_absolute_energies_out_of_range_fermi_stays_readable():
-    """The committed NaCl showcase ships absolute energies with E_F far
-    outside the DOS window. We must NOT shift the data off-screen; instead
-    surface E_F in the axis label."""
+def test_dos_grid_with_out_of_range_absolute_fermi_stays_readable():
+    """Absolute Fermi metadata does not change the DOS grid convention."""
     from vibeview.renderers.dos import DOSRenderer
     path = _dos_qvf(np.linspace(-2805.0, 67.0, 64), fermi=4659.0)
     try:
         reader = QVFReader(path)
         html = DOSRenderer(reader.get_section("dos_total"), reader).render_to_html()
-        assert "outside range" in html
-        assert "E − E_F" not in html  # not Fermi-referenced (would be unreadable)
+        assert "outside range" not in html
+        assert "E_F (eV)" in html
+        assert "CC3333" in html
     finally:
         path.unlink()
 
@@ -117,8 +105,15 @@ def _bands_and_dos_qvf() -> Path:
     """One archive carrying both a bands and a dos.total section."""
     n_k, n_b = 20, 4
     eig = np.linspace(-3, 3, n_k * n_b).reshape(1, n_k, n_b).astype(np.float64)
-    kpath = json.dumps({"n_kpoints": n_k, "n_bands": n_b, "n_spin": 1, "fermi": 0.5,
-                        "segments": [{"label_start": "G", "label_end": "X", "n_points": n_k}]}).encode()
+    kpath = json.dumps(
+        {
+            "n_kpoints": n_k,
+            "n_bands": n_b,
+            "n_spin": 1,
+            "fermi": 0.5,
+            "segments": [{"label_start": "G", "label_end": "X", "n_points": n_k}],
+        }
+    ).encode()
     npts = 50
     en = np.linspace(-3, 3, npts).astype(np.float64)
     d = np.exp(-en ** 2).astype(np.float64)
@@ -272,18 +267,18 @@ def test_phonon_activate_helpers_set_panel():
     the shared phonon_html side panel + its title."""
     import types
 
-    from vibeview.app import _activate_phonon_bands, _activate_phonon_dos
+    from vibeview.app import _activate_panel
 
     state = types.SimpleNamespace(phonon_html=None, phonon_title="", status_message="")
     pb, pd = _phonon_bands_qvf(), _phonon_dos_qvf()
     try:
         rb = QVFReader(pb)
-        _activate_phonon_bands(rb, state, rb.get_section("phonon_bands"))
+        _activate_panel(rb, state, rb.get_section("phonon_bands"))
         assert state.phonon_html and "Plotly.newPlot" in state.phonon_html
         assert state.phonon_title == "Phonon Band Structure"
 
         rd = QVFReader(pd)
-        _activate_phonon_dos(rd, state, rd.get_section("phonon_dos"))
+        _activate_panel(rd, state, rd.get_section("phonon_dos"))
         assert state.phonon_html and "Phonon DOS" in state.phonon_html
         assert state.phonon_title == "Phonon DOS"
     finally:
@@ -364,7 +359,7 @@ def test_eos_murnaghan_model_selected():
 def test_eos_classify_and_activate():
     import types
 
-    from vibeview.app import _activate_eos
+    from vibeview.app import _activate_panel
     from vibeview.kinds import DEFERRED_KINDS, classify_section
 
     assert classify_section("equation_of_state") == ("rendered", None)
@@ -374,7 +369,7 @@ def test_eos_classify_and_activate():
     path = _eos_qvf()
     try:
         reader = QVFReader(path)
-        _activate_eos(reader, state, reader.get_section("eos"))
+        _activate_panel(reader, state, reader.get_section("eos"))
         assert state.eos_html and "Plotly.newPlot" in state.eos_html
         assert state.eos_title == "Equation of State"
     finally:
@@ -387,7 +382,7 @@ def test_eos_classify_and_activate():
 def test_volume_potential_wired_signed_and_diverging():
     """volume.potential routes to the shared volume renderer, is SUPPORTED (not
     deferred), and defaults to a diverging colormap. Its signed ±-lobe rendering
-    is exercised end-to-end by test_audit_2026_06_03's parametrized both-lobes
+    is exercised end-to-end by test_renderer_regressions's parametrized both-lobes
     test."""
     from vibeview.kinds import DEFERRED_KINDS, classify_section
     from vibeview.viewer_defaults import _default_for_kind
@@ -395,6 +390,42 @@ def test_volume_potential_wired_signed_and_diverging():
     assert classify_section("volume.potential") == ("rendered", None)
     assert "volume.potential" not in DEFERRED_KINDS
     assert _default_for_kind("volume.potential").colormap in ("coolwarm", "RdBu")
+
+
+def test_volume_laplacian_wired_signed_with_its_unit():
+    """#154: ∇²ρ is a signed scalar grid, drawn like the potential with its
+    own isovalue and the e/bohr⁵ unit of QVF spec § 5.2."""
+    from vibeview.app.helpers import _ISOVALUE_UNITS
+    from vibeview.kinds import (
+        DEFERRED_KINDS,
+        SIGNED_VOLUME_KINDS,
+        VOLUME_KINDS,
+        classify_section,
+    )
+    from vibeview.renderers import renderer_registry
+    from vibeview.renderers.volume import VolumeRenderer
+    from vibeview.viewer_defaults import _default_for_kind
+
+    assert classify_section("volume.laplacian") == ("rendered", None)
+    assert "volume.laplacian" not in DEFERRED_KINDS
+    assert "volume.laplacian" in VOLUME_KINDS & SIGNED_VOLUME_KINDS
+    assert renderer_registry()["volume.laplacian"] is VolumeRenderer
+    hints = _default_for_kind("volume.laplacian")
+    assert (hints.isovalue, hints.colormap) == (0.1, "RdBu")
+    assert _ISOVALUE_UNITS["volume.laplacian"] == "e/bohr⁵"
+
+
+@requires_qvf_corpus("volume_laplacian.qvf")
+def test_corpus_laplacian_captures(tmp_path: Path) -> None:
+    """#154: the qvf conformance ∇²ρ archive renders headlessly."""
+    from vibeview.capture import capture_volume
+    from vibeview.qvf import QVFReader
+
+    corpus = qvf_corpus_dir()
+    assert corpus is not None
+    with QVFReader(corpus / "volume_laplacian.qvf") as reader:
+        assert capture_volume(reader, "lap", tmp_path / "lap.png", size=(160, 120)) is True
+    assert (tmp_path / "lap.png").stat().st_size > 0
 
 
 # ── volume.rdg / NCI (deferred-kind renderer, 2026-06) ─────────────────────
@@ -645,7 +676,7 @@ def test_fermi_surface_wired():
     from vibeview.kinds import DEFERRED_KINDS, classify_section
 
     assert classify_section("fermi_surface") == ("rendered", None)
-    assert DEFERRED_KINDS == frozenset()  # all six promoted kinds now render
+    assert "fermi_surface" not in DEFERRED_KINDS
 
 
 # ── Phase D1: compare / overlay mode (2026-06) ─────────────────────────────
@@ -872,7 +903,6 @@ def test_wf_density_integrates_to_n_electrons(tables_qvf):
     previously asserted "10 electrons" against a gitignored water archive
     and therefore skipped in CI entirely.
     """
-    import pytest
 
     from vibeview.renderers.wavefunction import WavefunctionRenderer
 

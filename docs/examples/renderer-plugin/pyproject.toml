@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibeview-example-renderer"
+version = "1.0.0"
+description = "Sample vibe-view renderer plugin: SCF step timings shown as a table"
+requires-python = ">=3.12"
+license = "MPL-2.0"
+dependencies = ["vibeview"]
+
+# The entry-point name is the section kind the plugin renders.
+[project.entry-points."vibeview.renderers"]
+"x_example.timings" = "vibeview_example_renderer:renderer"
+
+[tool.setuptools.packages.find]
+where = ["src"]

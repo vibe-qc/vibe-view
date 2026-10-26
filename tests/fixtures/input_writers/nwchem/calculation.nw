@@ -1,0 +1,19 @@
+start calculation
+charge 0
+geometry units angstrom noautosym noautoz
+O 0.000000000000 0.000000000000 0.000000000000
+H 0.758000000000 0.000000000000 0.504000000000
+H -0.758000000000 0.000000000000 0.504000000000
+end
+basis
+ * library "def2-svp"
+end
+dft
+ xc pbe0
+ mult 1
+end
+constraints
+ fix atom 1 3
+end
+
+task dft optimize

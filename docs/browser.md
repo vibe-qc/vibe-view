@@ -14,7 +14,9 @@ vibe-view compare a.qvf b.qvf                 # the same, with compare mode on
 
 Needs the `[viewer]` extra (the default `modes` profile has it) and a browser
 with WebGL. The server binds to `127.0.0.1:8080` and runs until you press
-<kbd>Ctrl</kbd>+<kbd>C</kbd> in the terminal; it has no idle timeout.
+<kbd>Ctrl</kbd>+<kbd>C</kbd> in the terminal; it has no idle timeout. Closing
+the tab leaves the server running. Stop it from its launching terminal when
+you finish, especially before updating the installation.
 
 ```{figure} images/01-structure.png
 :alt: Formaldehyde displayed as red oxygen, grey carbon and white hydrogen atoms in the browser structure view.
@@ -34,9 +36,19 @@ computed showcase data from illustrative panel fixtures.
 | `--port N` | Bind to another port. `8080` is the default, and `open` refuses to start on a port something else already holds. |
 | `--host ADDR` | Bind to another interface. The default is localhost only; see the warning below. |
 | `--no-browser` | Start the server without opening a browser tab. |
-| `-s ID`, `--section ID` | Activate a named section on startup. |
-| `--auto-compare` | With several files, start in compare mode. |
+| `-s ID`, `--section ID` | Open this section of the first file on startup, as a click in the sidebar would. An id the file does not have prints the ids it does have, and the viewer opens as usual. |
+| `--view KIND` | Open on the first section of a result kind in the first file: `orbitals` (a wavefunction, else a precomputed orbital grid), `density` (a density, else another volume), `mode` (vibrations) or `spectrum`. `-s` names a section instead. |
+| `--mode N` | Select vibration mode N, numbered from 1 as in the mode picker. |
+| `--orbital LABEL` | Render this orbital of the wavefunction: `HOMO`, `LUMO`, `HOMO-1`, `LUMO+2` (`HONO`/`LUNO` for natural orbitals), or the picker number such as `12`. Prefix `alpha:` or `beta:` for an unrestricted set; without one the alpha orbitals are used. For precomputed orbital grids, LABEL is the section id or label. |
+| `--auto-compare` | With two or more files, start with compare mode switched on. With one file it does nothing. |
 | `--log-file PATH` | Write the server log somewhere other than `~/.cache/vibe-view/vibe-view.log`, which rotates at 5 MiB with three backups. |
+
+A `--mode` or `--orbital` that doesn't fit the file prints a warning naming what is available, and the viewer opens as usual:
+
+```sh
+vibe-view open run.qvf --view mode --mode 7
+vibe-view open run.qvf --view orbitals --orbital LUMO+1
+```
 
 :::{warning}
 `--host 0.0.0.0` exposes the server on every reachable interface, and the
@@ -55,6 +67,20 @@ then open `http://127.0.0.1:8080` in your own browser. If you only need to
 
 Defaults for the port, the bind address and whether a browser opens can be
 set once in the [configuration file](cli.md#configuration).
+
+If port 8080 is already occupied on your own computer, the tunnel's local
+port can differ from the remote server port:
+
+```sh
+ssh -L 8090:127.0.0.1:8080 you@remote-host
+# In that remote shell:
+vibe-view open results.qvf --no-browser --host 127.0.0.1 --port 8080
+```
+
+Open `http://127.0.0.1:8090` locally and keep the SSH connection alive. Paths
+entered into the viewer refer to the remote machine; a browser upload sends
+a local file to that machine. See [opening files](#opening-files-from-inside-the-viewer)
+for the distinction.
 
 ## The startup banner
 
@@ -79,8 +105,10 @@ what the viewer will do with it:
 The statuses and what they mean are listed under
 [What vibe-view can show you](capabilities.md). A section the viewer cannot
 draw still appears in the sidebar, greyed, with that reason; nothing is
-silently dropped, and an unknown kind never stops the rest of the file from
-rendering.
+silently dropped. Unknown noncritical sections do not prevent other sections
+from rendering. An unknown kind marked `critical: true` instead prevents
+opening the archive: the producer declared that omitting it would make the
+result incomplete or misleading. See [missing sections](troubleshooting.md#a-section-table-or-orbital-is-missing).
 
 ## What is on screen
 
@@ -94,8 +122,10 @@ rendering.
   archive for the first time. The **Display** card at the top holds the
   controls that apply to the whole scene.
 * **Viewport** (centre). The 3-D scene for structures, volumes, trajectories
-  and vibrations; an interactive Plotly chart for bands, DOS, spectra and SCF
-  history; a table or text pane for the tabular and provenance kinds.
+  and vibrations.
+* **Result panel** (below the viewport). Plots, tables and provenance for the
+  active section. Drag the horizontal splitter to give a spectrum or table
+  more space; the structure remains visible above it.
 * **Right drawer.** The controls for the active section, and the cards that
   are only relevant in some states: Compare Files, Density Difference,
   Bookmarks, Calculation Parameters, Submit to vq.
@@ -118,15 +148,24 @@ shows a tooltip for it.
 | <kbd>s</kbd> | Screenshot |
 | <kbd>v</kbd> | Video export dialog |
 | <kbd>p</kbd> | Presentation mode |
+| <kbd>Space</kbd> | Play / pause the trajectory or vibration on show |
+| <kbd>[</kbd> / <kbd>]</kbd> | Previous / next frame, or phase step of a vibration |
+| <kbd>&lt;</kbd> / <kbd>&gt;</kbd> | Previous / next normal mode |
 | <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Z</kbd> | Undo (edit mode) |
 | <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>, <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Y</kbd> | Redo (edit mode) |
-| <kbd>Delete</kbd> | Delete the selected atoms |
-| <kbd>Esc</kbd> | Leave presentation or edit mode |
+| <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Delete the selected atoms (not in presentation mode) |
+| <kbd>Esc</kbd> | Leave presentation, edit or measure mode |
 | <kbd>←</kbd> / <kbd>→</kbd> | Previous / next slide in presentation mode |
 | <kbd>?</kbd> | Show this list in the viewer |
 
 When the command palette is open, <kbd>Esc</kbd> closes it and returns focus
 to the control that launched it, including during presentation mode.
+
+Single-key viewer shortcuts are suppressed while a text field, selection
+control or editable element has focus, so typing a name does not rotate,
+delete or export the scene. If a shortcut appears unresponsive after editing
+a value, click the viewport and try again. Browser and desktop menu shortcuts
+may also be handled by their host before they reach the viewer.
 
 Rotate with a left drag, pan with a middle drag, zoom with the wheel.
 
@@ -143,12 +182,86 @@ with no backbone and says so in the status line.
 **Material Style.** Six presets: *CPK Glossy* (default), *Matte*, *Glass /
 Translucent*, *Metallic*, *Toon / NPR* and *Scientific / Publication*.
 Changing the preset re-styles every atom, bond and isosurface at once, and
-the background follows. A separate **Toon / NPR shading** switch adds
-outlines. **View preset** bundles a material, a background and label
-defaults into three named looks: *Publication (white, clean)*,
-*Presentation (dark, glossy)* and *Analysis (flat, labels)*.
+the background follows. Atoms and bonds take the preset's highlight; an
+isosurface takes its own ambient, diffuse and specular terms, while its
+opacity stays with the isosurface sliders. A separate **Toon / NPR
+shading** switch flattens the shading and draws the mesh edges.
 
-**Show atom labels**, **Orthographic projection**, **Dark background**.
+**View preset** bundles a material, a background, labels, outlines and the
+viewport chrome into three named looks: *Publication (white, clean)*,
+*Presentation (dark, glossy)* and *Analysis (flat, labels)*. *Publication*
+is the one-click figure look: the *Scientific* material on its near-white
+background, ambient occlusion and labels off, a black outline around every
+atom and bond, and the viewport chrome hidden. The first preset you apply
+remembers the look it replaced; clearing the picker restores that look. A
+preset survives switching or reloading files, and the command palette has
+an entry for each preset and for the restore. The same look is available
+headlessly as `vibe-view capture --publication`.
+
+**Outline atoms and bonds** draws the outline on its own, with any material.
+Each atom and bond gets a slightly larger black copy with its front faces
+culled, so the outline is geometry rather than a render pass: it reaches the
+live viewport and stays right as you rotate. Its width is fixed in ångström,
+so it scales with the molecule rather than with the window.
+
+With the switch on, the browser also outlines isosurfaces and cartoon
+ribbons, whose silhouettes and folds change with the view. A pass on the
+graphics card renders the depth of those surfaces alone for each frame, marks
+where it meets the background or folds over itself, and draws those edges in
+black over the frame, hidden where an atom stands in front. A translucent
+isosurface is outlined too and keeps its transparency. The line is a fixed
+width on screen, about two pixels. The limits:
+
+* It needs WebGL2, which every current desktop browser has. Without it,
+  atoms and bonds keep their outline and surfaces get none.
+* It works with the software renderer that headless Chromium and machines
+  without a GPU use (SwiftShader), at a cost per frame; see
+  {ref}`the measurements <silhouette-cost>` below.
+* It outlines stored and computed isosurfaces, Fermi surfaces and cartoon
+  ribbons. It does not outline a section drawn by direct volume rendering,
+  the unit cell, labels, measurement markers or the bounds grid, and it
+  leaves atoms and bonds to their hulls.
+* Headless captures render on the server and keep the hulls only; see
+  {ref}`outlines in the browser and headless <silhouette-outlines>`.
+  **Export screenshot** saves the frame the browser draws, outlines
+  included, unless you pick the server render; see
+  [Screenshots](#screenshot-export).
+
+(silhouette-cost)=
+The pass costs one more render of the outlined surfaces and one full-screen
+filter per frame, and nothing while the switch is off. Measured on an Apple
+M4 Pro by `docs/bench_silhouette.py`, as the median time of a drag step with
+the outlines off and on:
+
+| Scene | GPU (Chrome), off / on | Software (SwiftShader), off / on |
+|---|---|---|
+| Water density, 64³ grid, translucent | 0.7 / 1.9 ms | 12.6 / 18.8 ms |
+| Water density, 128³ grid, translucent | 0.8 / 1.9 ms | 15.4 / 24.4 ms |
+| Three helices as a cartoon | 0.6 / 0.9 ms | 8.0 / 17.3 ms |
+
+**Hide viewport chrome** hides what the page draws over, around or beside
+the scene without being part of it: the bounds grid with its axis labels,
+the status, session and job chips in the app bar, the atom hover tooltip and
+the welcome card. It also leaves measure and edit mode, since their markers
+are chrome inside the scene; entering either mode again draws them. The
+drawers, the result panel, the unit cell and measurements stay. For a
+full-screen view use presentation mode.
+
+**Show atom labels**, **Orthographic projection**. The background is switched
+from the toolbar; **Settings** holds the default it starts with
+(*Dark background (default)*).
+
+Atom labels, and the charge labels an atom-properties section adds, are
+polygonal text that faces the camera. In the browser they keep facing it
+*while* you rotate, pan or zoom: the graphics card turns every glyph towards
+the camera as each frame is drawn, with the same rule the server uses, so the
+text never swings edge-on during a drag, no server round trip is involved and
+a drag with labels on is no slower than one without. The bounds grid's axis
+titles and tick labels are drawn by vtk.js itself, which also keeps them
+facing the camera. Measurements are listed in the Measurements card rather
+than drawn as labels in the scene. Headless captures and the terminal are
+unchanged: there each frame is rendered with its labels built to face that
+frame's camera.
 
 **Periodic Replication** (periodic files only). `Nx`, `Ny`, `Nz` replicate
 the cell along its lattice vectors. Atoms, bonds, the cell wireframe and any
@@ -161,8 +274,8 @@ than stretched across the box.
 when its content changes. This is how you follow a running calculation; see
 [Jobs and live results](jobs.md).
 
-**Element colour override** (in Settings) changes the colour of one element
-everywhere, including headless captures and terminal frames, so a figure
+**Element colour override**, also in the Display card, changes the colour of
+one element everywhere, including headless captures and terminal frames, so a figure
 made in any surface agrees with what you saw on screen.
 
 ## Measuring
@@ -172,6 +285,14 @@ three an angle, four a dihedral. The **Measurements** card lists what you
 have measured and can list every bond distance and angle in the structure at
 once. Edit mode and measure mode are mutually exclusive.
 
+Distances read in Ångström by default. **Settings → Length unit** switches
+them to bohr. The choice persists across restarts, and saving it re-measures
+the open readout, both picked atoms and the full bond list, without changing
+the selection. The same unit reads out the RMSD in the **Compare Files**
+legend, the distance column of the **Bond Orders** panel and the largest
+shift **Symmetrize** reports, and saving it relabels those too. Structures
+stay in Ångström; angles are unaffected.
+
 ```{figure} images/06-measure-distance.png
 :alt: Measure mode enabled in the browser structure controls, ready to select atoms and inspect distances.
 
@@ -180,9 +301,13 @@ Measure mode enabled in the structure controls, ready for atom selection.
 
 ## Clip plane
 
-Enable a clip plane along X, Y or Z and drag its position to cut the scene
-open. It applies to atoms and isosurfaces alike, which is the quickest way
-to see the inside of a density surface or a cage.
+**Clip Planes** in the Isosurface Controls cuts the active isosurface with
+three axis-aligned planes at once: the X, Y and Z sliders each place one, as a
+fraction of the surface's extent, and what stays is the part on the high
+side of all three (larger x, y and z). It
+cuts the isosurface only; atoms and bonds stay whole. This is the quickest
+way to see the inside of a density surface. Without an active volume section
+there is nothing to clip.
 
 ```{figure} images/07-clip-plane.png
 :alt: An illustrative difference-density isosurface cut by an enabled clip plane.
@@ -200,18 +325,42 @@ inferred from covalent radii, and inferred bonds are a visual aid, not
 evidence that the source carried bond orders. Periodic structures show the
 unit-cell wireframe.
 
+An archive can hold several structures, such as the species of a vibe-sketch
+document or a reaction scheme, under any section ids. The viewer opens on the
+**first structure**: the first one `viewer_defaults.auto_open` lists, else the
+first structure section (QVF spec § 4.1). The sections `auto_open` lists open
+whenever a file is opened: at startup, from a path or upload, from a vq fetch, a
+vibe-sketch hand-off or a builder result. Switching between already-open files in
+the Files list does not reopen them. Selecting another structure's row in
+the sidebar shows that structure; an eye marks the row of the one on show.
+Selecting a section that names a structure in its `structure_ref`, such as a
+density or wavefunction computed for one species, shows that structure first
+and draws the section over it; the status line names both. A section that
+names no structure is drawn over the structure on show.
+Each row is titled by the species' compound label and name when the archive
+gives them (`2 · ammonium`), else by the section id, and its subtitle notes a
+non-zero charge or a multiplicity other than 1. The Calculation Parameters
+panel takes the charge and multiplicity of the structure on show. An unsaved
+edit stays with the structure it was made on: selecting another structure
+shows that one as the file has it, and selecting the edited one again shows
+your edit. As on a file switch, undo and redo, the selection, frozen atoms,
+measurement picks and the residue selection end at the switch.
+
 When several files are open, the **Compare Files** card appears:
 
 * **Overlay all structures** draws every loaded structure in one viewport,
   one translucent colour per file, with a colour-keyed legend.
 * **Align (RMSD fit to first file)** Kabsch-superposes each structure onto
-  the first when the atom counts match, and reports the RMSD per file. With
-  alignment off, structures sit at their stored coordinates.
+  the first when the atom counts match, and reports the RMSD per file in the
+  [Length unit](#measuring). With alignment off, structures sit at their
+  stored coordinates.
 
 Clicking any section leaves compare mode.
 
 The **Symmetry** card detects the molecular point group (Schoenflies) from
-the inertia tensor and the symmetry operations it finds. A
+the inertia tensor and the symmetry operations it finds. Its **Symmetrize**
+button projects the geometry onto that group, undoably, and reports the
+number of operations and the largest atom shift, in the Length unit. A
 `structure.symmetry` section written by the producer is a different thing:
 that is the producer's crystallographic analysis, shown on its own panel.
 
@@ -219,25 +368,105 @@ that is the producer's crystallographic analysis, shown on its own panel.
 
 Every volumetric kind (`density`, `orbital`, `spin`, `elf`, `difference`,
 `potential`, `rdg`, `generic`, and `basis.ao`) drives the same isosurface
-renderer, marching cubes over the stored grid. The **Isosurface Controls**:
+renderer, marching cubes over the stored grid, and every kind but `rdg` can
+be drawn as a volume instead. The **Isosurface Controls**:
 
 | Control | Effect |
 |---|---|
-| **Volume isovalue** | Slider over the data range. The default comes from the file's `viewer_defaults`, or a kind-specific heuristic: 0.05 e/bohr³ for densities, 0.04 for orbitals. |
+| **Render as** | *Isosurface* (the default) contours the field at the isovalue. *Volume* draws the field itself: every voxel takes a colour from the colormap and an opacity from a ramp chosen for the kind, so a diffuse potential, a spin density or an ELF basin reads as a cloud rather than a shell. See [Volume mode](#volume-mode) below. |
+| **Volume isovalue** | Slider over the data range. The default comes from the file's `viewer_defaults`, or a kind-specific heuristic: 0.05 e/bohr³ for densities, 0.05 for stored orbitals, 0.005 for difference, spin and transition densities. When no part of the field reaches the isovalue, the status line says so and gives the field's largest value. |
 | **Volume opacity** | Alpha of the surface. |
-| **Show isosurface** | Hide the surface without losing its settings. |
-| **Reduce detail (faster)** | Downsample the grid before contouring. Worth it above roughly a million voxels. |
+| **Reduce detail (faster)** | Downsample the grid before contouring. On by default for a grid with 200 or more voxels along an axis, where the status line reports the reduced grid; worth keeping on above roughly a million voxels. Signed fields are never reduced. |
 | **Show as 2D slice** | Replace the isosurface with a coloured planar cut through the field, positioned with the clip-plane sliders. Good for nodal planes and bonding regions. |
 | **Map ESP onto surface** | With a `volume.potential` section in the file, colour the active density surface by the electrostatic potential at each vertex. |
 | **Wrap orbital to cell centre (cyclic cluster)** | For a localized periodic orbital grid, roll the field so the orbital sits in the middle of the cell. Delocalized or already-centred fields are left alone. |
 
+Isovalue, colormap and opacity settings belong to each volume section. Changing
+one section's settings does not change another section's defaults, including
+when opening another file. Partial `viewer_defaults` hints override only the
+specified settings; the remaining settings use the volume kind's defaults.
+
+(volume-mode)=
+#### Volume mode
+
+*Render as → Volume* sends the stored grid to the viewport as 256 levels
+over a **window** in the section's units. The choice belongs to the
+section, like its isovalue: each volume section remembers its own mode and
+transfer function while the file is open. The window starts at a range
+chosen for the kind: zero to the 99.5th percentile for a density, so a
+handful of voxels at the nuclei do not claim the levels; 0 to 1 for ELF; a
+symmetric range for a signed field, so zero sits on the middle level; the
+finite extremes otherwise. The card shows the range and the grid it sent.
+A grid with more than 128 voxels along an axis is resampled so its largest
+axis is 128, keeping its box; the status line reports the full and the sent
+grid.
+
+The transfer function is edited in the card. **Preset** seeds the opacity
+ramp for a look: a *density shell* rises towards the dense end, *ELF
+basins* shows the basins above 0.8, *signed lobes* draws both lobes with
+nothing at zero, *potential* is the same with gentler slopes, and a *plain
+ramp* rises linearly. The two **window** sliders set the ends of the range
+the levels cover, within the field's own extremes; moving them re-sends the
+grid, which the other controls never do. The **opacity curve** draws the
+colour nodes as a gradient and the opacity nodes as a line with a handle
+each: drag a handle to move it, click the gradient to add a node there,
+double-click a handle or press Delete on it to remove one, and use the
+arrow keys on a focused handle to move it, Enter to insert a node after it.
+Editing the curve makes the preset *Custom curve*. The six **opacity ramp**
+sliders below it are the coarse path: they show the curve sampled at the
+start, 20%, 40%, 60%, 80% and the end of the window, and moving one
+replaces the curve with that six-point form. The colour follows the
+**Colormap**. **Shade by gradient** lights the
+volume like a surface; it costs a gradient per sample and is off by
+default. Bookmarks, presentation slides and sessions keep the mode and the
+transfer function with the section. The command palette's *Toggle volume
+rendering of the active volume* flips the picker without a visit to the
+card.
+
+The contour's own controls, the isovalue, extra layers, ESP mapping, reduce
+detail, cell replication and the clip planes, apply to the isosurface only
+and hide in volume mode; entering volume mode turns an active clip off. A
+skewed grid is interpolated onto the axis-aligned box that bounds it before
+it is sent, at the same cap, because the client can only place an
+axis-aligned image; the status line says so, the corners of a triclinic
+cell's box stay empty, and periodic tiling is not applied. A field without
+finite samples returns the picker to *Isosurface* with the reason. The
+volume is not pickable, so
+hovering and clicking still reach the atoms behind it. A producer can open
+a section as a volume with its own transfer function through
+`viewer_defaults`; see [the hints](#viewer-defaults-hints-from-the-producer).
+`vibe-view capture --render volume` draws the same look headlessly, and
+`capture` follows a section's `render` hint by default; see
+[Figures without a display](headless.md). The
+[design note](volume_rendering_design.md) records how volume mode came to
+be.
+
 Signed fields (`orbital`, `spin`, `difference`, `potential`) draw both lobes
-in contrasting colours. Unsigned fields get one surface.
+in contrasting colours. Unsigned fields get one surface. Signed surfaces preserve
+the full voxel-vector geometry, including skewed grids and reversed axes, in
+both the browser and headless captures.
+
+The periodic volume control adds cells on both sides of the original, only
+along periodic axes. When lattice translations match integral steps of the
+voxel grid and overlapping samples agree, the viewer tiles the scalar field
+before contouring. This retains skewed and reversed voxel vectors. Otherwise
+it contours the original field and places surface copies at the exact lattice
+translations. These copies retain any boundary seams: the viewer does not
+invent missing samples, interpolate between cells, or overwrite inconsistent
+periodic samples. The periodic volume control supersedes the ordinary `Nx`,
+`Ny`, `Nz` surface replication while active.
 
 ```{figure} images/02-density.png
 :alt: A computed formaldehyde electron-density surface surrounding its ball-and-stick geometry, beside the volume controls.
 
 An electron-density isosurface, translucent over the structure.
+```
+
+```{figure} images/02b-density-volume.png
+:alt: The same electron density drawn as a volume: a cloud that brightens and thickens towards the atoms, beside the volume controls.
+
+The same density in volume mode, through the density-shell preset: the
+field itself, denser where it is brighter, with no contour drawn.
 ```
 
 ```{figure} images/03-difference-density.png
@@ -256,8 +485,14 @@ picks out the localization basins: lone pairs, bonding regions, core shells. Thi
 **NCI.** A `volume.rdg` section contours the reduced density gradient at
 s = 0.3 and colours the surface by sign(λ₂)ρ computed from a co-present
 `volume.density` section: blue for attractive, green for van der Waals, red
-for steric repulsion, clamped to ±0.05 a.u. With no density in the archive
-the surface renders uncoloured.
+for steric repulsion, clamped to ±0.05 a.u. An NCI surface computed from an
+embedded wavefunction uses the same level, colour map and range, so the two
+are comparable. With no density in the archive the stored surface renders
+uncoloured. Density on a different grid (shape, origin or
+voxel vectors) also leaves the surface uncoloured and reports the mismatch.
+Both forms follow the full voxel vectors,
+including skewed grids and reversed axes, and use the same periodic replicas.
+The colour field is interpolated at the surface vertices.
 
 **Cross-Fade Blend.** With two volumes loaded, blend between them with a
 slider, which is the honest way to compare two orbitals or two densities on
@@ -266,6 +501,80 @@ the same grid without flipping back and forth.
 Volumetric payloads are lazy: nothing is read from the archive until you
 click the section, so a file with forty orbitals opens as fast as one with
 none.
+
+(volume-vector)=
+### `volume.vector`
+
+A vector field, such as a density gradient, an electric field or a current
+density, is drawn as arrows over the structure, coloured by the length of
+each vector. The **Vector Field** card shows how many arrows are drawn and
+the range of |v|, and has four controls:
+
+| Control | Effect |
+|---|---|
+| **Arrow spacing** | Draw an arrow at every *n*-th grid point along each axis. `0` picks the smallest spacing that keeps the count at or below 4000, so a small grid shows every point. |
+| **Arrow length** | Scale every arrow. An arrow's length is its vector's magnitude relative to the field's 95th-percentile magnitude, as a fraction of the spacing between arrows, capped so neighbours do not touch; one large vector near a nucleus therefore does not shrink the rest. |
+| **Hide arrows below** | Drop arrows shorter than this fraction of that typical magnitude (default 0.05). |
+| **Colour by magnitude** | The colour map, in the field's own unit when the file declares one. |
+
+The settings are kept in bookmarks and sessions. `vibe-view capture -s ID`
+draws the same arrows at the default settings; the terminal draws the field
+as a surface of |v| instead, because arrows do not read in braille.
+
+(volume-series)=
+### `volume.series`
+
+A series of fields on one grid, such as the density along a trajectory, is
+drawn one slab at a time. The **Volume Series** card has a slab slider, the
+isovalue and **Play**, which steps the slabs in a loop. When the series
+names a trajectory frame for each slab, the atoms move to that frame. A
+non-negative series is drawn as one green surface, a series with negative
+values as two lobes. Bookmarks keep the slab and the isovalue.
+`vibe-view capture -s ID --frame N` and `vibe-view show -s ID --frame N`
+draw slab N, counted from 0.
+
+(volume-complex)=
+### `volume.complex`
+
+A complex scalar field, such as a complex orbital or a Bloch function at one
+k-point, is drawn one part at a time. The **Complex Field** card shows the
+part, its isovalue and the field's largest |ψ|:
+
+* **Real part** (the default) and **Imaginary part** draw a signed field as
+  two lobes in the usual blue and red.
+* **Modulus |ψ|, coloured by phase** draws one surface of |ψ| coloured by
+  the phase arg ψ, from −π to π, on a cyclic colour map (`twilight`), so a
+  2p m = +1 orbital shows its phase turning once around its axis. The phase
+  is computed at each point of the surface from the real and imaginary
+  parts, never interpolated across the jump at ±π.
+
+The field opens at the section's isovalue hint, 0.05 unless the file says
+otherwise. If the field never reaches that value, it opens at half its
+largest |ψ| instead. A value above the field draws nothing, and the card
+says to lower it. Bookmarks and sessions keep the part and the isovalue.
+`vibe-view capture -s ID --part real|imag|modulus` draws the same surfaces;
+the terminal draws the real part.
+
+(wavefunction-bloch)=
+### `wavefunction.bloch`
+
+A periodic calculation's orbitals at several k-points are evaluated on
+demand, as `wavefunction.gto` orbitals are: the viewer sums the cell's
+Gaussian basis over the lattice with the phase e^{ik·T} of each orbital's
+k-point. The **Bloch Orbitals** card picks the k-point (its label and
+fractional coordinates), the spin channel, the orbital (with its energy and
+occupation), the part and the isovalue. The parts are those of a complex
+field: the real or imaginary part as two lobes, or the modulus |ψ| coloured
+by phase. It opens on the highest occupied orbital at the first k-point.
+
+The grid covers one cell along the periodic axes and the atoms plus a margin
+along the others, so a chain or slab is not cut off at its vacuum. An
+orbital's overall phase is arbitrary, so its real and imaginary parts depend
+on the program that wrote it; the modulus does not. The details panel lists
+every orbital at every k-point, with the Fermi energy. Bookmarks keep the
+selection. `vibe-view capture -s ID` draws the opening orbital and takes
+`--part` and `--isovalue`; `vibe-view table --kind wavefunction.bloch` lists
+the orbitals.
 
 ### `wavefunction.gto`
 
@@ -276,37 +585,120 @@ coefficients on a grid of its own choosing. Nothing has to be pre-computed
 by the producer, which is why a `wavefunction.gto` section is a far better
 way to ship orbitals than forty `volume.orbital` sections.
 
+Orbital energies read in Hartree (Eh) by default. **Settings → Energy unit**
+switches the list, the energy diagram and its HOMO–LUMO gap to eV or
+kcal/mol; the choice persists across restarts and applies to an open list as
+soon as you save. The archive itself stays in Hartree. With the axis in
+Hartree, the gap is still quoted in eV.
+
 * **Grid points / axis** sets the evaluation resolution.
 * **Orbital isovalue** sets the surface level; click **Render MO** to apply.
 * **Orbital component** appears for complex coefficients: choose the real
   part (default), imaginary part, or magnitude |ψ|, then click **Render MO**.
   Signed parts use blue/red lobes; magnitude has only a positive surface.
   The file's phase is preserved. An empty contour reports that the isovalue
-  is too high for that component.
+  is too high for that component. A stored `volume.orbital` section has no
+  such choice: its `component` only labels what the file stores, and the
+  viewer draws the stored values as they are.
 * **Compute total density** sums the occupied orbitals into a density
   surface and reports ∫ρ dV as an electron-count check.
+* **Show isosurface** hides the most recently computed surface (orbital,
+  density, ELF, NCI or Laplacian) without leaving the section, and shows it
+  again.
 * Canonical, alpha/beta, natural and localized sets each get their own
   list. Localized orbitals are labelled by the atoms they sit on, because a
   localized orbital has no meaningful energy ordering.
-* **Re-localize with** applies a different localization criterion than the
-  producer chose. The viewer does not localize anything itself; this shells
-  out to vibe-qc in a subprocess and is only offered when vibe-qc is
-  importable in the viewer's environment. This worker handles real molecular
-  orbitals only. For periodic or complex wavefunctions, generate localized
-  orbitals with the calculation and load its exported QVF instead;
-  installing vibe-qc does not enable periodic localization in this viewer.
+* **Re-localize with** sends the occupied subspace to a separately installed
+  vibe-qc backend. Configure it as described below. IBO, Foster–Boys and
+  Pipek–Mezey appear only when their backend readiness checks pass and the
+  selected archive supplies compatible data.
+
+(configure-relocalization)=
+#### Configure re-localization
+
+Install vibe-qc with its native core in its own Python environment. The viewer
+does not need vibe-qc installed in its environment, and the backend does not
+need vibe-view. This integration requires the standalone worker's **API 1.0.0
+or later in major version 1, JSON protocol 1**, introduced for vibe-qc 0.17.5.
+Before that release is available, use a vibe-qc source installation containing
+commit `0830147b8a09f2263901960101ab571fa5e96957` or a later descendant.
+Follow the [vibe-qc installation instructions](https://github.com/vibe-qc/vibe-qc)
+for the native build; a Python package import alone does not establish readiness.
+
+1. Open **Settings**, enter the absolute path to that environment's **Python
+   executable**, and select **Save backend and check**. Choose the Python
+   executable itself, without shell arguments or a wrapper command.
+2. The setting persists globally across files and viewer restarts. On startup,
+   the viewer checks the native core and individual localization methods.
+   **Check backend** repeats that probe after an installation or upgrade.
+3. Select a wavefunction, keep **Archived occupied orbitals** selected, choose
+   **Re-localize with**, then select **Localize**. The viewer passes exact
+   archived shells, real occupied coefficients, occupations and structure data
+   as JSON. It does not pass a QVF filename or reconstruct a basis by name.
+
+For a backend Python at `/path/to/backend/bin/python`, these are the commands
+used by the viewer:
+
+```sh
+/path/to/backend/bin/python -I -m vibeqc_relocalize --probe
+/path/to/backend/bin/python -I -m vibeqc_relocalize
+```
+
+The worker uses stdin/stdout for versioned JSON and stderr for diagnostics.
+The probe times out after 60 seconds; localization after 300 seconds. **Cancel**
+terminates the worker. A missing executable, incompatible protocol, unavailable
+native core or backend refusal produces an explanatory status in the panel.
+
+The molecular adapter requires a restricted singlet with explicit charge,
+multiplicity, exact QVF GTO shells and electron occupations of 0 or 2. The
+occupied coefficients must cover the complete all-electron occupied subspace.
+No density matrix is required. A density-only archive cannot preserve the
+archived occupied orbitals through this interface. ECP calculations, fractional
+occupations, unrestricted/spinor orbitals, complex coefficients, and periodic
+systems (including Gamma-only archives) are not supported by this adapter.
+The limit is 512 AOs and elements through radon. Unsupported or incomplete
+archives show a reason instead of an enabled action.
+
+**New RHF + localize** explicitly calculates a new wavefunction before
+localizing. It requires a compatible archived all-electron basis, occupations,
+charge and multiplicity, but does not require archived coefficients. Worker
+API 1.0.0 also needs the archived basis name for its atomic initial guess;
+exact shells still define the calculation basis. It may
+use edited positions of the same atoms. Changes to atom identities require a
+new calculation archive. Selecting this option never preserves the previous
+calculation's occupied subspace, even if that calculation also used RHF.
+There is no automatic SCF fallback when localization fails or data is missing.
+
+Results appear as session wavefunction overlays in the sidebar. They include
+localized orbital surfaces, atom populations, centroids and centre counts,
+plus an IAO charge table and the backend's subspace/orthonormality errors.
+The viewer also checks the returned rotation and its action on the supplied
+coefficients. Localized orbitals have no canonical orbital energies. The
+panel identifies whether the source was the archive or a new RHF calculation;
+the current kernel does not certify localization convergence.
+
+**Clear re-localized overlays** returns to the archived wavefunction. Geometry
+edits remove existing localization overlays. File/section changes, edits and
+backend changes discard any in-flight result belonging to the old state.
+The original QVF file is never modified. The backend's experimental periodic
+finite-torus output needs additional archive metadata and a separate rendering
+adapter; it is deliberately not offered as molecular localization.
+
+(orbital-evaluation-limits)=
+#### Orbital evaluation limits
 
 The on-demand evaluator covers shells through `l = 3`. An orbital with more
 than 0.5 % of its weight in g or higher shells is drawn and the status line
 says the surface is incomplete. A wavefunction explicitly tagged with
 `k_point: [0, 0, 0]` is evaluated as a Gamma-point lattice sum in a fully
 periodic 3D primitive cell, including neighboring atomic-orbital tails.
-Skew cells keep their actual shape. **Apply replication** repeats that cell
+Skew cells keep their actual shape. **Apply Replication** repeats that cell
 and its orbital surface. Very diffuse bases have a work limit; use a stored
 orbital grid if evaluation exceeds it.
 
-Nonzero k-points and partially periodic Bloch evaluation are not supported
-and produce an explanatory error. A single stored k-point block also does
+A `wavefunction.gto` section's nonzero k-points and partially periodic cells
+are not evaluated and produce an explanatory error; a
+{ref}`wavefunction.bloch <wavefunction-bloch>` section carries those orbitals. A single stored k-point block also does
 not establish the weights needed for a total periodic density or its
 ELF/NCI/Laplacian; select the producer's stored fields instead. Older periodic
 archives without explicit k-point metadata retain central-cell/cluster
@@ -321,13 +713,49 @@ An orbital evaluated on demand from `wavefunction.gto`, both lobes drawn.
 The **Basis Functions** panel does the same for a `basis.ao` section: pick
 an atomic orbital and see it.
 
+(bands-dos-panel)=
 ### `bands`, `dos.total`, `dos.projected`, `dos.coop`, `dos.cohp`
 
 Interactive Plotly charts. A `bands` section plots every band along the
 k-path with the Fermi level as a horizontal reference; hover any band for
 its energy. When a `dos.total` section is also present the two are drawn as
-one figure on a shared, Fermi-referenced energy axis. Projected DOS, COOP
+one figure on a shared, Fermi-referenced energy axis. Bands are shifted by
+their own `kpath.fermi`; QVF DOS grids already use E_F = 0 and are never shifted
+again by an absolute Fermi tag. If bands lack a Fermi reference, the panels
+use separate energy axes and labels. Projected DOS, COOP
 and COHP add per-channel traces you can toggle in the legend.
+
+**Energy window.** An all-electron periodic archive carries core states
+hundreds or thousands of eV below E_F, and an axis autoscaled to all of
+them squeezes the valence and conduction bands into a few pixels. The
+panel therefore opens on a valence window: the states grouped around E_F,
+with the core shells left off the axis. **E − E_F min** and **E − E_F max**
+move it — commit with Enter or by leaving the field — and **Reset window**
+returns to the default. Double-clicking the chart is Plotly's own
+autoscale, which shows the full range including the core states.
+
+A file whose spectrum has no core states is not windowed at all, so
+pseudopotential archives keep the axis they have always had. A producer
+can ship its own first view with an `energy_window` hint in
+`viewer_defaults`, as `[min, max]` in eV relative to E_F:
+
+```json
+"viewer_defaults": {
+  "bands": {"energy_window": [-15.0, 10.0]}
+}
+```
+
+**Energy unit.** The band and DOS axes read in eV by default.
+**Settings → Band / DOS energy unit** switches them to Hartree or kcal/mol.
+The DOS is rescaled with the axis, so it stays in states per displayed unit
+and the area under it is unchanged. The window fields follow the unit too,
+and a window you typed is carried over when you save, so the view stays put.
+This is a separate setting from **Energy unit**, which applies to orbital
+energies and defaults to Hartree. The archive, and an `energy_window` hint,
+stay in eV. The COOP and COHP panels follow the same setting, as do the
+terminal viewer's band, DOS, COOP and COHP plots and the band structure
+`vibe-view capture` writes; the [capture API](headless.md) takes an
+`energy_unit` argument instead.
 
 ```{figure} images/08-bands-dos.png
 :alt: Illustrative electronic band curves along Gamma–X–L beside density of states on a shared energy axis.
@@ -355,10 +783,28 @@ B₀ and B₀′.
 
 `spectra.ir`, `raman`, `uvvis`, `ecd`, `vcd` and `generic` render as stem
 charts of intensity against frequency with hover tooltips, in each kind's
-native unit. **Spectrum broadening** draws a Lorentzian envelope under the
-sticks, and it is named in the legend so the convenience is never mistaken
-for the data; **X unit** and **Normalize** adjust the axis. Signed spectra
-keep their negative bands.
+native unit. **Display** switches between **Sticks only** and **Envelope +
+sticks**. The envelope uses the chosen **Line shape**, Gaussian or Lorentzian,
+with a **FWHM** typed in physical units (**FWHM unit**: cm⁻¹ for vibrational
+spectra, eV or cm⁻¹ for electronic ones). Broadening happens in energy, so a
+width is never read in nm, and the legend names the envelope and its width so
+the convenience is never mistaken for the data. Settings are remembered per
+spectrum. **X unit** converts the frequency axis. **Normalize** independently
+scales the envelope and peak sticks to a maximum absolute intensity of one;
+signed spectra keep their negative bands.
+
+**Export CSV** saves the sampled envelope and discrete peaks in two blocks,
+using the current settings; with Normalize off, the peaks retain their source
+strengths. **Export ASCII** writes a whitespace-delimited `.txt` that records
+the source, line shape, width and grid, with the original sticks in a second
+block; optional grid limits are typed in the spectrum's native energy unit.
+`vibe-view spectrum` writes the same file without opening the viewer. The
+kernels and the export format are described in
+[Explore electronic spectra](orca.md#5-explore-electronic-spectra-and-mcd).
+
+With several files open, **Compare across open files** overlays the same
+spectrum kind from each file, one legend entry per file. If no other open file
+has that kind, the chart keeps the single spectrum and the status bar says so.
 
 `spectra.nmr` and `spectra.epr` are tables: shifts and couplings, g-tensors
 and hyperfine values.
@@ -377,11 +823,18 @@ The NMR panel. This capture uses illustrative panel data.
 
 ### `trajectory` and `reaction.path`
 
-Frame-by-frame playback with a play / pause / step strip and a frame slider.
-Bonds are re-inferred per frame, so they follow the geometry. The **Energy
-Profile** card plots energy against frame and tracks the current frame; for
-a reaction path the **Reaction Waypoint** card names the reactant, transition
-state, intermediates and product as you pass them.
+Frame-by-frame playback with a play / pause / step strip, a frame slider
+and, under it, a **filmstrip**: thumbnails of up to sixteen evenly spaced
+frames, the first and the last always among them, rendered in the
+background as the section opens. Click a thumbnail to jump to its frame, or
+hold the mouse button and drag across the strip to scrub; the thumbnail of
+the current frame is outlined. The thumbnails and exported videos re-infer
+bonds per frame; the live playback draws the atoms alone. The **Energy
+Profile** card plots energy against frame and tracks the current frame, and
+a click on it jumps to the frame under the pointer; for a reaction path the
+**Reaction Waypoint** card names the reactant, transition state,
+intermediates and product as you pass them. <kbd>Space</kbd> plays and
+pauses, <kbd>[</kbd> and <kbd>]</kbd> step a frame.
 
 ```{figure} images/anim-trajectory.gif
 :alt: An illustrative seven-frame geometry trajectory playing beside its energy profile.
@@ -399,12 +852,102 @@ Periodic reaction paths carry the lattice per frame; the viewer draws the
 cell and wraps atoms across periodic boundaries, and a variable-cell path
 animates the box with the geometry.
 
+Paths carrying per-frame volumetric data also animate the isosurface.
+Fields with negative values, such as orbitals, show both signs: positive
+lobes in blue and negative lobes in red. Nonnegative densities keep a single
+green surface. The archive's isovalue hint sets the contour magnitude
+(default 0.02). If volumes are emitted only for selected frames, the latest
+emitted volume stays visible until the next one arrives.
+
+(forces-hessian)=
+### `forces` and `hessian`
+
+A `forces` section stores the energy gradient ∂E/∂R of each atom; the viewer
+draws the force, F = −∇E, as a red arrow from each atom, the largest 0.6 Å
+long times the **Arrow length** slider of the **Forces** card. The card gives
+the largest force and the atom it acts on, the RMS force and, for a periodic
+system with a stress tensor, the pressure p = −tr σ / 3 in GPa. The details
+panel lists every atom's Fx, Fy, Fz and |F| in Eh/bohr. Bookmarks keep the
+arrow length.
+
+A `hessian` section opens the details panel with the matrix size, whether
+it is mass-weighted and whether the translations and rotations were
+projected out, which `vibrations` section names it, and its harmonic
+frequencies: the eigenvalues of the mass-weighted matrix as wavenumbers, a
+negative one an imaginary mode. The masses are the file's `atom_masses_amu`,
+else standard atomic masses when every element has one; otherwise the panel
+says there are no frequencies and why. An unprojected Hessian keeps its
+translations and rotations as modes near zero.
+
+`vibe-view table --kind forces` and `--kind hessian` print the same tables,
+and `vibe-view capture -s ID` draws the force arrows.
+
+(property-tables)=
+### `properties.electric`, `properties.elastic` and `properties.dielectric`
+
+Each opens the details panel with its tables, in the units QVF fixes:
+
+* **Electric properties:** the origin, the dipole (components and |μ| in D),
+  the quadrupole with its convention, the octupole, the polarizability with
+  its isotropic average and frequency, and the hyperpolarizability. The
+  dipole is also drawn as an orange arrow from its `origin` (a point, the
+  centre of mass, the centre of nuclear charge or the coordinate origin), at
+  0.3 Å per debye and at most 3 Å, the scale of the file's root dipole
+  arrow. That arrow states the same dipole, so it is hidden while the section
+  is open and comes back when you leave it.
+* **Elastic constants:** the stiffness and compliance in Voigt notation, the
+  bulk, shear and Young's moduli and Poisson's ratio with their averaging
+  scheme, and whether the stiffness is positive definite: the Born criterion
+  for mechanical stability. An unstable stiffness is shown as it is.
+* **Dielectric properties:** ε∞, the ionic contribution and ε₀ with their
+  isotropic averages, each atom's Born charge tensor and the sum Σ Z\*, which
+  is zero for a converged calculation, and the piezoelectric tensor.
+
+`vibe-view table --kind properties.electric` (and `.elastic`, `.dielectric`)
+prints one row per number: quantity, component, value, unit.
+`vibe-view capture -s ID` draws an electric dipole on the structure, drawn as
+sticks so the arrow is not hidden inside the atoms.
+
 ### `vibrations`
 
 Pick a normal mode by frequency from the **Vibrational Modes** list and the
-structure oscillates along its displacement vector; **Vibration displacement
-amplitude** scales the motion. Mode labels carry the IR intensity when a
-companion `spectra.ir` section is present.
+structure oscillates along its displacement vector. Every mode is drawn with
+its largest atomic excursion at 0.6 Å, the same convention the terminal
+viewer uses, so a stiff X-H stretch and a soft torsion are equally visible
+whatever normalisation the producer wrote. The **Displacement amplitude**
+slider multiplies that (×1.0 by default), and the card shows the resulting
+peak excursion. The same scale applies to an exported vibration video. The
+stored displacement vectors are not changed. Mode labels carry the IR
+intensity when the vibrations section or a companion `spectra.ir` section
+has one, matched to the modes as `vibe-view table --kind vibrations` matches
+it. An imaginary mode, stored as a negative wavenumber, is labelled
+`893.0i cm⁻¹ (imaginary)`; only a zero-frequency mode is `(trans/rot)`.
+
+**Show displacement arrows** adds Cartesian arrows at the moving atoms, including
+while paused. Their direction is the mode's positive phase; it does not reverse
+at the opposite half-cycle. Length uses the same amplitude multiplier as the
+motion. **Arrow cutoff** hides shorter vectors in Å; colour and shaft radius
+are adjustable. The same polygon geometry is used by vtk.js, server screenshots
+and exported frames, including figure material presets. Periodic coordinates
+remain in the mode's Cartesian cell; arrows do not wrap through cell boundaries.
+
+**Export selected mode** writes and offers a GIF or MP4 download with the selected
+mode, amplitude, shown arrows, frames per cycle and frame rate. **Loop GIF**
+controls infinite repetition; MP4 repetition is controlled by the player. Turn
+the arrow switch off to export without arrows. Export uses the current structure
+representation, background and material, and the camera as the browser shows
+it when you click, including a rotation made during playback. The terminal
+mode table lists the ten largest atomic displacements with Cartesian components
+and lengths at amplitude ×1.
+
+**Play** animates the mode and **Pause** freezes it where it is, at the
+nearest of the sixteen steps of the **Phase** slider, which scrubs through
+one period. The filmstrip under the slider shows the mode at every second
+step; a click on a thumbnail, or a drag across the strip, freezes the motion
+there. The strip is re-rendered when the mode or the amplitude changes.
+<kbd>Space</kbd> plays and pauses, <kbd>[</kbd> and <kbd>]</kbd> step the
+phase, <kbd>&lt;</kbd> and <kbd>&gt;</kbd> change the mode, as in the
+terminal viewer.
 
 ```{figure} images/anim-vibration.gif
 :alt: Animation of a formaldehyde normal mode, with the atoms moving along their displacement vectors.
@@ -430,16 +973,24 @@ follows replicas in a replicated cell.
 Charges as a table and as an atom overlay.
 ```
 
-`bond_orders` is a triangular matrix table with CSV export, and its values
-colour the bonds in the structure. `topology.qtaim` overlays critical points
-as coloured spheres and draws bond paths through them; click a point for its
-density, Laplacian and ellipticity.
+`bond_orders` is a table of atom pairs sorted by bond order, with pairs
+below 0.05 left out as noise and a CSV export of what is shown, and its
+values colour the bonds in the structure. `topology.qtaim` overlays critical points
+as spheres and draws bond paths through them. A bond critical point is blue
+where the density Laplacian is negative (shared-shell, covalent) and red where
+it is positive (closed-shell: ionic, hydrogen bond or van der Waals), and the
+details panel tabulates each bond critical point's density, Laplacian and
+ellipticity. Clicking a point in the viewport does not select it. QVF does
+not fix the units of those values. The table names them for a producer whose convention is documented
+(vibe-qc writes e/Å³ and e/Å⁵) and otherwise says the numbers are as the
+producer wrote them.
 
 ### `scf_history`
 
-Energy against iteration on top, DIIS error on a logarithmic axis below.
-**Log scale (|E − E_final|)** and **Hide initial guess** reshape the top
-pane when the first point dwarfs the rest.
+One chart: energy against iteration on the left axis, DIIS error and |ΔE|
+on a logarithmic axis on the right. **Log scale (|E − E_final|)** and
+**Hide initial guess** reshape the energy trace when the first point
+dwarfs the rest.
 
 ```{figure} images/12-scf-convergence.png
 :alt: The formaldehyde SCF convergence chart showing energy and error versus iteration.
@@ -466,6 +1017,34 @@ specification a [container](jobs.md#qvf-containers) was built from. A
 container that has not yet run opens with an amber *pending* chip and a Job
 Spec panel saying so.
 
+### `reaction.scheme` and `preview`
+
+A `reaction.scheme` section opens a details panel, titled by the scheme's
+label, with one row per step: the step as an equation over the archive's
+structures (each species by its name and compound label, else its section
+id, with any coefficient other than 1), the arrow (→ forward, ⇌ equilibrium,
+⇒ retrosynthetic, ↔ resonance), the reagents drawn at the arrow, the
+conditions and the yield. A retrosynthetic step reads target ⇒ precursors,
+as it is drawn. A table of the species with their charge, multiplicity and
+SMILES follows. Select a species' own sidebar row to show it in 3-D.
+
+A `preview` section is the archive's picture for file managers. Its panel
+shows the PNG or JPEG thumbnail and lists the members with their declared
+types; an SVG image is listed, not rendered. The picture is never drawn in
+the 3D view.
+
+### `excited_states`
+
+An `excited_states` section (TD-DFT, CIS, ADC and similar) opens a details
+panel titled by the method, with one row per state: the excitation energy in
+eV and as a wavelength in nm, the oscillator strength, the rotatory strength,
+the multiplicity, the symmetry label, the dominant orbital contributions as
+`from→to (weight)` rows of the reference wavefunction's coefficients, and the
+natural transition orbital and transition density sections the state links
+to. Select one of those linked sections in the sidebar to show it; the table
+itself draws nothing in 3-D. `vibe-view table --kind excited_states` writes
+the same rows as text, CSV or JSON.
+
 ```{figure} images/13-citations.png
 :alt: The calculation citation bundle displayed in the browser details panel.
 
@@ -474,26 +1053,67 @@ The citations panel.
 
 ## Bookmarks, sessions and presentation mode
 
-The **Bookmarks** card saves the current camera, active section, isovalue,
-colormap and opacity under a name (**Save View**). Selecting a saved bookmark
-restores all five instantly. **Save Session** writes every bookmark plus the
-current state to a `.vibe-session` JSON file next to the archive, and
-**Load Session** restores it; the file is plain JSON and can be
+The **Bookmarks** card saves the current camera, the structure on show, the
+active section, isovalue, colormap, opacity, representation, material and
+any computed orbital or density surface under a name (**Save View**).
+Selecting a saved bookmark restores them, showing that structure first and
+recomputing the surface. **Save Session** writes every
+bookmark plus the current state to `<name>.vibe-view-session.json` beside
+the archive, where `<name>` is the archive's file name without `.qvf` (the
+path field overrides it; the periodic auto-save writes the same file, and a
+structure with no file on disk uses the cache's auto-session instead), and **Load Session** restores it; the file is plain JSON and can be
 version-controlled or generated by a script.
+
+A session stores viewing state, not a copy of the archive, edited atom
+coordinates or calculated payloads. Open the corresponding archive before
+loading its session; section IDs must still refer to the intended data.
+Keep the QVF alongside the session when sharing a view. Use **Save geometry
+(QVF)** or **Save geometry (XYZ)** to keep edited coordinates, as described
+in [Building and editing](editing.md). A working multi-model scene has its
+own [JSON save and replay](model_scenes.md#save-and-replay).
+
+Session paths are on the server's filesystem. Over SSH, a session saved
+beside the archive is on the remote host, not in your browser's Downloads
+folder. For an uploaded archive with no persistent source path, use an
+explicit writable session path if you want to keep it outside the cache.
 
 Presentation mode (<kbd>p</kbd> or the toolbar icon) turns the bookmarks into
 a full-screen slideshow: <kbd>←</kbd> / <kbd>→</kbd> step through them,
-<kbd>Esc</kbd> leaves. Each slide restores its camera and section.
+<kbd>Esc</kbd> leaves. Each slide restores its bookmark as above.
 
 ## Screenshots, video and high-quality renders
 
-**Export Screenshot** (<kbd>s</kbd>) writes a PNG at a chosen resolution and
-scale, optionally with a transparent background, and can save it next to the
-archive; **Recent Exports** lists what you have written. **Export Video**
-(<kbd>v</kbd>) renders a turntable, a trajectory, a vibration or an orbital
-sweep to MP4 or GIF with a chosen frame rate and quality. Both are
-server-side renders, so ambient occlusion and the material presets apply to
-them exactly as they do to `vibe-view capture`.
+(screenshot-export)=
+**Export Screenshot** (<kbd>s</kbd>) writes a PNG at a scale of 1, 2 or 4,
+optionally with a transparent background. The browser downloads it, and it is
+also saved next to the archive when the source has a filesystem path;
+**Recent Exports** lists what you have written. The dialog's **Render** choice decides where the image comes from:
+
+* *Browser view, as shown* saves the frame the browser draws, at the view's
+  size on screen (in CSS pixels) times the scale, drawn at twice that and
+  downsampled. Only this render has the outlines of isosurfaces and ribbons,
+  with the line scaled to the image, and anything else only the browser
+  draws. When the graphics card cannot draw twice the size, the image is
+  drawn at its own size; beyond the card's limits it shrinks to the largest
+  frame the card draws, and the status line says so.
+* *Server render* draws the scene again on the server, at the server
+  window's size times the scale, with ambient occlusion and ray tracing when
+  they are on, as `vibe-view capture` does. Atoms and bonds keep their
+  outline; isosurfaces and ribbons get none.
+* *Automatic*, the default, takes the browser view unless ray tracing is
+  on, or ambient occlusion is on while no isosurface or ribbon is outlined.
+
+Without a browser view to capture, or when the browser does not answer
+within 30 seconds, the export falls back to the server render, and the
+status line says why.
+
+**Export Video** (<kbd>v</kbd>) renders a turntable, a trajectory, a
+vibration or an orbital sweep to MP4 or GIF at a chosen frame rate. It is a
+server-side render, so ambient occlusion and the material presets apply to
+it exactly as they do to `vibe-view capture`. A screenshot in the
+*Publication* view preset and `vibe-view capture --publication` give the
+same look, except for the outlines of isosurfaces and ribbons, which only
+the browser draws.
 
 **High-Quality Raytrace Render** is a path-traced render with physically
 based materials, environment lighting and depth of field, meant for a cover
@@ -503,15 +1123,49 @@ is absent otherwise rather than failing on use.
 For rendering outside the browser entirely, including POV-Ray and Blender
 scenes, see [Figures without a display](headless.md).
 
+(viewer-defaults-hints-from-the-producer)=
 ## `viewer_defaults`: hints from the producer
 
 A producer can suggest how a file should open by writing `viewer_defaults`
 into the manifest: which section to activate, per-section isovalues,
-colormaps and opacities, camera bookmarks. vibe-view applies them before
-rendering anything. They are hints: every one can be overridden from the
+colormaps and opacities, camera bookmarks, and the bands/DOS
+[energy window](#bands-dos-panel).
+vibe-view applies them before rendering anything. They are hints: every one can be overridden from the
 UI, and unknown fields are ignored rather than rejected. The keys are
 described in the QVF specification in the
 [qvf repository](https://github.com/vibe-qc/qvf).
+
+Two per-section keys belong to the viewer's [volume mode](#volume-mode)
+and are defined by the current
+[QVF section-hint contract](https://vibe-qc.com/docs/qvf/spec.html#section-hint-object):
+`render`, `"isosurface"`
+(the default) or `"volume"`, and `transfer_function`, the function volume
+mode draws with. Its `range` is the window in the section's units, `color`
+holds a list of `[x, r, g, b]` nodes with the colour in 0 to 1, `opacity` holds
+a list of `[x, a]` nodes, and `preset` and `colormap` are optional names; `colormap`
+set to `"custom"` keeps the producer's colour nodes until the user picks a
+colormap. A function that fails these checks, including a malformed node
+list, is ignored; other valid hints still apply and the volume uses its
+default transfer function.
+
+The top-level `crossfade` hint selects two volumes with `a` and `b` and
+an optional `blend` between 0 and 1. A missing, malformed, non-finite or
+out-of-range blend keeps the default 0.5; the volume pair and other valid
+hints still apply.
+
+```json
+"viewer_defaults": {
+  "spin": {
+    "render": "volume",
+    "transfer_function": {
+      "range": [-0.02, 0.02],
+      "color": [[-0.02, 0.23, 0.30, 0.75], [0.0, 0.95, 0.95, 0.95], [0.02, 0.71, 0.02, 0.15]],
+      "opacity": [[-0.02, 0.5], [-0.002, 0.0], [0.002, 0.0], [0.02, 0.5]],
+      "colormap": "custom"
+    }
+  }
+}
+```
 
 ## Opening files from inside the viewer
 
@@ -519,9 +1173,82 @@ The open dialog takes a path to a `.qvf` file or a directory, searches
 subdirectories on request, and can open a file as a separate entry in the
 Files dropdown rather than replacing the current one. It accepts the same
 loose formats as the command line; see [Input formats](formats.md).
+**Browse chemistry file…** uploads a file from the computer the browser runs
+on instead, and it joins the Files dropdown under its own name; the path
+field reads the machine the viewer runs on.
+
+| Action | Where the file is read or saved |
+|---|---|
+| Enter a path in the open dialog | The viewer server's filesystem; a remote path when using SSH |
+| **Browse chemistry file…** | Your browser's computer; the selected file is uploaded to the server |
+| **Save Session** / **Load Session** | A server-side JSON path; not a browser download |
+| Screenshot download | Your browser's download destination; the viewer also attempts a server-side copy |
+
+An upload contains the chosen file, not all files beside it. For an ORCA
+calculation that needs same-basename companions, open its server-side path
+or import the complete dataset to QVF first, then upload that archive.
+TREXIO text datasets are directories: use a server-side path or convert to
+QVF before uploading. See [input formats](formats.md).
 
 ## When something looks wrong
 
 The browser-specific failure modes, from a stale server behind a tab that
 no longer responds to the mouse to Firefox on macOS 15 refusing to connect
 to localhost, are collected in [Troubleshooting](troubleshooting.md).
+
+
+Mode-arrow tails are anchored just outside the displayed atom spheres in the
+positive-phase direction, so small arrows are not hidden inside their own atoms.
+This annotation offset does not enlarge the arrow vector or change the mode,
+Cartesian positions, amplitude, phase or motion. Other geometry can still occlude
+an arrow along a particular viewing direction; rotate the camera when needed.
+
+## Building, inspecting and presenting
+
+The structure controls carry further cards, each with its own chapter:
+
+| Card | What it does | Chapter |
+|---|---|---|
+| **Molecular builder** | Bond rotation, coordination-site filling, peptide and DNA/RNA construction, conformers and a fragment library | [Molecular construction](molecular_builder.md#builder-panel) |
+| **Coordinate editor** | An editable Cartesian table, XYZ paste, and a Z-matrix with Gaussian, ORCA and MOPAC blocks | [Internal coordinates](internal_coordinates.md#coordinate-editor) |
+| **Measurements** (with **Measure** on) | Set a distance, angle or dihedral to an exact value | [Set exact distances, angles and dihedrals](editing.md#set-exact-distances-angles-and-dihedrals) |
+| **Molecular surfaces and interactions** | VdW, SAS and SES surfaces coloured by property, with area and volume, and tables of hydrogen bonds, contacts, clashes, salt bridges, halogen bonds and π-stacks | [Molecular surfaces and interactions](molecular_inspection.md) |
+| **Experimental map** | An MRC/CCP4 map at sigma or absolute levels, as a surface or mesh, with a zone around selected atoms | [Experimental maps](experimental_maps.md#map-control-panel) |
+| **Publication figure** | Measurement labels, text, arrows, boxes, colour keys, per-atom colour and radius mapping, and morph movies | [Publication figures](publication_figures.md) |
+| **Working model scene** | Several models in one scene, with a command line, alignment, measurements and replayable JSON | [Model scenes](model_scenes.md#browser-working-scene) |
+
+Selections in these cards use one [atom selection language](selection_language.md).
+Proteins fetched from the RCSB, AlphaFold or PubChem, and their sequence panel,
+are covered in [Biomolecules](biomolecules.md).
+
+### Return edited geometry to vibe-sketch
+
+A QVF sent by vibe-sketch carries an opaque `x_vibesketch.origin` section.
+For a viewer opened with `vibe-view open FILE --return-dir DIR`, the edit panel
+offers **Send back to vibe-sketch**. The directory must already exist. When
+the viewer launches the sketcher, it creates the private return directory and
+passes `VIBEVIEW_SKETCH_RETURN` beside the existing hand-off variable.
+
+The action saves the edited geometry, explicit bonds, charge/spin, origin bytes
+and viewer/relaxation provenance, then publishes a
+`vibe-sketch-view-return/1` JSON record atomically. The sketcher validates the
+origin and graph before adding a conformer; sending does not overwrite a drawing.
+Use the sketcher's returned-QVF import when automatic inbox consumption is not
+available. If the return directory has disappeared, the viewer reports that the
+sketcher has gone and offers **Save geometry (QVF)** instead. Saving QVF through
+the edit panel or Python geometry export also preserves the origin.
+
+Result selectors (`--view`, `--mode`, `--orbital`) work on direct CLI opens.
+The hand-off record accepts the same optional `view`, `mode` and `orbital` keys;
+`mode` is a positive integer counted from 1. Records without them keep the
+existing auto-open behavior. Unsupported selectors are refused with a reason.
+
+For sequence species with HELM origin hints, **Build sequence 3D** in the edit
+panel uses the existing peptide or nucleic-acid builder. Plain standard peptides
+use the helix starting geometry; single-strand DNA/RNA use the existing B-family
+DNA/A-family RNA templates. These are starting models, not equilibrium predictions.
+The built InChIKey must match the original graph, and every atom is mapped back to
+its original index before any edit is applied. Use **Send back to vibe-sketch**
+to add the checked model as a conformer. Modified, linked or mixed-sugar HELM
+unsupported by these builders is refused; the original graph and geometry stay
+intact. Its full structure remains available for ordinary geometry editing.

@@ -28,6 +28,11 @@ let autoUpdater = null; try { autoUpdater = require("electron-updater").autoUpda
 const HAS_SOURCE_APP_MARKER = fs.existsSync(
   path.join(process.resourcesPath, "app", "vibe-view-source-app.json"),
 );
+const USE_BUNDLED_PYTHON =
+  app.isPackaged && !HAS_SOURCE_APP_MARKER && ["darwin", "linux"].includes(process.platform);
+// Load only in downloaded applications: existing source app installations may
+// contain a copy of main.js without the packaging helpers.
+const bundledRuntime = USE_BUNDLED_PYTHON ? require("./python-runtime.cjs") : null;
 // The published feed currently contains macOS arm64 artifacts only. Keep
 // local Intel, Linux, and Windows packages away from an incompatible or
 // missing feed until their replacement artifacts are actually published.
@@ -39,6 +44,7 @@ const USE_PACKAGED_UPDATER =
 // ── Launcher handshake config ─────────────────────────────────────────
 
 function loadDesktopConfig() {
+  if (USE_BUNDLED_PYTHON) return {};
   const configPath = process.env.VIBEVIEW_DESKTOP_CONFIG;
   if (!configPath) return {};
   try {
@@ -95,7 +101,7 @@ const APP_VERSION = CONFIG.version || app.getVersion();
 // VIBEVIEW_DESKTOP_CONFIG -- it is the only copy of the string left in this
 // file, and tests/test_release_codenames.py asserts it equals what the
 // catalogue resolves for the current version.
-const FALLBACK_CODENAME = "Lorensen's Loon";
+const FALLBACK_CODENAME = "Levinthal's Lynx";
 const APP_CODENAME = CONFIG.codename || FALLBACK_CODENAME;
 
 app.setName("vibe-view");
@@ -104,6 +110,7 @@ let mainWindow = null;
 let setupWindow = null; // first-run onboarding window (setup.html)
 let tray = null;
 let serverProcess = null;
+let launchInProgress = null;
 let autoUpdaterStarted = false;
 let currentFile = null; // absolute path of the loaded file, for the title
 const STATE_FILE = path.join(app.getPath("userData"), "window-state.json");
@@ -211,7 +218,7 @@ function pythonHasVibeview(cmd) {
   try {
     const r = require("child_process").spawnSync(
       cmd,
-      ["-c", "import sys; assert sys.version_info >= (3, 11); import vibeview"],
+      ["-c", "import sys; assert sys.version_info >= (3, 12); import vibeview"],
       { timeout: 10000 },
     );
     return r.status === 0;
@@ -237,7 +244,7 @@ function inspectSupportedPython(cmd) {
     const raw = (r.stdout || "").toString().trim();
     const parts = raw.split(".").map(Number);
     if (parts.length < 2 || parts.some((part) => !Number.isInteger(part))) return null;
-    if (parts[0] < 3 || (parts[0] === 3 && parts[1] < 11)) return null;
+    if (parts[0] < 3 || (parts[0] === 3 && parts[1] < 12)) return null;
     return { cmd, version: `Python ${raw}` };
   } catch (e) {
     return null;
@@ -250,7 +257,7 @@ function inspectSupportedPython(cmd) {
 const PYTHON_CANDIDATES =
   process.platform === "win32"
     ? ["py", "python", "python3"]
-    : ["python3", "python", "python3.13", "python3.12", "python3.11", "python3.14"];
+    : ["python3", "python", "python3.13", "python3.12", "python3.14"];
 
 function findPython() {
   // 1. Live launcher handshake (`vibe-view desktop`): its own interpreter.
@@ -281,7 +288,7 @@ function findPython() {
 }
 
 // Any supported Python on PATH (even without vibe-view), so the onboarding
-// page can distinguish a missing package from no Python 3.11+ installation.
+// page can distinguish a missing package from no Python 3.12+ installation.
 function findAnyPython() {
   for (const cmd of PYTHON_CANDIDATES) {
     const supported = inspectSupportedPython(cmd);
@@ -313,6 +320,9 @@ function pythonHasViewer(cmd) {
 //   { ok: false, reason: "no-vibeview", ... }   → Python present, vibe-view not
 //   { ok: false, reason: "no-viewer", python }  → vibe-view present, [viewer] not
 function resolveEnvironment() {
+  if (USE_BUNDLED_PYTHON) {
+    return bundledRuntime.resolveBundledPython(process.resourcesPath, app.getVersion());
+  }
   const py = findPython();
   if (!py) {
     const any = findAnyPython();
@@ -343,13 +353,13 @@ function startServer(pythonCmd) {
   try {
     serverProcess = spawn(
       pythonCmd,
-      ["-m", "vibeview.cli", "serve", "--port", String(SERVER_PORT)],
+      [...(USE_BUNDLED_PYTHON ? ["-I", "-B"] : []), "-m", "vibeview.cli", "serve", "--port", String(SERVER_PORT)],
       {
         // Serve the directory the user launched from, so the browse
         // page lists *their* .qvf files — not the electron/ folder.
         cwd: serveDirectory(),
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
+        env: USE_BUNDLED_PYTHON ? bundledRuntime.bundledEnvironment() : { ...process.env },
       },
     );
   } catch (e) {
@@ -387,7 +397,7 @@ function stopServer() {
 
 function showSetupWindow(state) {
   const query = {
-    reason: state.reason || "no-vibeview",
+    reason: USE_BUNDLED_PYTHON ? "bundle-error" : (state.reason || "no-vibeview"),
     // The managed venv path + platform let the page render an OS-correct,
     // PEP 668-safe install recipe the user can copy.
     venv: managedVenvDir(),
@@ -428,7 +438,14 @@ function showSetupWindow(state) {
 
 // Resolve the environment, then either start the server + main window, or fall
 // back to the onboarding window. Safe to call repeatedly (e.g. from a recheck).
-async function launch() {
+function launch() {
+  if (!launchInProgress) {
+    launchInProgress = launchServer().finally(() => { launchInProgress = null; });
+  }
+  return launchInProgress;
+}
+
+async function launchServer() {
   const env = resolveEnvironment();
   if (!env.ok) {
     showSetupWindow(env);
@@ -628,6 +645,18 @@ async function showOpenDialog(filters) {
 // ── Window management ──────────────────────────────────────────────────
 
 function createWindow(fileToOpen = null) {
+  // Dock activation must not bypass repair and connect to a foreign server on
+  // the default port when the embedded runtime failed before starting ours.
+  if (USE_BUNDLED_PYTHON && !serverProcess) {
+    if (fileToOpen) pendingOpenFile = fileToOpen;
+    if (setupWindow) {
+      setupWindow.show();
+      setupWindow.focus();
+    } else {
+      void launch();
+    }
+    return;
+  }
   if (mainWindow) {
     if (fileToOpen) {
       openFile(fileToOpen);
@@ -774,9 +803,12 @@ function createTray() {
       click: () => createWindow(),
     },
     {
-      label: "Open QVF or TREXIO File...",
+      label: "Open QVF, TREXIO or ORCA File...",
       click: () => showOpenDialog([
-        { name: "QVF and TREXIO Files", extensions: ["qvf", "trexio", "h5", "hdf5"] },
+        {
+          name: "QVF, TREXIO and ORCA Files",
+          extensions: ["qvf", "trexio", "h5", "hdf5", "gbw", "json", "txt", "mcd", "hess", "out", "inp"],
+        },
       ]),
     },
     { type: "separator" },
@@ -827,18 +859,30 @@ function buildRecentSubmenu() {
   return items;
 }
 
+const pythonConsole = require("./python-console.cjs").createPythonConsole({
+  BrowserWindow, ipcMain, parent: () => mainWindow,
+  launch: () => {
+    const resolved = resolveEnvironment();
+    if (!resolved.ok) throw new Error(`Python console unavailable: ${resolved.reason}`);
+    return { python: resolved.python, cwd: serveDirectory(),
+      args: USE_BUNDLED_PYTHON ? ["-I", "-B"] : [],
+      env: USE_BUNDLED_PYTHON ? bundledRuntime.bundledEnvironment() : { ...process.env } };
+  },
+});
+
 function createMenu() {
   const template = [
     {
       label: "File",
       submenu: [
         {
-          label: "Open QVF or TREXIO File...",
+          label: "Open QVF, TREXIO or ORCA File...",
           accelerator: "CmdOrCtrl+O",
           click: () =>
             showOpenDialog([
               { name: "QVF Files", extensions: ["qvf"] },
               { name: "TREXIO Files", extensions: ["trexio", "h5", "hdf5"] },
+              { name: "ORCA Files", extensions: ["gbw", "json", "txt", "mcd", "hess", "out", "inp"] },
               { name: "All Files", extensions: ["*"] },
             ]),
         },
@@ -890,6 +934,8 @@ function createMenu() {
       submenu: [
         { role: "reload" },
         { role: "toggleDevTools" },
+        { label: "Python Console", accelerator: "CmdOrCtrl+Shift+P",
+          click: () => pythonConsole.show() },
         { type: "separator" },
         { role: "zoomIn" },
         { role: "zoomOut" },
@@ -1140,6 +1186,7 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   app.isQuitting = true;
+  pythonConsole.close();
   stopServer();
   saveWindowState();
 });

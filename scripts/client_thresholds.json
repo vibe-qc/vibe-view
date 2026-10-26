@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "about": "Limits for scripts/client_qualification.py, per WebGL renderer class. A drag case is judged on its 95th-percentile step in milliseconds, a switch on seconds from the click until the new scene is drawn; null reports a case without gating it. The gpu limits are the interactive bar, 60 frames a second (30 for direct volume rendering). The software limits use about twice the measured Linux SwiftShader cost rather than promise a frame rate, and labels there are reported only: their extruded text is the cost, not the viewer. docs/client_performance.md gives the measurements.",
+  "classes": {
+    "gpu": {
+      "drag_p95_ms": {
+        "default": 16.7,
+        "drag.volume": 33.4
+      },
+      "switch_s": {
+        "default": 10.0
+      }
+    },
+    "software": {
+      "drag_p95_ms": {
+        "default": 150.0,
+        "drag.volume": 75.0,
+        "drag.labels": null
+      },
+      "switch_s": {
+        "default": 2.0
+      }
+    }
+  }
+}

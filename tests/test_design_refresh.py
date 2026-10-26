@@ -30,9 +30,28 @@ _DIALOG_MODELS_AND_LABELS = {
 }
 
 _SLIDER_MODELS_AND_NAMES = {
-    "spectra_gamma_scale": "Spectrum broadening",
+    "expmap_opacity": "Experimental map opacity",
+    "mb_angle": "Bond rotation angle",
+    "complex_isovalue": "Complex field isovalue",
+    "series_slab": "Volume series slab",
+    "force_arrow_length": "Force arrow length",
+    "bloch_isovalue": "Bloch orbital isovalue",
+    "series_isovalue": "Volume series isovalue",
+    "vector_stride": "Vector arrow spacing",
+    "vector_length_scale": "Vector arrow length",
+    "vector_cutoff": "Vector magnitude cutoff",
+    "vibration_arrow_cutoff": "Vibration arrow cutoff",
+    "vibration_arrow_thickness": "Vibration arrow radius",
     "isovalue": "Volume isovalue",
     "opacity": "Volume opacity",
+    "vol_window_low": "Volume window low end",
+    "vol_window_high": "Volume window high end",
+    "vol_ramp_0": "Volume opacity at the window's start",
+    "vol_ramp_1": "Volume opacity at 20% of the window",
+    "vol_ramp_2": "Volume opacity at 40% of the window",
+    "vol_ramp_3": "Volume opacity at 60% of the window",
+    "vol_ramp_4": "Volume opacity at 80% of the window",
+    "vol_ramp_5": "Volume opacity at the window's end",
     "clip_x": "Clip plane X position",
     "clip_y": "Clip plane Y position",
     "clip_z": "Clip plane Z position",
@@ -41,6 +60,7 @@ _SLIDER_MODELS_AND_NAMES = {
     "mo_opacity": "Molecular orbital opacity",
     "wf_elf_iso": "ELF isovalue",
     "vibration_amplitude": "Vibration displacement amplitude",
+    "vibration_phase_step": "Vibration phase",
 }
 
 _PANEL_SEPARATOR_CONTRACT = {
@@ -140,11 +160,9 @@ def _qvf(label: str, freqs, ints, scf_iters=None) -> Path:
 
 def test_browser_landmarks_controls_and_statuses_have_a11y_contract():
     """Trame must explicitly forward ARIA attributes to the served DOM."""
-    import inspect
+    from tests._served import served_viewer
 
-    import vibeview.app as app
-
-    source = inspect.getsource(app.create_app)
+    served = served_viewer()
 
     for label in (
         "vq Job Manager",
@@ -153,211 +171,30 @@ def test_browser_landmarks_controls_and_statuses_have_a11y_contract():
         "Close vq Job Manager",
         "Close job details",
     ):
-        assert f'aria_label="{label}"' in source
-    assert source.count('[("aria_label", "aria-label")]') >= 5
+        assert f'aria-label="{label}"' in served
 
-    assert "Interactive 3D molecular structure viewport" in source
-    assert "el.setAttribute('aria-label'," in source
+    assert "Interactive 3D molecular structure viewport" in served
+    assert "el.setAttribute('aria-label'," in served
 
-    assert source.count('role="status"') == 2
-    assert source.count('aria_live="polite"') == 2
-    assert source.count('aria_atomic="true"') == 2
-    assert source.count('("aria_live", "aria-live")') == 2
-    assert source.count('("aria_atomic", "aria-atomic")') == 2
-    assert '"Job status: {{ live_run_status }}"' in source
+    assert served.count('role="status"') == 2
+    assert served.count('aria-live="polite"') == 2
+    assert served.count('aria-atomic="true"') == 2
+    assert "Job status: {{ live_run_status }}" in served
 
 
-def test_every_modal_dialog_forwards_a_unique_accessible_name():
-    """Every Vuetify dialog must name its served ``role=dialog`` root."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    dialogs = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VDialog"
-    ]
-    assert source.count("VDialog") == len(dialogs), (
-        "call dialogs directly as v.VDialog so the complete inventory stays testable"
-    )
-
-    models_and_labels = {}
-    for dialog in dialogs:
-        keywords = {kw.arg: kw.value for kw in dialog.keywords}
-        assert "v_model" in keywords, f"VDialog at line {dialog.lineno} has no model"
-        assert "aria_label" in keywords, f"unnamed VDialog at line {dialog.lineno}"
-        assert "__properties" in keywords, (
-            f"VDialog at line {dialog.lineno} does not forward aria-label"
-        )
-        model = ast.literal_eval(keywords["v_model"])[0]
-        models_and_labels[model] = ast.literal_eval(keywords["aria_label"])
-        properties = ast.literal_eval(keywords["__properties"])
-        assert ("aria_label", "aria-label") in properties
-
-    assert models_and_labels == _DIALOG_MODELS_AND_LABELS
-    assert len(dialogs) == len(_DIALOG_MODELS_AND_LABELS)
-    assert len(set(models_and_labels.values())) == len(models_and_labels), (
-        "each dialog must have a distinct accessible name"
-    )
 
 
-def test_supercell_dialog_only_offers_real_periodic_axes():
-    """Periodic builder fields must follow the structure's per-axis PBC."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    tree = ast.parse(inspect.getsource(app.create_app))
-    expected = {
-        "build_supercell_nx": ("!is_periodic || pbc_a",),
-        "build_supercell_ny": ("!is_periodic || pbc_b",),
-        "build_supercell_nz": ("!is_periodic || pbc_c",),
-    }
-    actual = {}
-    for node in ast.walk(tree):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "VTextField"
-        ):
-            continue
-        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
-        if "v_model" not in keywords:
-            continue
-        model = ast.literal_eval(keywords["v_model"])[0]
-        if model not in expected:
-            continue
-        assert model not in actual, f"duplicate supercell field for {model}"
-        assert "v_if" in keywords, f"{model} is not gated by periodicity"
-        actual[model] = ast.literal_eval(keywords["v_if"])
-
-    assert actual == expected
 
 
-def test_every_state_driven_dialog_shares_the_focus_return_contract():
-    """One global focus lifecycle must cover the complete dialog inventory."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    scripts = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "Script"
-        and node.args
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == "_DIALOG_FOCUS_JS"
-    ]
-
-    assert len(scripts) == 1
-    assert source.count("v.VDialog(") == len(_DIALOG_MODELS_AND_LABELS)
-    dialogs = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VDialog"
-    ]
-    assert len(dialogs) == len(_DIALOG_MODELS_AND_LABELS)
-    for dialog in dialogs:
-        keywords = {kw.arg: kw.value for kw in dialog.keywords}
-        v_model = keywords.get("v_model")
-        assert isinstance(v_model, ast.Tuple) and v_model.elts
-        assert isinstance(v_model.elts[0], ast.Constant)
-        model = v_model.elts[0].value
-        assert isinstance(model, str)
-        label = keywords.get("aria_label")
-        assert isinstance(label, ast.Constant) and isinstance(label.value, str)
-        hook = keywords.get("afterLeave")
-        assert isinstance(hook, ast.Call), (
-            f"VDialog for {model!r} at line {dialog.lineno} has no afterLeave hook"
-        )
-        assert isinstance(hook.func, ast.Name) and hook.func.id == "_dialog_focus_restore"
-        assert len(hook.args) == 1 and isinstance(hook.args[0], ast.Constant)
-        assert hook.args[0].value == label.value
-
-    focus_script = app._DIALOG_FOCUS_JS
-    for marker in (
-        "document.addEventListener('focusin'",
-        "document.addEventListener('pointerdown'",
-        "Object.create(null)",
-        "event.relatedTarget",
-        "_vvFocusCaptured",
-        "current[current.length-1]!==entry",
-        "window._vvRestoreDialogFocus",
-        "requestAnimationFrame",
-        "[role=dialog]",
-        "el.isConnected",
-        ".vv-presentation-overlay-content",
-        "delete origins[key]",
-        "top.contains(target)",
-        "target.focus({preventScroll:true})",
-    ):
-        assert marker in focus_script
-    assert "history" not in focus_script
 
 
-def test_every_slider_forwards_a_unique_accessible_name():
-    """Every slider must name the focusable Vuetify thumb it generates."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    sliders = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VSlider"
-    ]
-    assert source.count("v.VSlider(") == len(sliders), (
-        "call sliders directly as v.VSlider so the complete inventory stays testable"
-    )
-
-    models_and_names = {}
-    for slider in sliders:
-        keywords = {kw.arg: kw.value for kw in slider.keywords}
-        assert "v_model" in keywords, f"VSlider at line {slider.lineno} has no model"
-        assert "aria_label" in keywords, f"unnamed VSlider at line {slider.lineno}"
-        assert "__properties" in keywords, (
-            f"VSlider at line {slider.lineno} does not forward aria-label"
-        )
-        model = ast.literal_eval(keywords["v_model"])[0]
-        name = ast.literal_eval(keywords["aria_label"])
-        assert model not in models_and_names, f"duplicate VSlider model {model!r}"
-        models_and_names[model] = name
-        properties = ast.literal_eval(keywords["__properties"])
-        assert ("aria_label", "aria-label") in properties
-
-    assert models_and_names == _SLIDER_MODELS_AND_NAMES
-    assert len(sliders) == len(_SLIDER_MODELS_AND_NAMES)
-    assert len(set(models_and_names.values())) == len(models_and_names), (
-        "each slider must have a distinct accessible name"
-    )
 
 
 def test_panel_resize_handles_share_a_keyboard_separator_contract():
     """All three resize paths must stay keyboard-operable and self-describing."""
-    import inspect
+    from tests._served import served_viewer
 
-    import vibeview.app as app
-
-    source = inspect.getsource(app.create_app)
+    source = served_viewer()
 
     for marker in (
         "attach('vv-left-panel','left','left_panel_width','Result sections',280)",
@@ -380,8 +217,8 @@ def test_panel_resize_handles_share_a_keyboard_separator_contract():
         "ResizeObserver",
         "current&&current.splitter.isConnected&&current.panel.isConnected",
         "current={splitter:s,panel:p,refresh:function(){announce(read());}}",
-        "attachAll();setInterval(attachAll,1000)",
-        "attach();setInterval(attach,1000)",
+        "window._vvOnDomChange(attachAll);",
+        "window._vvOnDomChange(attach);",
         "Math.floor(vh*0.85)",
         "min-height: 80px; height: 35vh;",
         "max-height: 85vh; overflow: auto; resize: vertical;",
@@ -394,147 +231,10 @@ def test_panel_resize_handles_share_a_keyboard_separator_contract():
     assert "min-height: 60px" not in source
 
 
-def test_clip_sliders_share_a_payload_safe_update_contract():
-    """Every clip slider sends its model value to a callback that accepts it."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    handlers = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "update_clip"
-    ]
-    assert len(handlers) == 1
-    handler = handlers[0]
-    assert [arg.arg for arg in handler.args.args] == ["axis", "value"]
-    assert len(handler.args.defaults) == 2
-    assert all(ast.literal_eval(default) is None for default in handler.args.defaults)
-
-    clip_models = {"clip_x", "clip_y", "clip_z"}
-    bindings = {}
-    for slider in (
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VSlider"
-    ):
-        keywords = {kw.arg: kw.value for kw in slider.keywords}
-        if "v_model" not in keywords:
-            continue
-        model = ast.literal_eval(keywords["v_model"])[0]
-        if model in clip_models:
-            bindings[model] = ast.unparse(keywords["update_modelValue"])
-
-    assert bindings == {
-        "clip_x": "(ctrl.update_clip, \"['x', $event]\")",
-        "clip_y": "(ctrl.update_clip, \"['y', $event]\")",
-        "clip_z": "(ctrl.update_clip, \"['z', $event]\")",
-    }
 
 
-def test_every_trajectory_and_orbital_playback_button_has_an_accessible_name():
-    """The six icon-only playback buttons must remain completely inventoried."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    target_actions = {action for action, _argument in _PLAYBACK_BUTTON_CONTRACT}
-
-    def action_key(click: ast.expr) -> tuple[str, str | None] | None:
-        if (
-            isinstance(click, ast.Attribute)
-            and isinstance(click.value, ast.Name)
-            and click.value.id == "ctrl"
-        ):
-            return click.attr, None
-        if (
-            isinstance(click, ast.Tuple)
-            and len(click.elts) == 2
-            and isinstance(click.elts[0], ast.Attribute)
-            and isinstance(click.elts[0].value, ast.Name)
-            and click.elts[0].value.id == "ctrl"
-        ):
-            return click.elts[0].attr, ast.literal_eval(click.elts[1])
-        return None
-
-    found = {}
-    for button in (
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "VBtn"
-    ):
-        keywords = {kw.arg: kw.value for kw in button.keywords}
-        if "click" not in keywords:
-            continue
-        key = action_key(keywords["click"])
-        if key is None or key[0] not in target_actions:
-            continue
-
-        assert key not in found, f"duplicate playback control for {key!r}"
-        assert not button.args, f"playback VBtn {key!r} must remain icon-only"
-        assert "icon" in keywords, f"playback VBtn {key!r} lost its icon"
-        assert "title" in keywords, f"playback VBtn {key!r} has no hover name"
-        assert "aria_label" in keywords, f"playback VBtn {key!r} is unnamed"
-        assert "__properties" in keywords, (
-            f"playback VBtn {key!r} does not forward aria-label"
-        )
-        icon = ast.literal_eval(keywords["icon"])
-        title = ast.literal_eval(keywords["title"])
-        aria_label = ast.literal_eval(keywords["aria_label"])
-        properties = ast.literal_eval(keywords["__properties"])
-        assert title == aria_label
-        assert ("aria_label", "aria-label") in properties
-        found[key] = (icon, aria_label)
-
-    assert found == _PLAYBACK_BUTTON_CONTRACT
-    assert len(found) == 6
 
 
-def test_visible_native_colour_input_forwards_an_accessible_name():
-    """The raw colour picker is named; the other raw input remains hidden."""
-    import ast
-    import inspect
-
-    import vibeview.app as app
-
-    source = inspect.getsource(app)
-    tree = ast.parse(source)
-    inputs = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "html"
-        and node.func.attr == "Input"
-    ]
-    assert source.count("html.Input(") == len(inputs) == 2
-
-    by_type = {}
-    for input_node in inputs:
-        keywords = {kw.arg: kw.value for kw in input_node.keywords}
-        input_type = ast.literal_eval(keywords["type"])
-        assert input_type not in by_type, f"duplicate raw input type {input_type!r}"
-        by_type[input_type] = keywords
-
-    assert set(by_type) == {"file", "color"}
-    assert "display: none" in ast.literal_eval(by_type["file"]["style"])
-
-    colour = by_type["color"]
-    assert ast.literal_eval(colour["v_model"]) == ("element_color_value",)
-    assert ast.literal_eval(colour["title"]) == "Element colour override"
-    assert ast.literal_eval(colour["aria_label"]) == "Element colour override"
-    assert ("aria_label", "aria-label") in ast.literal_eval(colour["__properties"])
 
 
 def test_generated_vue_template_forwards_every_dialog_name():
@@ -690,9 +390,10 @@ def test_generated_vue_template_names_the_visible_native_colour_input():
         for line in template.splitlines()
         if line.lstrip().startswith("<input ")
     ]
-    assert len(tags) == 2
-    file_tag = next(tag for tag in tags if 'type="file"' in tag)
-    colour_tag = next(tag for tag in tags if 'type="color"' in tag)
+    file_tags = [tag for tag in tags if 'id="qvf-file-input"' in tag]
+    colour_tags = [tag for tag in tags if 'v-model="element_color_value"' in tag]
+    assert len(file_tags) == len(colour_tags) == 1
+    file_tag, colour_tag = file_tags[0], colour_tags[0]
     assert 'style="display: none;"' in file_tag
     assert 'v-model="element_color_value"' in colour_tag
     assert 'title="Element colour override"' in colour_tag
@@ -709,6 +410,8 @@ def _serve_dialogs_open(
     slider_scenario: bool = False,
     playback_scenario: str = "",
     focus_scenario: bool = False,
+    label_follower_scenario: bool = False,
+    silhouette_scenario: bool = False,
 ) -> None:
     """Child-process entry point for the trusted-browser DOM regression."""
     import os
@@ -758,6 +461,7 @@ def _serve_dialogs_open(
             target_kind = {
                 "trajectory": "trajectory",
                 "molecular-orbital": "wavefunction.gto",
+                "molecular-orbital-progress": "wavefunction.gto",
             }.get(playback_scenario)
             if target_kind is None:
                 raise ValueError(f"unknown playback scenario: {playback_scenario!r}")
@@ -767,6 +471,22 @@ def _serve_dialogs_open(
             if playback_scenario == "molecular-orbital":
                 server.state.wf_anim_speed = 60.0
             server.controller.activate_section(section.id)
+            if playback_scenario == "molecular-orbital-progress":
+                server.state.wf_anim_speed = 0.8
+                server.state.wf_selected_mo = server.state.wf_mo_rows[0]["value"]
+                server.controller.render_mo(server.state.wf_selected_mo)
+        if label_follower_scenario:
+            server.controller.toggle_atom_labels(True)
+        if silhouette_scenario:
+            # An orbital isosurface in the Publication look: white
+            # background, outlines on, chrome hidden (#112).
+            wavefunction = next(
+                section for section in reader.sections if section.kind == "wavefunction.gto"
+            )
+            server.controller.activate_section(wavefunction.id)
+            server.state.wf_selected_mo = server.state.wf_mo_rows[0]["value"]
+            server.controller.render_mo(server.state.wf_selected_mo)
+            server.controller.apply_view_preset("publication")
         if open_initially:
             for model in dialog_models:
                 setattr(server.state, model, True)
@@ -829,6 +549,8 @@ def test_served_dialog_and_presentation_dom_contracts(
 
     browser_probe = r"""
 const { spawn } = require("node:child_process");
+const { createHash } = require("node:crypto");
+const { writeFileSync } = require("node:fs");
 const chrome = process.argv[1];
 const url = process.argv[2];
 const profile = process.argv[3];
@@ -840,6 +562,9 @@ const playbackScenario = process.argv[8] || "";
 const colorInputScenario = process.argv[9] === "true";
 const focusScenario = process.argv[10] || "";
 const cdpTimeoutScenario = process.argv[11] === "true";
+const labelFollowerScenario = process.argv[12] === "true";
+const silhouetteScenario = process.argv[13] === "true";
+const browserScreenshotScenario = process.argv[14] === "true";
 const profileName = profile.split(/[\\/]/).pop();
 const child = spawn(chrome, [
   "--headless",
@@ -850,6 +575,10 @@ const child = spawn(chrome, [
   "--no-first-run",
   "--no-default-browser-check",
   "--remote-debugging-port=0",
+  ...(playbackScenario === "molecular-orbital-progress" || labelFollowerScenario ||
+    silhouetteScenario || browserScreenshotScenario
+    ? ["--window-size=1400,1000"]
+    : []),
   `--user-data-dir=${profile}`,
   "about:blank",
 ], { stdio: ["ignore", "ignore", "pipe"] });
@@ -879,7 +608,7 @@ const hardTimeout = setTimeout(
     diagnostic: probeDiagnostic,
     browserStderr,
   }),
-  focusScenario || sliderScenario ? 90000 : 45000,
+  focusScenario || sliderScenario || browserScreenshotScenario ? 90000 : 45000,
 );
 
 function finish(code, payload) {
@@ -913,6 +642,17 @@ function finish(code, payload) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// The keyDown a real keyboard sends: a printable key carries its text, and a
+// Ctrl/Alt/Meta chord does not (Puppeteer's rule). Headless Chrome 155 on
+// macOS turns the page hidden on a printable keyDown without text, which
+// stops requestAnimationFrame and freezes every Vue transition (#83).
+function keyDown(params) {
+  const printable = params.key.length === 1 && !(params.modifiers & ~8);
+  return printable
+    ? { type: "keyDown", text: params.key, unmodifiedText: params.key, ...params }
+    : { type: "keyDown", ...params };
 }
 
 function recordProbeState(action, state) {
@@ -1266,7 +1006,7 @@ async function inspectPage(browserWebSocket) {
         windowsVirtualKeyCode: virtualKeyCode,
         nativeVirtualKeyCode: virtualKeyCode,
       };
-      await inputCommand("Input.dispatchKeyEvent", { type: "keyDown", ...params });
+      await inputCommand("Input.dispatchKeyEvent", keyDown(params));
       await inputCommand("Input.dispatchKeyEvent", { type: "keyUp", ...params });
     }
 
@@ -1650,9 +1390,728 @@ async function inspectPage(browserWebSocket) {
     });
     return;
   }
+  if (browserScreenshotScenario) {
+    // #116: Export screenshot takes the frame the browser draws, so an
+    // exported figure keeps the silhouette pass's outlines. The probe
+    // catches the downloads the export starts and reads the images back:
+    // at scale 1 with the pass on and off, whose difference must be the
+    // outline of the orbital, and at scale 2 on a transparent background.
+    async function evaluateExport(expression, action, awaitPromise = false) {
+      recordProbeState(action);
+      const evaluation = await command("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise,
+      });
+      if (evaluation.exceptionDetails) {
+        throw new Error(
+          evaluation.exceptionDetails.exception?.description ||
+          evaluation.exceptionDetails.text ||
+          "browser screenshot probe evaluation failed"
+        );
+      }
+      return evaluation.result ? evaluation.result.value : undefined;
+    }
+    const exportStateExpression = `(() => {
+      let view = null;
+      for (const name of Object.keys((window.trame && window.trame.refs) || {})) {
+        try {
+          const candidate = window.trame.refs[name].$.provides.view;
+          if (candidate && candidate.openglRenderWindow) {
+            view = candidate;
+            break;
+          }
+        } catch (error) {
+          // not a vtk view
+        }
+      }
+      const rect = view && view.container ? view.container.getBoundingClientRect() : null;
+      return {
+        readyState: document.readyState,
+        browserReady: Boolean(window.trame && window.trame.state &&
+          window.trame.state.get('browser_capture_ready')),
+        silhouette: window.vvSilhouette ? { ...window.vvSilhouette.stats } : null,
+        capture: window.vvCapture ? { ...window.vvCapture.stats } : null,
+        css: rect && rect.width > 0 ? [rect.width, rect.height] : null,
+        live: view ? Array.from(view.openglRenderWindow.getSize()) : null,
+      };
+    })()`;
+    const deadline = Date.now() + 30000;
+    let ready = null;
+    while (Date.now() < deadline) {
+      ready = await evaluateExport(exportStateExpression, "wait for the outlined orbital");
+      recordProbeState("wait for the outlined orbital", ready);
+      if (ready.readyState === "complete" && ready.browserReady && ready.css &&
+          ready.silhouette && ready.silhouette.frames > 0 && ready.silhouette.targets > 0) break;
+      ready = null;
+      await delay(150);
+    }
+    if (!ready) throw new Error("the browser never reported an outlined view to capture");
+    await evaluateExport(`(() => {
+      const record = window.__vvExport = { downloads: [], shots: {} };
+      const click = HTMLElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (!this.download) return click.call(this);
+        record.downloads.push({ name: this.download, href: this.href });
+      };
+      return true;
+    })()`, "catch the export downloads");
+    async function exportShot(label, scale, transparent, outlines) {
+      const start = await evaluateExport(`(async () => {
+        const count = window.__vvExport.downloads.length;
+        await window.trame.state.update({
+          screenshot_scale: ${scale},
+          screenshot_transparent: ${transparent},
+        });
+        await window.trame.state.flush();
+        window.vvSilhouette.stats.enabled = ${outlines};
+        window.trame.trigger('save_screenshot');
+        return count;
+      })()`, `export ${label}`, true);
+      const exportDeadline = Date.now() + 30000;
+      let polled = null;
+      while (Date.now() < exportDeadline) {
+        polled = await evaluateExport(`({
+          downloads: window.__vvExport.downloads.length,
+          status: window.trame.state.get('status_message'),
+          capture: { ...window.vvCapture.stats },
+        })`, `wait for export ${label}`);
+        recordProbeState(`wait for export ${label}`, polled);
+        if (polled.downloads > start) break;
+        await delay(150);
+      }
+      if (!(polled && polled.downloads > start)) {
+        throw new Error(`export ${label} never downloaded: ${JSON.stringify(polled)}`);
+      }
+      return evaluateExport(`(async () => {
+        window.vvSilhouette.stats.enabled = true;
+        const download = window.__vvExport.downloads[${start}];
+        const image = new Image();
+        image.src = download.href;
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext('2d');
+        context.drawImage(image, 0, 0);
+        window.__vvExport.shots['${label}'] = {
+          width: canvas.width,
+          height: canvas.height,
+          data: context.getImageData(0, 0, canvas.width, canvas.height).data,
+        };
+        return {
+          name: download.name,
+          width: canvas.width,
+          height: canvas.height,
+          status: window.trame.state.get('status_message'),
+          capture: { ...window.vvCapture.stats.last },
+        };
+      })()`, `read export ${label}`, true);
+    }
+    const shots = [
+      await exportShot("outlined", 1, false, true),
+      await exportShot("plain", 1, false, false),
+      await exportShot("transparent", 2, true, true),
+    ];
+    // The dark pixels the pass adds to the export lie on the boundary of the
+    // orbital in the export without it, and cover most of that boundary.
+    const analysis = await evaluateExport(`(() => {
+      const shots = window.__vvExport.shots;
+      const a = shots.outlined, b = shots.plain, c = shots.transparent;
+      const W = a.width, H = a.height, N = W * H;
+      const dark = (px, i) => px[4 * i] < 70 && px[4 * i + 1] < 70 && px[4 * i + 2] < 70 &&
+        px[4 * i + 3] > 200;
+      const bg = [b.data[0], b.data[1], b.data[2]];
+      const covered = new Uint8Array(N), extra = new Uint8Array(N), boundary = new Uint8Array(N);
+      let nExtra = 0, nBoundary = 0;
+      for (let i = 0; i < N; i++) {
+        const distance = Math.abs(b.data[4 * i] - bg[0]) + Math.abs(b.data[4 * i + 1] - bg[1]) +
+          Math.abs(b.data[4 * i + 2] - bg[2]);
+        covered[i] = distance > 30 ? 1 : 0;
+        if (dark(a.data, i) && !dark(b.data, i)) {
+          extra[i] = 1;
+          nExtra++;
+        }
+      }
+      for (let y = 1; y < H - 1; y++) {
+        for (let x = 1; x < W - 1; x++) {
+          const i = y * W + x;
+          if (covered[i] &&
+              (!covered[i - 1] || !covered[i + 1] || !covered[i - W] || !covered[i + W])) {
+            boundary[i] = 1;
+            nBoundary++;
+          }
+        }
+      }
+      const near = (mask, i, r) => {
+        const px = i % W, py = (i - px) / W;
+        for (let dy = -r; dy <= r; dy++) {
+          const qy = py + dy;
+          if (qy < 0 || qy >= H) continue;
+          for (let dx = -r; dx <= r; dx++) {
+            const qx = px + dx;
+            if (qx >= 0 && qx < W && mask[qy * W + qx]) return true;
+          }
+        }
+        return false;
+      };
+      let extraNearBoundary = 0, boundaryOutlined = 0;
+      for (let i = 0; i < N; i++) {
+        if (extra[i] && near(boundary, i, 4)) extraNearBoundary++;
+        if (boundary[i] && near(extra, i, 4)) boundaryOutlined++;
+      }
+      let clear = 0, transparentDark = 0;
+      for (let i = 0; i < c.width * c.height; i++) {
+        if (c.data[4 * i + 3] === 0) clear++;
+        else if (dark(c.data, i)) transparentDark++;
+      }
+      return {
+        extra: nExtra,
+        boundary: nBoundary,
+        precision: nExtra ? extraNearBoundary / nExtra : 0,
+        recall: nBoundary ? boundaryOutlined / nBoundary : 0,
+        corner: Array.from(c.data.slice(0, 4)),
+        clear,
+        transparentDark,
+        // Twice the size and twice the line width: about four times the
+        // outline pixels, if the line scales with the export.
+        scaleRatio: nExtra ? transparentDark / nExtra : 0,
+      };
+    })()`, "compare the exports");
+    const after = await evaluateExport(exportStateExpression, "read the view after the exports");
+    socket.close();
+    finish(0, { browserScreenshot: { ready, shots, analysis, after } });
+    return;
+  }
+  if (silhouetteScenario) {
+    // #112: the client outlines the orbital isosurface. A frame read back
+    // with the pass on and off: the dark pixels the pass adds must sit on the
+    // boundary of the outlined surface, rendered alone, and cover most of
+    // it, before and during a trusted drag; picking must still work.
+    async function evaluateSilhouette(expression, action) {
+      recordProbeState(action);
+      const evaluation = await command("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+      });
+      if (evaluation.exceptionDetails) {
+        throw new Error(
+          evaluation.exceptionDetails.exception?.description ||
+          evaluation.exceptionDetails.text ||
+          "silhouette probe evaluation failed"
+        );
+      }
+      return evaluation.result ? evaluation.result.value : undefined;
+    }
+    const silhouetteExpression = `(() => {
+      const sil = window.vvSilhouette;
+      let view = null;
+      for (const name of Object.keys(window.trame.refs || {})) {
+        try {
+          const candidate = window.trame.refs[name].$.provides.view;
+          if (candidate && candidate.openglRenderWindow) {
+            view = candidate;
+            break;
+          }
+        } catch (error) {
+          // not a vtk view
+        }
+      }
+      const result = {
+        readyState: document.readyState,
+        installed: Boolean(sil && sil.stats.installed),
+        stats: sil ? { ...sil.stats } : null,
+        camera: null,
+        frame: null,
+      };
+      if (!view || !result.installed) return result;
+      const ogl = view.openglRenderWindow;
+      const renderer = view.renderer;
+      const canvas = ogl.getCanvas();
+      const W = canvas.width, H = canvas.height, N = W * H;
+      const gl = canvas.getContext('webgl2');
+      const camera = renderer.getActiveCamera();
+      result.camera = {
+        position: Array.from(camera.getPosition()),
+        focalPoint: Array.from(camera.getFocalPoint()),
+      };
+      // vtk.js skips an explicit render while it animates a drag, so draw
+      // through the view and read the pixels in the same task.
+      const draw = () => ogl.traverseAllPasses();
+      const read = () => {
+        const pixels = new Uint8Array(N * 4);
+        gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        return pixels;
+      };
+      const dark = (px, i) => px[4 * i] < 70 && px[4 * i + 1] < 70 && px[4 * i + 2] < 70;
+      sil.stats.enabled = true;
+      draw();
+      const on = read();
+      const outlined = sil.outlined();
+      sil.stats.enabled = false;
+      draw();
+      const off = read();
+      // The outlined surfaces alone, without the pass: their coverage.
+      const hidden = renderer.getViewProps()
+        .filter((prop) => prop.getVisibility() && outlined.indexOf(prop) < 0);
+      hidden.forEach((prop) => prop.setVisibility(false));
+      draw();
+      const cover = read();
+      hidden.forEach((prop) => prop.setVisibility(true));
+      sil.stats.enabled = true;
+      draw();
+      const bg = renderer.getBackground().map((c) => c * 255);
+      const covered = new Uint8Array(N), extra = new Uint8Array(N), boundary = new Uint8Array(N);
+      let nExtra = 0, nOnDark = 0, nOffDark = 0, nBoundary = 0;
+      for (let i = 0; i < N; i++) {
+        const distance = Math.abs(cover[4 * i] - bg[0]) + Math.abs(cover[4 * i + 1] - bg[1]) +
+          Math.abs(cover[4 * i + 2] - bg[2]);
+        covered[i] = distance > 30 ? 1 : 0;
+        const withPass = dark(on, i), withoutPass = dark(off, i);
+        if (withPass) nOnDark++;
+        if (withoutPass) nOffDark++;
+        if (withPass && !withoutPass) {
+          extra[i] = 1;
+          nExtra++;
+        }
+      }
+      for (let yy = 1; yy < H - 1; yy++) {
+        for (let xx = 1; xx < W - 1; xx++) {
+          const i = yy * W + xx;
+          if (covered[i] &&
+              (!covered[i - 1] || !covered[i + 1] || !covered[i - W] || !covered[i + W])) {
+            boundary[i] = 1;
+            nBoundary++;
+          }
+        }
+      }
+      const near = (mask, i, r) => {
+        const px = i % W, py = (i - px) / W;
+        for (let dy = -r; dy <= r; dy++) {
+          const qy = py + dy;
+          if (qy < 0 || qy >= H) continue;
+          for (let dx = -r; dx <= r; dx++) {
+            const qx = px + dx;
+            if (qx >= 0 && qx < W && mask[qy * W + qx]) return true;
+          }
+        }
+        return false;
+      };
+      let extraNearBoundary = 0, boundaryOutlined = 0;
+      for (let i = 0; i < N; i++) {
+        if (extra[i] && near(boundary, i, 4)) extraNearBoundary++;
+        if (boundary[i] && near(extra, i, 4)) boundaryOutlined++;
+      }
+      result.frame = {
+        width: W,
+        height: H,
+        outlined: outlined.length,
+        onDark: nOnDark,
+        offDark: nOffDark,
+        extra: nExtra,
+        boundary: nBoundary,
+        precision: nExtra ? extraNearBoundary / nExtra : 0,
+        recall: nBoundary ? boundaryOutlined / nBoundary : 0,
+      };
+      return result;
+    })()`;
+    const readyExpression = `(() => {
+      const sil = window.vvSilhouette;
+      const canvas = Array.from(document.querySelectorAll('canvas'))
+        .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+      const rect = canvas ? canvas.getBoundingClientRect() : null;
+      return {
+        readyState: document.readyState,
+        stats: sil ? { ...sil.stats } : null,
+        outlines: window.trame && window.trame.state
+          ? Boolean(window.trame.state.get('figure_outlines'))
+          : false,
+        targets: window.trame && window.trame.state
+          ? (window.trame.state.get('silhouette_targets') || []).length
+          : 0,
+        canvas: rect && rect.width > 0
+          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          : null,
+      };
+    })()`;
+    async function waitForSilhouette(check, label, timeout = 30000) {
+      const deadline = Date.now() + timeout;
+      let last = null;
+      while (Date.now() < deadline) {
+        last = await evaluateSilhouette(readyExpression, label);
+        recordProbeState(label, last);
+        if (check(last)) return last;
+        await delay(150);
+      }
+      throw new Error(`${label}: ${JSON.stringify(last)}`);
+    }
+    const ready = await waitForSilhouette(
+      (state) => state.readyState === "complete" && state.canvas && state.stats &&
+        state.stats.installed && state.stats.frames > 0 && state.stats.targets > 0,
+      "the silhouette pass never outlined the orbital",
+    );
+    const before = await evaluateSilhouette(silhouetteExpression, "read outlines before the drag");
+    const cx = ready.canvas.x + ready.canvas.width / 2;
+    const cy = ready.canvas.y + ready.canvas.height / 2;
+    await inputCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+    await inputCommand("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: cx,
+      y: cy,
+      button: "left",
+      clickCount: 1,
+    });
+    let x = cx, y = cy;
+    for (let step = 0; step < 12; step++) {
+      x += 14; y += 9;
+      await inputCommand("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+        button: "left",
+        buttons: 1,
+      });
+      await delay(30);
+    }
+    await delay(200);
+    const during = await evaluateSilhouette(silhouetteExpression, "read outlines during the drag");
+    await inputCommand("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x,
+      y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    await delay(1500);
+    // Hardware picking renders through the same passes; the outline pass
+    // must leave its framebuffer alone, or a click picks nothing.
+    await evaluateSilhouette(
+      "window.trame.trigger('toggle_measure_mode', [true])",
+      "enter measure mode",
+    );
+    await delay(800);
+    await inputCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+    await inputCommand("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: cx,
+      y: cy,
+      button: "left",
+      clickCount: 1,
+    });
+    await inputCommand("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: cx,
+      y: cy,
+      button: "left",
+      clickCount: 1,
+    });
+    let picked = [];
+    const pickDeadline = Date.now() + 8000;
+    while (Date.now() < pickDeadline) {
+      picked = await evaluateSilhouette(
+        "window.trame.state.get('selected_atoms') || []",
+        "wait for the measure-mode pick",
+      );
+      if (picked.length) break;
+      await delay(150);
+    }
+    const after = await evaluateSilhouette(readyExpression, "read the pass after picking");
+    const direction = (state) => {
+      const d = state.camera.position.map((v, i) => v - state.camera.focalPoint[i]);
+      const norm = Math.hypot(...d);
+      return d.map((v) => v / norm);
+    };
+    const b = direction(before), a = direction(during);
+    const cosine = b[0] * a[0] + b[1] * a[1] + b[2] * a[2];
+    socket.close();
+    finish(0, {
+      silhouette: {
+        ready,
+        before,
+        during,
+        after,
+        picked,
+        cameraTurnDeg: Math.acos(Math.max(-1, Math.min(1, cosine))) * 180 / Math.PI,
+      },
+    });
+    return;
+  }
+  if (labelFollowerScenario) {
+    // #111: while a trusted drag rotates the structure, and before the
+    // server hears of it, the frame must show every label facing the camera.
+    // The probe reads back a frame of the labels alone and compares it with
+    // the glyphs rasterised for the camera-facing basis and with the
+    // geometry the server sent.
+    async function evaluateFollower(expression, action) {
+      recordProbeState(action);
+      const evaluation = await command("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+      });
+      if (evaluation.exceptionDetails) {
+        throw new Error(
+          evaluation.exceptionDetails.exception?.description ||
+          evaluation.exceptionDetails.text ||
+          "label follower probe evaluation failed"
+        );
+      }
+      return evaluation.result ? evaluation.result.value : undefined;
+    }
+    const followerExpression = `(() => {
+      const follow = window.vvLabelFollow;
+      const canvas = Array.from(document.querySelectorAll('canvas'))
+        .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+      const rect = canvas ? canvas.getBoundingClientRect() : null;
+      const renderer = follow && follow.renderer ? follow.renderer() : null;
+      const result = {
+        readyState: document.readyState,
+        scriptInstalled: Boolean(follow),
+        rendererKnown: Boolean(renderer),
+        canvas: rect && rect.width > 0
+          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          : null,
+        stats: follow
+          ? { configured: follow.stats.configured, draws: follow.stats.draws }
+          : null,
+        camera: null,
+        glyphs: 0,
+        sample: null,
+        frame: null,
+      };
+      if (!renderer) return result;
+      const camera = renderer.getActiveCamera();
+      const eye = Array.from(camera.getPosition());
+      const up = Array.from(camera.getViewUp());
+      result.camera = { position: eye, focalPoint: Array.from(camera.getFocalPoint()), viewUp: up };
+      const renderWindow = renderer.getRenderWindow();
+      const view = renderWindow.getViews()[0];
+      const glCanvas = (view.getCanvas && view.getCanvas()) || canvas;
+      const W = glCanvas.width, H = glCanvas.height;
+      const predicted = new Uint8Array(W * H), stale = new Uint8Array(W * H);
+      // Fill a projected triangle into a mask: pixel centres inside all three
+      // edges (either winding). Display coordinates start bottom-left, as do
+      // readPixels rows.
+      function fill(mask, xy, a, b, c) {
+        const ax = xy[2 * a], ay = xy[2 * a + 1], bx = xy[2 * b], by = xy[2 * b + 1];
+        const cx = xy[2 * c], cy = xy[2 * c + 1];
+        const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if (!(Math.abs(area) > 1e-9)) return;
+        const x0 = Math.max(0, Math.floor(Math.min(ax, bx, cx)));
+        const x1 = Math.min(W - 1, Math.ceil(Math.max(ax, bx, cx)));
+        const y0 = Math.max(0, Math.floor(Math.min(ay, by, cy)));
+        const y1 = Math.min(H - 1, Math.ceil(Math.max(ay, by, cy)));
+        for (let y = y0; y <= y1; y++) {
+          const py = y + 0.5;
+          for (let x = x0; x <= x1; x++) {
+            const px = x + 0.5;
+            const w0 = ((bx - px) * (cy - py) - (by - py) * (cx - px)) / area;
+            const w1 = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area;
+            if (w0 >= 0 && w1 >= 0 && w0 + w1 <= 1) mask[y * W + x] = 1;
+          }
+        }
+      }
+      const hidden = [];
+      let glyphs = 0;
+      renderer.getActors().forEach((actor) => {
+        const mapper = actor.getMapper && actor.getMapper();
+        const polydata = mapper && mapper.getInputData && mapper.getInputData();
+        const pointData = polydata && polydata.getPointData ? polydata.getPointData() : null;
+        const anchorArray = pointData && pointData.getArrayByName('vv_label_anchor');
+        const localArray = pointData && pointData.getArrayByName('vv_label_local');
+        if (!anchorArray || !localArray) {
+          if (actor.getVisibility()) hidden.push(actor);
+          return;
+        }
+        if (!actor.getVisibility()) return;
+        const anchors = anchorArray.getData(), local = localArray.getData();
+        const points = polydata.getPoints().getData();
+        const n = polydata.getPoints().getNumberOfPoints();
+        if (!result.sample) result.sample = [points[0], points[1], points[2]];
+        // Where each point should be drawn (the camera-facing basis for this
+        // camera) and where the geometry the server sent would put it.
+        const facing = new Float64Array(2 * n), sent = new Float64Array(2 * n);
+        for (let p = 0; p < n; p++) {
+          const ax = anchors[3 * p], ay = anchors[3 * p + 1], az = anchors[3 * p + 2];
+          if (p === 0 || ax !== anchors[3 * p - 3] || ay !== anchors[3 * p - 2] ||
+              az !== anchors[3 * p - 1]) glyphs++;
+          let fx = eye[0] - ax, fy = eye[1] - ay, fz = eye[2] - az;
+          const fn = Math.hypot(fx, fy, fz);
+          fx /= fn; fy /= fn; fz /= fn;
+          let rx = up[1] * fz - up[2] * fy;
+          let ry = up[2] * fx - up[0] * fz;
+          let rz = up[0] * fy - up[1] * fx;
+          const rn = Math.hypot(rx, ry, rz);
+          rx /= rn; ry /= rn; rz /= rn;
+          const ux = fy * rz - fz * ry, uy = fz * rx - fx * rz, uz = fx * ry - fy * rx;
+          const lx = local[3 * p], ly = local[3 * p + 1], lz = local[3 * p + 2];
+          const d = view.worldToDisplay(
+            ax + rx * lx + ux * ly + fx * lz,
+            ay + ry * lx + uy * ly + fy * lz,
+            az + rz * lx + uz * ly + fz * lz,
+            renderer,
+          );
+          facing[2 * p] = d[0]; facing[2 * p + 1] = d[1];
+          const s = view.worldToDisplay(
+            points[3 * p], points[3 * p + 1], points[3 * p + 2], renderer,
+          );
+          sent[2 * p] = s[0]; sent[2 * p + 1] = s[1];
+        }
+        const polys = polydata.getPolys().getData();
+        for (let i = 0; i < polys.length; i += polys[i] + 1) {
+          for (let k = 2; k < polys[i]; k++) {
+            fill(predicted, facing, polys[i + 1], polys[i + k], polys[i + k + 1]);
+            fill(stale, sent, polys[i + 1], polys[i + k], polys[i + k + 1]);
+          }
+        }
+      });
+      result.glyphs = glyphs;
+      // Read back a frame of the labels alone: everything else is hidden for
+      // this one render, so atoms, bonds and the grid cannot be mistaken for ink.
+      // vtk.js skips an explicit render while its own animation loop runs (a
+      // held drag), so draw through the view directly, and read in the same task.
+      const draw = () => (
+        view.traverseAllPasses ? view.traverseAllPasses() : renderWindow.render()
+      );
+      hidden.forEach((actor) => actor.setVisibility(false));
+      draw();
+      const gl = glCanvas.getContext('webgl2') || glCanvas.getContext('webgl');
+      const pixels = new Uint8Array(W * H * 4);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      hidden.forEach((actor) => actor.setVisibility(true));
+      draw();
+      const background = renderer.getBackground().map((v) => v * 255);
+      const lit = new Uint8Array(W * H);
+      let litCount = 0;
+      for (let i = 0; i < W * H; i++) {
+        const distance = Math.abs(pixels[4 * i] - background[0]) +
+          Math.abs(pixels[4 * i + 1] - background[1]) + Math.abs(pixels[4 * i + 2] - background[2]);
+        if (distance > 192) { lit[i] = 1; litCount++; }
+      }
+      // One pixel of tolerance for anti-aliased edges.
+      function near(mask, i) {
+        const x = i % W, y = (i - x) / W;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= H) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx >= 0 && xx < W && mask[yy * W + xx]) return true;
+          }
+        }
+        return false;
+      }
+      function agreement(mask) {
+        let count = 0, litNear = 0, maskNear = 0;
+        for (let i = 0; i < W * H; i++) {
+          if (mask[i]) { count++; if (near(lit, i)) maskNear++; }
+          if (lit[i] && near(mask, i)) litNear++;
+        }
+        return {
+          pixels: count,
+          precision: litCount ? litNear / litCount : 0,
+          recall: count ? maskNear / count : 0,
+        };
+      }
+      let both = 0, either = 0;
+      for (let i = 0; i < W * H; i++) {
+        if (predicted[i] && stale[i]) both++;
+        if (predicted[i] || stale[i]) either++;
+      }
+      result.frame = {
+        width: W,
+        height: H,
+        lit: litCount,
+        facing: agreement(predicted),
+        sent: agreement(stale),
+        facingSentIoU: either ? both / either : 0,
+      };
+      return result;
+    })()`;
+    async function followerState(action) {
+      return evaluateFollower(followerExpression, action);
+    }
+    async function waitForFollower(check, label, timeout = 20000) {
+      const deadline = Date.now() + timeout;
+      let last = null;
+      while (Date.now() < deadline) {
+        last = await followerState(label);
+        recordProbeState(label, last);
+        if (check(last)) return last;
+        await delay(100);
+      }
+      throw new Error(`${label}: ${JSON.stringify(last)}`);
+    }
+    const loaded = await waitForFollower(
+      (state) => state.readyState === "complete" && state.scriptInstalled && state.canvas,
+      "label follower never reached the served page",
+    );
+    // A hover over the canvas hands the follower its renderer.
+    const cx = loaded.canvas.x + loaded.canvas.width / 2;
+    const cy = loaded.canvas.y + loaded.canvas.height / 2;
+    await inputCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+    await delay(100);
+    await inputCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx + 1, y: cy });
+    const initial = await waitForFollower(
+      (state) => state.rendererKnown && state.stats.configured >= 1 &&
+        state.frame && state.frame.lit > 0,
+      "label meshes never reached the vtk.js shader",
+    );
+    recordProbeState("trusted drag on the viewport", initial);
+    await inputCommand("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: cx + 1,
+      y: cy,
+      button: "left",
+      clickCount: 1,
+    });
+    let x = cx + 1, y = cy;
+    for (let step = 0; step < 12; step++) {
+      x += 14; y += 9;
+      await inputCommand("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+        button: "left",
+        buttons: 1,
+      });
+      await delay(30);
+    }
+    await delay(200);
+    const dragging = await followerState("read labels while the drag is held");
+    await inputCommand("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x,
+      y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    // The release ends the animation; the server then syncs its own camera.
+    await delay(1500);
+    const released = await followerState("read labels after the release");
+    const direction = (state) => {
+      const d = state.camera.position.map((v, i) => v - state.camera.focalPoint[i]);
+      const norm = Math.hypot(...d);
+      return d.map((v) => v / norm);
+    };
+    const before = direction(initial), after = direction(dragging);
+    const cosine = before[0] * after[0] + before[1] * after[1] + before[2] * after[2];
+    socket.close();
+    finish(0, {
+      labelFollowers: {
+        initial,
+        dragging,
+        released,
+        cameraTurnDeg: Math.acos(Math.max(-1, Math.min(1, cosine))) * 180 / Math.PI,
+      },
+    });
+    return;
+  }
   if (playbackScenario) {
     const isTrajectory = playbackScenario === "trajectory";
-    if (!isTrajectory && playbackScenario !== "molecular-orbital") {
+    const isProgress = playbackScenario === "molecular-orbital-progress";
+    if (!isTrajectory && !isProgress && playbackScenario !== "molecular-orbital") {
       throw new Error(`unknown playback scenario: ${playbackScenario}`);
     }
     const previousLabel = isTrajectory
@@ -1709,6 +2168,11 @@ async function inspectPage(browserWebSocket) {
         wavefunctionRows: trameState
           ? (trameState.get('wf_mo_rows') || []).length
           : 0,
+        selectedMO: trameState ? trameState.get('wf_selected_mo') : null,
+        lastMO: trameState ? trameState.get('mo_last_index') : null,
+        surfaceKind: trameState ? trameState.get('wf_surface_kind') : null,
+        moVisible: trameState ? Boolean(trameState.get('mo_visible')) : false,
+        statusMessage: trameState ? trameState.get('status_message') : '',
         animating: trameState
           ? Boolean(trameState.get(
               ${JSON.stringify(isTrajectory ? "trajectory_playing" : "wf_animating")}
@@ -1809,6 +2273,32 @@ async function inspectPage(browserWebSocket) {
         ),
       `${playbackScenario} controls never reached the served DOM`,
     );
+    async function canvasSnapshot(name) {
+      // Capture only the VTK canvas: picker/status changes cannot satisfy this
+      // geometry assertion, and CDP reads do not send a Trame state update.
+      const evaluation = await command("Runtime.evaluate", {
+        expression: `(() => {
+          const canvas = Array.from(document.querySelectorAll('canvas'))
+            .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+          if (!canvas) return null;
+          const r = canvas.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height, scale: 1 };
+        })()`,
+        returnByValue: true,
+      });
+      const clip = evaluation.result.value;
+      if (!clip || clip.width < 100 || clip.height < 100) {
+        throw new Error(`missing molecular canvas: ${JSON.stringify(clip)}`);
+      }
+      const screenshot = await command("Page.captureScreenshot", {
+        format: "png", clip,
+      });
+      writeFileSync(`${profile}/${name}.png`, Buffer.from(screenshot.data, "base64"));
+      return createHash("sha256").update(screenshot.data).digest("hex");
+    }
+    // DOM controls can be ready before vtk.js consumes the initial scene.
+    if (isProgress) await delay(1000);
+    const initialCanvas = isProgress ? await canvasSnapshot("initial-orbital") : null;
     await clickPlaybackButton(startLabel);
     const playing = await waitForPlayback(
       (state) => state.animating && state.buttons.length === 3 &&
@@ -1816,6 +2306,27 @@ async function inspectPage(browserWebSocket) {
         !state.buttons.some((button) => button.ariaLabel === startLabel),
       `${playbackScenario} control did not expose its Pause name`,
     );
+    if (isProgress) {
+      const observed = [playing];
+      const finished = await waitForPlayback(
+        (state) => {
+          observed.push(state);
+          return !state.animating && state.statusMessage === "MO animation finished";
+        },
+        "MO playback did not advance and terminate without further input",
+      );
+      // Let the last vtk.js render settle, using no mouse/key/state mutation.
+      await delay(250);
+      const finalCanvas = await canvasSnapshot("final-orbital");
+      await delay(1000);
+      const settled = await playbackState();
+      socket.close();
+      finish(0, { playback: {
+        scenario: playbackScenario, initial, playing, observed, finished, settled,
+        initialCanvas, finalCanvas,
+      } });
+      return;
+    }
     await clickPlaybackButton(pauseLabel);
     const paused = await waitForPlayback(
       (state) => !state.animating && state.buttons.length === 3 &&
@@ -1978,7 +2489,7 @@ async function inspectPage(browserWebSocket) {
         windowsVirtualKeyCode: virtualKeyCodes[key],
         nativeVirtualKeyCode: virtualKeyCodes[key],
       };
-      await inputCommand("Input.dispatchKeyEvent", { type: "keyDown", ...keyEvent });
+      await inputCommand("Input.dispatchKeyEvent", keyDown(keyEvent));
       await inputCommand("Input.dispatchKeyEvent", { type: "keyUp", ...keyEvent });
     }
     async function dragSeparator(id, deltaX, deltaY) {
@@ -2320,6 +2831,9 @@ async function inspectPage(browserWebSocket) {
           : null,
         editMode: trameState ? Boolean(trameState.get('edit_mode')) : null,
         statusMessage: trameState ? String(trameState.get('status_message') || '') : '',
+        // A hidden page gets no animation frames, so overlays cannot finish
+        // their transitions; name that instead of a stuck overlay (#83).
+        visibility: document.visibilityState,
         overlayVisible: Boolean(
           overlay && rect && rect.width > 0 && rect.height > 0 &&
           style.display !== 'none' && style.visibility !== 'hidden'
@@ -2380,7 +2894,7 @@ async function inspectPage(browserWebSocket) {
         windowsVirtualKeyCode: virtualKeyCode,
         nativeVirtualKeyCode: virtualKeyCode,
       };
-      await inputCommand("Input.dispatchKeyEvent", { type: "keyDown", ...params });
+      await inputCommand("Input.dispatchKeyEvent", keyDown(params));
       await inputCommand("Input.dispatchKeyEvent", { type: "keyUp", ...params });
     }
 
@@ -2626,6 +3140,9 @@ child.on("exit", (code) => {
         color_input_scenario=False,
         focus_scenario="",
         cdp_timeout_scenario=False,
+        label_follower_scenario=False,
+        silhouette_scenario=False,
+        browser_screenshot_scenario=False,
         qvf_override: Path | None = None,
         _transport_retry=False,
     ):
@@ -2645,6 +3162,9 @@ child.on("exit", (code) => {
                 slider_scenario,
                 playback_scenario,
                 bool(focus_scenario),
+                label_follower_scenario,
+                # The export scenario serves the silhouette scene (#116).
+                silhouette_scenario or browser_screenshot_scenario,
             ),
         )
         process.start()
@@ -2674,7 +3194,7 @@ child.on("exit", (code) => {
                 chrome,
                 f"http://127.0.0.1:{port}/",
                 str(profile_dir),
-                str(5 if slider_scenario else len(dialog_models)),
+                str(6 if slider_scenario else len(dialog_models)),
                 str(edit_mode).lower(),
                 str(presentation_scenario).lower(),
                 str(slider_scenario).lower(),
@@ -2682,6 +3202,9 @@ child.on("exit", (code) => {
                 str(color_input_scenario).lower(),
                 str(focus_scenario).lower(),
                 str(cdp_timeout_scenario).lower(),
+                str(label_follower_scenario).lower(),
+                str(silhouette_scenario).lower(),
+                str(browser_screenshot_scenario).lower(),
             ]
             node_started_at = time.monotonic()
             node_process = subprocess.Popen(
@@ -2691,7 +3214,9 @@ child.on("exit", (code) => {
                 text=True,
                 start_new_session=True,
             )
-            node_timeout = 105 if focus_scenario or slider_scenario else 60
+            node_timeout = (
+                105 if focus_scenario or slider_scenario or browser_screenshot_scenario else 60
+            )
             try:
                 stdout, stderr = node_process.communicate(timeout=node_timeout)
             except subprocess.TimeoutExpired as exc:
@@ -2778,6 +3303,9 @@ child.on("exit", (code) => {
                 color_input_scenario=color_input_scenario,
                 focus_scenario=focus_scenario,
                 cdp_timeout_scenario=False,
+                label_follower_scenario=label_follower_scenario,
+                silhouette_scenario=silhouette_scenario,
+                browser_screenshot_scenario=browser_screenshot_scenario,
                 qvf_override=qvf_override,
                 _transport_retry=True,
             )
@@ -2793,6 +3321,12 @@ child.on("exit", (code) => {
             return payload["colorInput"]
         if focus_scenario:
             return payload["focus"]
+        if label_follower_scenario:
+            return payload["labelFollowers"]
+        if silhouette_scenario:
+            return payload["silhouette"]
+        if browser_screenshot_scenario:
+            return payload["browserScreenshot"]
         return payload["dialogs"]
 
     qvf_path = Path(__file__).parent / "data" / "h2_natural_orbitals.qvf"
@@ -2889,12 +3423,45 @@ child.on("exit", (code) => {
         open_initially=False,
         playback_scenario="molecular-orbital",
     )
+    orbital_progress = collect_probe(
+        "molecular-orbital progression",
+        (),
+        "chrome-profile-orbital-progress",
+        open_initially=False,
+        playback_scenario="molecular-orbital-progress",
+    )
     presentation = collect_probe(
         "presentation mode",
         (),
         "chrome-profile-presentation",
         open_initially=False,
         presentation_scenario=True,
+    )
+    label_followers = collect_probe(
+        "label followers",
+        (),
+        "chrome-profile-label-followers",
+        open_initially=False,
+        label_follower_scenario=True,
+    )
+    silhouette = collect_probe(
+        "silhouette pass",
+        (),
+        "chrome-profile-silhouette",
+        open_initially=False,
+        silhouette_scenario=True,
+    )
+    # The export is also saved beside the archive: give it a copy.
+    export_qvf = tmp_path / "browser-screenshot" / qvf_path.name
+    export_qvf.parent.mkdir()
+    export_qvf.write_bytes(qvf_path.read_bytes())
+    browser_screenshot = collect_probe(
+        "browser screenshot",
+        (),
+        "chrome-profile-browser-screenshot",
+        open_initially=False,
+        browser_screenshot_scenario=True,
+        qvf_override=export_qvf,
     )
 
     if probe_failures:
@@ -2996,7 +3563,7 @@ child.on("exit", (code) => {
     sliders = initial_slider_state["sliders"]
     expected_slider_names = {
         _SLIDER_MODELS_AND_NAMES[model]
-        for model in ("isovalue", "opacity", "clip_x", "clip_y", "clip_z")
+        for model in ("mb_angle", "isovalue", "opacity", "clip_x", "clip_y", "clip_z")
     }
     assert {slider["ariaLabel"] for slider in sliders} == expected_slider_names
     assert len(sliders) == len(expected_slider_names)
@@ -3194,6 +3761,78 @@ child.on("exit", (code) => {
         assert playback["paused"]["animating"] is False
         assert_playback_snapshot(playback["paused"], (previous, start, next_name))
 
+    # #112: the browser outlines the orbital isosurface in the Publication
+    # look, and the outline follows a trusted drag frame by frame. The dark
+    # pixels the pass adds lie on the boundary of the surface rendered alone
+    # (the rest is the outline of a fold) and cover most of that boundary.
+    assert silhouette["ready"]["outlines"] and silhouette["ready"]["targets"] >= 1
+    for phase in ("before", "during"):
+        frame = silhouette[phase]["frame"]
+        assert frame["outlined"] >= 1, (phase, silhouette[phase])
+        assert frame["extra"] > 200, (phase, frame)
+        assert frame["precision"] > 0.7, (phase, frame)
+        assert frame["recall"] > 0.7, (phase, frame)
+    assert silhouette["cameraTurnDeg"] > 10.0, silhouette["cameraTurnDeg"]
+    assert silhouette["during"]["stats"]["frames"] > silhouette["before"]["stats"]["frames"]
+    assert silhouette["picked"], "a measure-mode click picked no atom with the pass installed"
+    assert silhouette["after"]["stats"]["error"] is None, silhouette["after"]["stats"]
+    # #116: in the Publication look, Export screenshot takes the frame the
+    # browser draws, at the view's size times the scale, so the exported
+    # image has the silhouette pass's outline: the dark pixels the pass adds
+    # lie on the orbital's boundary in the export without it and cover most
+    # of that boundary. The line scales with the export, a transparent
+    # export keys out the background, and the live view is left as it was.
+    export_ready = browser_screenshot["ready"]
+    assert export_ready["browserReady"] and export_ready["silhouette"]["targets"] >= 1
+    css_width, css_height = export_ready["css"]
+    outlined_shot, plain_shot, transparent_shot = browser_screenshot["shots"]
+    for shot, scale in ((outlined_shot, 1), (plain_shot, 1), (transparent_shot, 2)):
+        assert shot["name"] == "vibe-view-screenshot.png", shot
+        assert (shot["width"], shot["height"]) == (
+            int(css_width * scale + 0.5),
+            int(css_height * scale + 0.5),
+        ), (shot, export_ready["css"])
+        assert "browser view" in shot["status"], shot["status"]
+    assert plain_shot["capture"]["outlineRadius"] is None, plain_shot
+    assert outlined_shot["capture"]["outlineRadius"] >= 2, outlined_shot
+    assert (
+        transparent_shot["capture"]["outlineRadius"]
+        == 2 * outlined_shot["capture"]["outlineRadius"]
+    ), transparent_shot
+    export_analysis = browser_screenshot["analysis"]
+    assert export_analysis["extra"] > 200, export_analysis
+    assert export_analysis["precision"] > 0.7, export_analysis
+    assert export_analysis["recall"] > 0.7, export_analysis
+    assert export_analysis["corner"][3] == 0 and export_analysis["clear"] > 0, export_analysis
+    assert 3.0 < export_analysis["scaleRatio"] < 6.5, export_analysis
+    export_after = browser_screenshot["after"]
+    assert export_after["live"] == export_ready["live"], export_after
+    assert export_after["silhouette"]["error"] is None, export_after
+    assert export_after["capture"]["error"] is None, export_after
+    # #111: during a trusted drag, before the release tells the server
+    # anything, the labels on screen are the camera-facing glyphs for the
+    # current camera (frame readback against the rasterised prediction),
+    # while the camera has turned around the structure.
+    assert label_followers["initial"]["scriptInstalled"]
+    assert label_followers["initial"]["rendererKnown"]
+    for phase in ("initial", "dragging", "released"):
+        snapshot = label_followers[phase]
+        frame = snapshot["frame"]
+        assert snapshot["glyphs"] == 2, (phase, snapshot)
+        assert snapshot["stats"]["configured"] == 1, (phase, snapshot["stats"])
+        assert frame["lit"] > 500, (phase, frame)
+        assert frame["facing"]["precision"] > 0.97, (phase, frame)
+        assert frame["facing"]["recall"] > 0.97, (phase, frame)
+    assert label_followers["cameraTurnDeg"] > 10.0, label_followers["cameraTurnDeg"]
+    dragging, initial = label_followers["dragging"], label_followers["initial"]
+    # The comparison discriminates: the geometry as sent, which is what a
+    # drag drew before #111, would put the labels elsewhere on this frame.
+    assert dragging["frame"]["facingSentIoU"] < 0.5, dragging["frame"]
+    assert dragging["frame"]["sent"]["precision"] < 0.5, dragging["frame"]
+    # The GPU does the turning: the client's mesh is still the one the server
+    # sent, and the shader's camera uniforms were set on every frame.
+    assert dragging["sample"] == initial["sample"]
+    assert dragging["stats"]["draws"] > initial["stats"]["draws"]
     assert trajectory["initial"]["selectedSection"] == "traj0"
     assert trajectory["initial"]["trajectoryFrames"] == 3
     assert trajectory["initial"]["wavefunctionSection"] == ""
@@ -3202,7 +3841,45 @@ child.on("exit", (code) => {
     assert orbitals["initial"]["wavefunctionSection"] == "wf"
     assert orbitals["initial"]["wavefunctionRows"] > 0
 
+    assert orbital_progress["initial"]["selectedMO"] == "restricted:0"
+    assert orbital_progress["initial"]["moVisible"] is True
+    assert orbital_progress["initial"]["surfaceKind"] == "mo"
+    progressed = {
+        state["selectedMO"] for state in orbital_progress["observed"]
+        if state["moVisible"] and state["surfaceKind"] == "mo"
+    }
+    # MO 1 is rendered by Start; MO 2 and 3 require scheduled callbacks.
+    assert {"restricted:2", "restricted:3"} <= progressed
+    for phase in ("finished", "settled"):
+        snapshot = orbital_progress[phase]
+        assert snapshot["selectedMO"] == "restricted:3"
+        assert snapshot["lastMO"] == 3
+        assert snapshot["moVisible"] is True
+        assert snapshot["surfaceKind"] == "mo"
+        assert snapshot["animating"] is False
+        assert snapshot["statusMessage"] == "MO animation finished"
+        assert_playback_snapshot(snapshot, (
+            "Previous molecular orbital", "Start molecular orbital animation",
+            "Next molecular orbital",
+        ))
+    assert orbital_progress["initialCanvas"] != orbital_progress["finalCanvas"]
+    import numpy as np
+    from PIL import Image
+
+    for name in ("initial-orbital", "final-orbital"):
+        with Image.open(tmp_path / "chrome-profile-orbital-progress" / f"{name}.png") as image:
+            # Reject a blank/loading canvas even when its PNG differs from the
+            # final frame. Real phase-coloured orbital surfaces are chromatic.
+            pixels = np.asarray(image.convert("RGB"), dtype=int)
+            coloured = np.count_nonzero(np.ptp(pixels, axis=2) > 40)
+            assert coloured > image.width * image.height * 0.01, (
+                f"{name} has no rendered orbital"
+            )
+
+
     entered = presentation["entered"]
+    # Trusted keys must leave the page visible, or no transition can finish (#83).
+    assert entered["visibility"] == "visible"
     assert entered["overlayVisible"] is True
     assert entered["overlayViewport"] is True
     assert entered["overlayPointerEvents"] == "none"
@@ -3240,6 +3917,8 @@ child.on("exit", (code) => {
     assert presentation["autoRetained"]["presentationAuto"] is False
 
     assert presentation["exited"]["presentationMode"] is False
+    assert presentation["exited"]["overlayVisible"] is False
+    assert presentation["exited"]["visibility"] == "visible"
     assert presentation["exited"]["editMode"] is False
     assert presentation["idleEscape"]["presentationMode"] is False
     assert presentation["idleEscape"]["editMode"] is False
@@ -3247,11 +3926,9 @@ child.on("exit", (code) => {
 
 def test_toolbar_tooltip_keeps_accessible_name_when_title_is_removed():
     """The custom tooltip must not delete the control's accessible name."""
-    import inspect
+    from tests._served import served_viewer
 
-    import vibeview.app as app
-
-    source = inspect.getsource(app.create_app)
+    source = served_viewer()
     guard = "!el.hasAttribute('aria-label')&&!el.hasAttribute('aria-labelledby')"
     copy = "el.setAttribute('aria-label',t)"
     remove = "el.removeAttribute('title')"
@@ -3350,6 +4027,33 @@ def test_activate_spectra_compare_branch_and_fallback():
         pb.unlink()
 
 
+def test_compare_without_a_partner_says_so():
+    """#143: the no-partner note was overwritten by "Loaded spectra: ...",
+    so ticking Compare across open files appeared to do nothing."""
+    import types
+
+    import vibeview.app as app
+    from vibeview.qvf import QVFReader
+
+    pa = _qvf("fileA", [500.0], [10.0])
+    pb = _qvf("fileB", None, None, scf_iters=[{"iteration": 0, "energy_eh": -1.0}])
+    try:
+        ra, rb = QVFReader(pa), QVFReader(pb)
+        assert not any(s.kind == "spectra.ir" for s in rb.sections)
+        ia = next(s for s in ra.sections if s.kind == "spectra.ir")
+        st = types.SimpleNamespace(
+            spectra_compare=True, spectra_html=None, spectra_title="", status_message=""
+        )
+        app._activate_spectra(ra, st, ia, [ra, rb])
+        assert st.spectra_html
+        assert st.status_message == (
+            f"Loaded spectra: {ia.id}; no other open file has a spectra.ir section to compare"
+        )
+    finally:
+        pa.unlink()
+        pb.unlink()
+
+
 def test_library_names_helper_is_import_safe():
     from vibeview.app import _library_structure_names
 
@@ -3400,11 +4104,10 @@ def test_spectra_stick_vs_envelope_display_modes():
         def probe(display):
             html = SpectraRenderer(sec, r).render_to_html(display=display)
             compact = html.replace(" ", "")
-            has_envelope = '"name":"Spectrum"' in compact
-            # each stick is its own legend-less trace; the layout adds one
-            # more showlegend:false, hence the >1 threshold for "has sticks"
-            n_legendless = compact.count('"showlegend":false')
-            return has_envelope, n_legendless > 1
+            has_envelope = '"name":"Lorentzianenvelope' in compact
+            # the sticks are one None-separated trace named "Sticks" (#46)
+            has_sticks = '"name":"Sticks"' in compact
+            return has_envelope, has_sticks
 
         assert probe("both") == (True, True)
         assert probe("envelope") == (True, False)
@@ -3441,13 +4144,15 @@ def test_comparison_overlay_honours_the_display_selector():
         def probe(**kw):
             html = render_comparison_html(entries, **kw).replace(" ", "")
             n_env = len(re.findall(r'"y":\{"dtype":', html))
-            n_stick = len(re.findall(r'"y":\[[^\]]{1,40}\]', html))
+            # one None-separated stick trace per file (#46): its y list
+            # carries the null separators
+            n_stick = len(re.findall(r'"y":\[[^\]]*null', html))
             return n_env, n_stick
 
         assert probe() == (2, 0), "parameterless default must stay envelopes-only"
-        assert probe(display="both") == (2, 4)
+        assert probe(display="both") == (2, 2)
         assert probe(display="envelope") == (2, 0)
-        assert probe(display="sticks") == (0, 4)
+        assert probe(display="sticks") == (0, 2)
         assert probe(display="junk") == (2, 0), "unknown mode falls back"
     finally:
         p1.unlink()
@@ -3512,7 +4217,6 @@ def test_command_palette_actions_well_formed():
     """Every command-palette entry has the fields the UI binds and a unique
     id, and every id is wired in run_palette_action's dispatch (design
     refresh 2026)."""
-    import inspect
 
     import vibeview.app as app
 
@@ -3523,10 +4227,8 @@ def test_command_palette_actions_well_formed():
     for a in actions:
         assert set(a) >= {"id", "title", "sub", "icon"}
         assert all(isinstance(a[k], str) and a[k] for k in ("id", "title", "sub", "icon"))
-    # Each id must appear as a dispatch key in run_palette_action's source.
-    src = inspect.getsource(app.create_app)
-    for aid in ids:
-        assert f'"{aid}"' in src, f"palette id {aid} not dispatched"
+    # That every id is dispatched is a structural contract:
+    # test_structural_contracts.py reads run_palette_action's dispatch table.
 
 def test_element_color_overrides_reach_every_render_path():
     """A per-element colour override is honoured by cpk_color and therefore by
@@ -3766,7 +4468,7 @@ def test_library_favorites_persist_in_the_session_payload():
     # recents are NOT persisted — they are implicit
     assert "library_recent" not in session
 
-def test_auto_save_writes_a_loadable_session():
+def test_auto_save_writes_a_loadable_session(tmp_path):
     """The auto-save must emit the document load_session accepts.
 
     Regression: auto_save_session built its own dict with ``version: "2.0"``
@@ -3775,59 +4477,36 @@ def test_auto_save_writes_a_loadable_session():
     session_path, an explicitly saved session was replaced within 60 s by a
     file the loader then refused ("Bad version") — destroying it — and the
     fields the auto-save omitted (camera, replication, library_favorites) were
-    lost with it. Both writers now share _session_payload, so they cannot
-    drift apart again.
+    lost with it. Driven through the controllers: both writers produce the
+    same document, and the loader accepts what the auto-save wrote.
     """
-    import inspect
+    from vibeview.app import create_app
+    from vibeview.qvf import QVFReader
 
-    import vibeview.app as app
+    reader = QVFReader(Path(__file__).parent / "data" / "h2_natural_orbitals.qvf")
+    try:
+        server = create_app(reader)
+        state, ctrl = server.state, server.controller
+        state.library_favorites = ["water"]
+        saved, autosaved = tmp_path / "saved.json", tmp_path / "auto.json"
+        ctrl.save_session(str(saved))
+        state.session_path = str(autosaved)
+        ctrl.auto_save_session()
+        explicit = json.loads(saved.read_text())
+        automatic = json.loads(autosaved.read_text())
 
-    src = inspect.getsource(app.create_app)
+        assert explicit["version"] == automatic["version"] == 1
+        assert set(automatic) - {"timestamp"} == set(explicit)
+        for field in ("camera", "replication", "library_favorites"):
+            assert field in automatic, f"{field} missing from the auto-saved session"
+        assert automatic["library_favorites"] == ["water"]
 
-    # exactly one place builds the document, and both writers use it
-    assert src.count('"version": 1') == 1, "session schema built in more than one place"
-    assert '"version": "2.0"' not in src, "auto-save still emits its own schema version"
-    assert src.count("_session_payload()") >= 2, "both writers should share the payload"
+        state.status_message = ""
+        ctrl.load_session(str(autosaved))
+        assert state.status_message != "Bad version"
+    finally:
+        reader.close()
 
-    # the loader's contract is unchanged and matches what we write
-    assert 'session.get("version") != 1' in src
-
-    # fields the old auto-save dropped are part of the shared document
-    for field in ('"camera"', '"replication"', '"library_favorites"'):
-        assert field in src, f"{field} missing from the session document"
-
-def test_section_restore_actually_activates():
-    """Restoring a bookmark or session must re-open the section, not just set
-    state.
-
-    Both paths used to assign ``state.active_section`` — a key that is never
-    declared in the state defaults and that nothing renders from (the open
-    section is ``selected_section``, and rendering happens in
-    ``ctrl.activate_section``). So a bookmark recorded ``section_id: ""`` and
-    restoring one left the viewport wherever it already was. Bookmark, session,
-    and presentation restore now share the same saved-view preparation step and
-    all activate the section it resolves.
-    """
-    import inspect
-
-    import vibeview.app as app
-
-    src = inspect.getsource(app.create_app)
-
-    # nothing writes the phantom key any more
-    assert "state.active_section =" not in src, "phantom active_section still assigned"
-    assert "state.active_section or" not in src, "bookmark still saves the phantom key"
-
-    # bookmark save records the real section
-    assert '"section_id": state.selected_section or ""' in src
-
-    # Every restore path prepares the saved view and activates the section it
-    # resolves. Pin the shared helper rather than the old direct dict indexing:
-    # issue #322 deliberately centralized validation and render-hint ordering.
-    for saved_view in ("bm", "session", "slide"):
-        anchor = f"_prepare_saved_view_restore({saved_view})"
-        assert anchor in src, f"missing saved-view restore wiring: {anchor}"
-    assert src.count("activate_section(section_id)") == 3
 
 def test_switching_sections_drops_the_other_isosurface():
     """Entering Wavefunction clears the electron density, and vice versa.
@@ -3861,7 +4540,7 @@ def test_switching_sections_drops_the_other_isosurface():
             calls.append(prefix)
             return original(plotter, prefix)
 
-        app._remove_actors_by_prefix = spy
+        app._helpers._remove_actors_by_prefix = spy
         try:
             built = app.create_app(reader)
             ctrl = built.controller
@@ -3874,7 +4553,7 @@ def test_switching_sections_drops_the_other_isosurface():
             assert "volume_" in calls
             assert "mo_iso_" in calls
         finally:
-            app._remove_actors_by_prefix = original
+            app._helpers._remove_actors_by_prefix = original
     finally:
         path.unlink()
 

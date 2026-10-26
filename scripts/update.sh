@@ -306,7 +306,7 @@ if [ "$RECREATE_VENV" = "1" ]; then
 elif [ -n "$VENV_PATH" ]; then
     # A healthy existing venv is self-sufficient. Use its interpreter for
     # canonicalisation so update does not depend on a separate `python3`
-    # command that may be absent or older than 3.11.
+    # command that may be absent or older than 3.12.
     VENV_TARGET="$VENV_PATH"
     if ! vibe_view_resolve_venv_path \
         VENV_PATH "$VENV_TARGET" "$VENV_TARGET/bin/python"; then

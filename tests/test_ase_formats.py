@@ -8,6 +8,7 @@ files than the opener could read.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -40,7 +41,7 @@ class TestTheExtraIsDeclared:
 
 
 class TestDetection:
-    @pytest.mark.parametrize("name", ["a.traj", "b.extxyz", "c.vasp", "d.poscar"])
+    @pytest.mark.parametrize("name", ["a.traj", "c.vasp", "d.poscar"])
     def test_ase_extensions_route_to_ase(self, name):
         assert detect_format(name) == "ase"
 
@@ -59,6 +60,7 @@ class TestDetection:
         extra becomes required for a format we support natively."""
         assert detect_format("x.cif") == "cif"
         assert detect_format("x.xyz") == "xyz"
+        assert detect_format("x.extxyz") == "xyz"
 
     def test_no_extension_is_listed_twice(self):
         """`.traj` was in both the native table and the ASE fallback."""
@@ -92,26 +94,25 @@ class TestBrowseAndOpenerAgree:
 
 
 class TestMissingExtraIsActionable:
-    def test_error_names_the_extra_and_the_file(self, tmp_path):
+    def test_error_names_the_extra_and_the_file(self, tmp_path, monkeypatch):
         """Without ASE the user must learn what to install, not just that
         something failed."""
-        try:
-            import ase  # noqa: F401
-        except ImportError:
-            pass
-        else:
-            pytest.skip("ASE is installed; the missing-extra path cannot run")
+        # Mask the submodule too: an earlier conversion may have cached ase.io.
+        monkeypatch.setitem(sys.modules, "ase", None)
+        monkeypatch.setitem(sys.modules, "ase.io", None)
         p = tmp_path / "POSCAR"
         p.write_text("dummy\n")
         with pytest.raises(ValueError) as exc:
             convert_to_qvf(p)
         msg = str(exc.value)
-        assert "vibe-view[ase]" in msg, msg
+        assert "ASE" in msg, msg
+        assert "[ase]" in msg, msg
+        assert "pip install" in msg, msg
         assert "POSCAR" in msg, msg
 
 
 class TestRealAseRoundTrip:
-    """Only runs where the extra is installed — the CI gate does not have it."""
+    """Exercise real conversion when the optional extra is installed."""
 
     def test_extxyz_reads_through_ase(self, tmp_path):
         pytest.importorskip("ase", reason="needs the [ase] extra")

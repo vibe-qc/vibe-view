@@ -21,9 +21,10 @@ def _file_url_path(url: str) -> Path:
     try:
         # Python 3.14+ accepts the complete URL and handles drive letters,
         # escaping, localhost, and UNC authorities for the host platform.
-        converted = url2pathname(url, require_scheme=True)
+        converted = url2pathname(url, require_scheme=True)  # type: ignore[call-arg]
+        # ^ the keyword is 3.14+; the except TypeError below is the 3.12-3.13 path
     except TypeError:
-        # Python 3.11-3.13 take only the URL path. Preserve a non-local
+        # Python 3.12-3.13 take only the URL path. Preserve a non-local
         # authority as the leading component of a UNC/network path.
         raw_path = parsed.path
         if parsed.netloc not in ("", "localhost"):
@@ -71,6 +72,18 @@ def source_project_dir() -> Path | None:
         return candidate
     direct_install = _direct_source_install()
     return direct_install[0] if direct_install is not None else None
+
+
+def electron_dir() -> Path:
+    """Return the desktop shell's ``electron/`` directory at the checkout root.
+
+    A source install resolves through :func:`source_project_dir`; otherwise
+    the directory beside this package is the only place it can be.
+    """
+    project = source_project_dir()
+    if project is None:
+        project = Path(__file__).resolve().parents[2]
+    return project / "electron"
 
 
 def _source_install_is_editable(project: Path) -> bool:

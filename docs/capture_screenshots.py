@@ -65,7 +65,7 @@ def _port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _wait_port(port: int, timeout: float = 45.0) -> None:
+def _wait_port(port: int, timeout: float = 120.0) -> None:
     end = time.time() + timeout
     while time.time() < end:
         if _port_open(port):
@@ -118,6 +118,20 @@ def _click_button(page: Page, text: str) -> None:
         "if(b)b.click(); }",
         text,
     )
+
+
+def _select_option(page: Page, label: str, option: str) -> None:
+    """Pick ``option`` in the Vuetify select labelled ``label``.
+
+    The select's input sits under a field overlay that intercepts pointer
+    events, so the click goes to the field's combobox role, which is what
+    the accessibility tree exposes.
+    """
+    field = page.get_by_role("combobox", name=label, exact=True).first
+    field.scroll_into_view_if_needed()
+    field.click(force=True)
+    page.get_by_role("option", name=option, exact=True).click()
+    time.sleep(0.5)
 
 
 def _toggle_switch(page: Page, label: str) -> None:
@@ -374,6 +388,14 @@ def _all_sections_shots(page: Page) -> None:
     # 2. Electron density.
     _activate(page, "Electron Density", settle=4)
     _shot(page, "02-density.png")
+
+    # 2b. The same density drawn as a volume (Render as → Volume), with the
+    # density-shell preset the kind starts in.
+    _select_option(page, "Render as", "Volume")
+    time.sleep(4.0)
+    _shot(page, "02b-density-volume.png")
+    _select_option(page, "Render as", "Isosurface")  # restore
+    time.sleep(2.0)
 
     # 3. Difference density (two-color, red + / blue −).
     _activate(page, "Difference Density", settle=4)

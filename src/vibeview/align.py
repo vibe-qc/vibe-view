@@ -52,6 +52,10 @@ def kabsch_fit(mobile: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, float]:
         raise ValueError(
             f"kabsch_fit: need matching [N, 3] arrays, got {P.shape} vs {Q.shape}"
         )
+    if P.shape[0] == 0:
+        # The centroid of no points is nan with a warning, and the SVD of
+        # nan is unpredictable: refuse, as ``kabsch`` and ``align`` do (#67).
+        raise ValueError("kabsch_fit: need at least one point")
     centroid_p = P.mean(axis=0)
     centroid_q = Q.mean(axis=0)
     p0 = P - centroid_p
@@ -70,8 +74,15 @@ def rmsd(a: np.ndarray, b: np.ndarray) -> float:
     """Index-wise RMSD between two ``[N, 3]`` coordinate sets (no superposition)."""
     arr_a = np.asarray(a, dtype=float)
     arr_b = np.asarray(b, dtype=float)
+    if arr_a.ndim != 2 or arr_a.shape[1] != 3:
+        # A ``(0,)`` array (``np.array([])``) used to reach the axis-1 sum
+        # and raise AxisError (#67).
+        raise ValueError(f"rmsd: need [N, 3] arrays, got {arr_a.shape}")
     if arr_a.shape != arr_b.shape:
         raise ValueError(f"rmsd: shape mismatch {arr_a.shape} vs {arr_b.shape}")
+    if arr_a.shape[0] == 0:
+        # The mean of nothing is nan with a warning, not an RMSD (#67).
+        raise ValueError("rmsd: need at least one point")
     return float(np.sqrt(np.mean(np.sum((arr_a - arr_b) ** 2, axis=1))))
 
 
@@ -199,9 +210,9 @@ def _greedy_pair_by_element(
     paired with ``Q`` atom ``j``, or ``None`` if the element multisets differ.
 
     Limitation: this is a per-element greedy nearest-neighbour match, not a graph
-    isomorphism. Inputs already in the same atom ordering pair exactly; permuted
-    inputs pair correctly when atoms of a given element are clearly separated, but
-    greedy matching can mispair symmetric or nearly coincident atoms.
+    isomorphism. Greedy matching can mispair atoms after a rotation, as well as
+    symmetric or nearly coincident atoms. The caller can compare this pairing
+    with an indexed fit when the element sequence already matches.
     """
     if Counter(p_symbols) != Counter(q_symbols):
         return None
@@ -244,7 +255,9 @@ def align_by_species(
     Only proceeds when the two structures have the same atom count *and* the same
     multiset of element symbols; otherwise returns ``None`` (no exception). Atoms
     are paired within each element by greedy nearest-neighbour after a centroid
-    shift, then the paired coordinates go through :func:`align`.
+    shift, then the paired coordinates go through :func:`align`. When the element
+    sequences match by index, also fit the original order and retain the result
+    with the smaller RMSD.
 
     Args:
         p_symbols: element symbols for ``P`` (length N).
@@ -256,8 +269,8 @@ def align_by_species(
         An :class:`AlignResult` (with ``transformed`` ordered to match the original
         ``P`` rows), or ``None`` if counts or species differ.
 
-    Limitation: no graph isomorphism. Same-ordering inputs align exactly; permuted
-    inputs align approximately (see :func:`_greedy_pair_by_element`).
+    Limitation: no graph isomorphism. Same-ordering rigid copies align exactly;
+    permuted inputs align approximately (see :func:`_greedy_pair_by_element`).
     """
     p = _as_points(P, "P")
     q = _as_points(Q, "Q")
@@ -275,6 +288,11 @@ def align_by_species(
     # perm[j] is the P-atom paired with Q-atom j: reorder P to line up with Q.
     p_reordered = p[perm]
     result = align(p_reordered, q)
+
+    if tuple(p_symbols) == tuple(q_symbols):
+        indexed = align(p, q)
+        if indexed.rmsd_after <= result.rmsd_after:
+            return indexed
 
     # Restore the original P row order in the transformed output so callers can
     # overlay the ghost structure against their own atom list.

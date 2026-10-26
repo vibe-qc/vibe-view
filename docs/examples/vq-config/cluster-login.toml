@@ -1,0 +1,13 @@
+# A cluster login node: vq installed, no daemon. The driver submits jobs here,
+# and they run with the programs registered in this file.
+# Check them on the login node with:  vq programs localhost
+
+[programs.orca]
+kind = "binary"
+binary = "/sw/orca/6.1.1/orca"
+
+[programs.vibeqc]
+kind = "venv"
+python = "/home/USER/vibe-qc/.venv/bin/python"
+git_dir = "/home/USER/vibe-qc"
+import_check = "vibeqc"

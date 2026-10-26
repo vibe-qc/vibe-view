@@ -23,7 +23,7 @@ def _dependency_names(requirements):
 
 @pytest.mark.parametrize(
     ("field", "expected"),
-    [("name", "vibeview"), ("requires-python", ">=3.11")],
+    [("name", "vibeview"), ("requires-python", ">=3.12")],
 )
 def test_distribution_metadata(project_metadata, field, expected):
     assert project_metadata[field] == expected

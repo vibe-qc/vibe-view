@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vibeview.kinds import LAZY_KINDS, SUPPORTED_KINDS, classify_section, is_lazy_kind
+from vibeview.kinds import SUPPORTED_KINDS, VOLUME_KINDS, classify_section
 
 
 class TestSupportedKinds:
@@ -69,11 +69,40 @@ class TestClassifySection:
 
 class TestLazyKinds:
     def test_volume_sections_are_lazy(self) -> None:
-        assert is_lazy_kind("volume.density")
-        assert is_lazy_kind("volume.orbital")
+        assert "volume.density" in VOLUME_KINDS
+        assert "volume.orbital" in VOLUME_KINDS
 
     def test_structure_is_not_lazy(self) -> None:
-        assert not is_lazy_kind("structure")
+        assert "structure" not in VOLUME_KINDS
 
     def test_bands_is_not_lazy(self) -> None:
-        assert not is_lazy_kind("bands")
+        assert "bands" not in VOLUME_KINDS
+
+
+class TestKindsModule:
+    def test_classify_section_rendered(self):
+        from vibeview.kinds import classify_section
+
+        status, detail = classify_section("volume.density")
+        assert status == "rendered"
+        assert detail is None
+
+    def test_classify_structure_rendered(self):
+        from vibeview.kinds import classify_section
+
+        status, detail = classify_section("structure")
+        assert status == "rendered"
+        assert detail is None
+
+    def test_classify_unknown_returns_skipped(self):
+        from vibeview.kinds import classify_section
+
+        status, detail = classify_section("nonexistent.kind")
+        assert status == "skipped"
+        assert detail is not None
+
+    def test_classify_vendor_namespace(self):
+        from vibeview.kinds import classify_section
+
+        status, detail = classify_section("vendor.something")
+        assert status in ("skipped", "error")

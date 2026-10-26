@@ -16,15 +16,20 @@ viewer starts, opens files and renders exactly as it otherwise would.
 * **Live checkpoints.** Open a running job's checkpoint QVF and watch the
   calculation progress in the viewer.
 * **Submission.** Send a structure or a QVF container to the queue from
-  inside the viewer.
-* **`vibe-view from-vq JOB...`** — fetch one or more finished jobs' QVF output
-  to a local directory.
+  inside the viewer. Native ORCA input submission and completed-result opening
+  are covered in the [ORCA tutorial](orca.md#prepare-save-and-submit-an-orca-input).
+* **`vibe-view from-vq JOB...`** — fetch local queue workspaces, discover
+  their QVF files and launch the browser viewer. This needs `[viewer]` as
+  well as `[queue]`; it is not a fetch-only command.
 * **`vibe-view vq-features`** — report which visualizations a producer has
   to write what for. This one is a static table and needs no queue.
 
 What the panel shows, how submission and QVF containers work, and how live
 reload follows a running job are on [Jobs and live results](jobs.md). This
-page is about the extra itself.
+page is about the extra itself. Setting up vq itself, on a workstation with no batch
+system or in front of SLURM and PBS/Torque, is on
+[Clusters and remote machines](cluster.md), and registering programs is on
+[Supported programs and calculations](calculations.md#register-a-program-with-vq).
 
 ## Installing it
 
@@ -41,45 +46,77 @@ python -m pip install -e '.[queue]'
 The `.[queue]` path refers to this viewer checkout, so it does not ask a
 package index for the unpublished viewer.
 
-Install the queue from its local path before adding the viewer extra. Two
-things about this extra are unusual, and both are deliberate.
+Install the queue from its local path before adding the viewer extra. Reuse
+an existing queue checkout if you already have one. The import must work in
+the environment that starts the viewer: a `vq` executable on `PATH` from a
+different virtualenv is not sufficient.
 
-### It is not in `[all]`
+Check the two installations separately:
+
+```sh
+python -c "import sys, vq; print(sys.executable); print(vq.__file__)"
+vibe-view doctor
+vq daemon status
+vq programs localhost
+```
+
+The Python check and `doctor` establish import availability; they do not
+start a daemon or prove that a calculation engine is healthy. Run daemon
+and program checks with the intended queue configuration. A self-contained
+desktop package uses its embedded interpreter, so installing vq into an
+unrelated shell environment does not add it to that package.
+
+## Which queue and files are used?
+
+The Job Manager, viewer submission buttons and `from-vq` use the local queue
+on the machine running the viewer server. Setting a remote default host in
+vq does not turn these controls into a remote-host picker. For a scheduler
+or another machine, use `vq submit HOST` and `vq fetch HOST JOBID`, then open
+the fetched result; see [cluster workflows](cluster.md#what-the-viewer-can-and-cannot-do-with-a-cluster).
+
+| Route | Results it opens automatically |
+|---|---|
+| Job Manager **open** | QVF archives and recognized ORCA datasets in the fetched workspace |
+| `vibe-view from-vq JOB...` | `.qvf` archives only; no loose-file conversion |
+| `vq fetch HOST JOBID -o results/` | Fetches files; choose a result and open it yourself |
+
+Fetch destinations are on the server's machine. Relative directories are
+resolved against the viewer's launch directory, not the browser's Downloads
+folder. vq may include the job name in the destination directory; use the
+path printed by the fetch rather than assuming it is `results/JOBID`.
+
+A fetch can succeed without producing a view: the job may have written no
+QVF, the ORCA utility may be unavailable, or a result may be unreadable.
+Inspect the fetched directory and the reported error before resubmitting.
+Current vq refreshes a recognized same-job destination; an unrelated existing
+directory is refused. If the viewer reports a destination collision, select
+a fresh output directory to preserve the existing files.
+
+## It is not in `[all]`
 
 `python -m pip install -e '.[all]'` from the viewer checkout installs
-viewer, tui, ase, smiles and jupyter —
-but **not** `queue`.
+the general viewing and format extras, but **not** `queue`. The full list
+is in [Installation](installation.md#optional-extras).
 
-The extra requires the distribution `vq`, which is what vibe-queue's own
-`pyproject.toml` names it. `vq` is published on **no package index**. If it
-were listed in `all`, then `pip install vibeview[all]` would fail to resolve
-for every user, whether or not they wanted the queue. So it stays out until
-vibe-queue publishes.
+The extra requires the distribution `vibe-queue` (version 0.26.10 or newer),
+which is what vibe-queue's own `pyproject.toml` names it. It is published on
+**no package index**. If it were listed in `all`, then
+`pip install vibeview[all]` would fail to resolve for every user, whether or
+not they wanted the queue. So it stays out until vibe-queue publishes.
 
 :::{note}
-The requirement names the **distribution**, `vq` — not `vibe-queue`, which is
-the pre-split monorepo *directory* name and is a package that exists nowhere.
-It read `vibe-queue` until 2026-09-08, which is why
-`pip install vibeview[queue]` used to fail even with a real vibe-queue
-checkout already installed. If vibe-queue ever publishes under a different
-name, it renames there first and this pin follows; the two have to agree.
+The requirement names the **distribution**, `vibe-queue`. Through 0.26.9
+vibe-queue shipped as the distribution `vq`, and the extra required `vq`; a
+current vibe-queue install does not satisfy that name. The import package and
+the `vq` command are still `vq`. If vibe-queue ever publishes under a
+different name, it renames there first and this pin follows; the two have to
+agree.
 :::
-
-### It cannot resolve at all on Python 3.11
-
-vibe-view supports Python **3.11** and newer. `vq` requires Python **3.12**
-and newer. On a 3.11 interpreter the extra therefore cannot be satisfied by
-anything, which is why the resolver error you get on 3.11 reads differently
-from the one on 3.12.
-
-That is vq's floor to relax, not vibe-view's to work around. If you need the
-queue integration, run the viewer on Python 3.12 or newer.
 
 ## Without the extra
 
-Every one of the seven places vibe-view reaches for `vq` is a lazy import
-inside a try/except, and every one of them has a remediation path. You get a
-message naming the extra and the install command — not a traceback, not a
+Queue entry points import `vq` lazily and report missing dependencies with
+an installation hint. You get a message naming the extra and the install command — not a traceback, not a
 blank panel:
 
 ```
@@ -98,7 +135,6 @@ package and a dead daemon are different problems and now say so.
 extra, with a note explaining that the extra alone is not actionable for a
 dependency that is on no index.
 
-Two tests keep this honest: one asserts that all seven `from vq...` sites are
-inside a guard that catches `ImportError`, and one that every such site
-reaches a `queue_missing_message()`. An unguarded eighth site would take the
-whole viewer down when the extra is absent, so it fails the suite instead.
+Missing-package handling is covered by the queue integration tests. Treat
+an import error, a daemon connection error and a rejected program registration
+as separate failures: installing the extra only addresses the first.

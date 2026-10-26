@@ -11,6 +11,44 @@ exact command that would fix each thing it finds missing. `--json` makes it
 scriptable. Most of what follows is `doctor` telling you something in more
 detail.
 
+## A section, table or orbital is missing
+
+```sh
+vibe-view info calculation.qvf
+vibe-view table calculation.qvf
+vibe-view formats
+```
+
+Use the section inventory to distinguish a data limitation from an install
+problem:
+
+| What you observe | What to do |
+|---|---|
+| The demo shows only a structure | Expected: the demo is geometry, not a quantum-chemistry calculation. |
+| An XYZ or PDB has no density, orbitals or spectrum | Importing geometry cannot create those results. Obtain a computed QVF, a cube field, or a supported wavefunction dataset. |
+| `Section 'density' not found` | Use one of the IDs the message lists (or `info` shows); `volume.density` is a kind, and its ID need not be `density`. |
+| `table` reports no tabulatable sections | It lists scientific tables, not atom coordinates. Export XYZ or use `get_structure` for the geometry. |
+| A section is listed as `skipped, not yet rendered` | QVF defines the kind, but this vibe-view has no panel for it yet, usually because the file is newer than the viewer; update vibe-view. The rest of the file is unaffected. |
+| A section is listed as `skipped, vendor namespace (X)` | An `x_<vendor>.*` section belongs to one program and is not portable by design. A [renderer plugin](python_api.md#writing-a-renderer-plugin) can draw it. |
+| A section is listed as `skipped, unsupported` | Its kind is not in the QVF version vibe-view reads; check the file's producer and `qvf_version` with `vibe-view info`. Changing the view or installing a browser does not add a renderer. |
+| `section '…' is marked critical but its kind '…' is not supported by vibe-view; refusing to open` | The producer said the file is misleading without that section, so vibe-view refuses it rather than show part of it. Open it in a program that renders that kind, or ask the producer whether the section must be critical. |
+| An orbital is present but incomplete | Read the evaluator's message about angular momentum or periodicity; see [wavefunction limits](terminal.md#orbitals-on-demand). |
+
+## Opening ORCA results
+
+The [ORCA tutorial](orca.md) describes the complete workflow. For a failed or
+unexpected import, first check which files share the calculation basename:
+
+| What you observe | What to do |
+|---|---|
+| Opening a property file requests `orca_2json` | A matching GBW was discovered. Put the matching ORCA utility on `PATH`, set `ORCA_2JSON`, or create a current orbital JSON export as described in the tutorial. |
+| The property and orbital geometries or charge/multiplicity disagree | Use results from the same calculation and final geometry. Renaming files does not make them compatible. |
+| A Compound wrapper output lists several calculations | Open one step's result file, or import the results directory to create separate QVFs. |
+| A browser upload contains only properties | Uploads are isolated files. Import the full calculation locally, then upload its combined QVF. |
+| CASSCF orbitals are visible but density, ELF or NCI is unavailable | The export does not establish the required correlated density representation. Use an ORCA-exported density cube for that field. |
+| MCD strengths differ from a thermally averaged spectrum | The importer preserves raw orientation sticks. It does not reproduce `orca_mapspc` thermal averaging. |
+| An ORCA result changed on disk but the view did not | Converted sources are not watched. Restart the viewer or regenerate the QVF and open the updated archive. |
+
 ## A mode will not start, or "No module named …"
 
 vibe-view splits its dependencies into extras so a capture-only host does
@@ -26,6 +64,7 @@ with its environment activated:
 | SMILES construction is absent | `[smiles]` | `python -m pip install -e '.[smiles]'` |
 | `%vibeview` is not a magic | `[jupyter]` | Install it in the environment running the **kernel** |
 | The vq panel or `from-vq` is unavailable | `[queue]` | See [Queue integration](queue.md); it is not a plain pip install |
+| **Sketch** puts an install command in the status bar | `[sketch]` | Install vibe-sketch from its checkout, then `python -m pip install -e '.[sketch]'` |
 | Build-from-name, auto-optimize, re-localize or container submission are greyed out | vibe-qc | These are producer features; the viewer works without them |
 
 From a source checkout, `./scripts/install.sh --extras all` is usually
@@ -50,9 +89,11 @@ and have no idle timeout. Stop the other one, or start on a free port:
 
 ```sh
 lsof -nP -iTCP:8080 -sTCP:LISTEN     # what owns the port
-pkill -f "vibe-view open"             # stop stale servers
 vibe-view open water.qvf --port 8090
 ```
+
+Stop the identified server with **Ctrl+C** in the terminal where you
+started it; avoid terminating other sessions by command-name pattern.
 
 The guard exists because without it `open` would connect to the existing
 listener, announce *ready*, and open your browser at the **stale** server
@@ -87,6 +128,21 @@ eagerly and the payloads lazily, so dozens of `volume.orbital` sections stay
 fast until you click them. A producer with many orbitals should write one
 `wavefunction.gto` section instead; the viewer evaluates orbitals from it on
 demand.
+
+## Validation says `NOT CHECKED`
+
+`vibe-view validate` uses the optional qvf reference validator. A core,
+`modes` or `all` installation alone does not provide it. Install the qvf
+Python package from the release pinned by `QVF_TAG`, then enable the
+viewer’s `validation` extra in the same environment; see
+[strict validation](qvf.md#strict-validation).
+
+`NOT CHECKED` is a missing capability, not a verdict on the archive. The
+command exits unsuccessfully so scripts cannot mistake an unperformed check
+for a pass. In Python the missing dependency raises
+`ValidationUnavailableError`; a completed validation returns a report whose
+`valid` field carries the verdict. Opening a file successfully is not a
+substitute for strict validation of every payload.
 
 ## `error, sha256 mismatch` or `ManifestValidationError`
 
@@ -140,9 +196,12 @@ against a remote file, tunnel the port instead of binding to `0.0.0.0`; the
 
 ## `vibe-view desktop` will not launch
 
-Desktop mode runs the Electron source that ships in the checkout, so it
-needs a **source checkout**; the wheel does not carry it, and there is no
-signed standalone package yet.
+The `vibe-view desktop` CLI runs the Electron source from a **source
+checkout**; the Python wheel does not carry it. A self-contained Apple
+Silicon app instead runs its bundled interpreter. Check which route you
+are using before repairing an environment; see [desktop package status](desktop.md#what-is-available-today).
+
+For the source-backed launcher:
 
 * Electron downloads itself on first use; `./scripts/install.sh
   --with-electron` fetches it up front.

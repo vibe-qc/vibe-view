@@ -22,7 +22,7 @@ The names have different roles:
 
 ## Install
 
-Prerequisites are Python 3.11 or newer and Git. Debian and Ubuntu users also
+Prerequisites are Python 3.12 or newer and Git. Debian and Ubuntu users also
 need the matching `python3-venv` package. Docker is not used, and no C++
 compiler or vibe-qc native dependency build is required.
 
@@ -176,13 +176,19 @@ repeat `--extras` when maintaining a non-default profile.
 
 ## Features
 
+- **ORCA calculations** — open an ORCA 6.1 run as one dataset: structures, charges and Mayer bond orders from the property text or JSON, orbitals from the exported JSON or the GBW file (through ORCA's `orca_2json`), vibrations with IR and Raman from the Hessian and VCD from the output log, UV-Vis, ECD and MCD spectra; prepare an ORCA input from an edited structure and submit it through vq ([step by step](docs/orca.md), [worked water example](docs/orca_water.md), [Raman/VCD along normal modes](docs/orca_raman_vcd.md))
 - **Structure** — CPK-coloured atoms with ball-and-stick, space-filling, wireframe styles
 - **Electron density** — translucent isosurface with adjustable isovalue and colormap
 - **Molecular orbitals** — HOMO/LUMO and full MO set with signed-lobe rendering
+- **Excited states** — TD-DFT and similar `excited_states` sections as a table of energies, wavelengths, oscillator and rotatory strengths, symmetries and orbital contributions, linked to their natural transition orbitals and transition densities
+- **Direct volume rendering** — ray-cast densities and orbitals with a transfer-function editor, beside the isosurface view
+- **Publication figures** — view presets, outlines and a chrome-free figure look; PNG, SVG and PDF export at a chosen scale
 - **Band structure + DOS** — Interactive Plotly charts with Fermi-level reference
 - **Compare mode** — Overlay structures from multiple files with Kabsch alignment
-- **Vibrations** — Animated normal modes with frequency selector
-- **IR/UV-Vis/Raman spectra** — Stem plots with hover tooltips
+- **Bookmarks, sessions and slides** — save a view with the structure on show, restore it later, present the bookmarks as a slideshow
+- **vibe-sketch hand-off** — draw a molecule in 2D in [vibe-sketch](https://vibe-qc.com) and open it here with its charge and multiplicity ([editing](docs/editing.md))
+- **Vibrations** — Animated normal modes; combine selected modes with independent signed displacements, export the geometry and calculate it through ORCA/vq ([worked example](docs/orca_raman_vcd.md#combine-selected-modes))
+- **IR/UV-Vis/Raman/VCD spectra** — Stem plots with hover tooltips and signed VCD strengths
 - **Wavefunction evaluator** — On-demand orbital evaluation from GTO basis
 - **Geometry optimisation trajectory** — Frame-by-frame playback with energy plot
 - **Bond orders + QTAIM** — Mayer/Wiberg analysis with critical points and bond paths
@@ -190,7 +196,7 @@ repeat `--extras` when maintaining a non-default profile.
 - **Biomolecule metadata** — QVF `structure` sections carry optional chains / residues / secondary structure for cartoon rendering
 - **Terminal mode** — full 3D viewer, charts and selectable wavefunction surfaces as Unicode braille in any terminal: canonical, alpha/beta, natural and localized orbitals plus computed density, with no display server, GL or X forwarding ([guide](https://vibe-qc.com/vibe-view/docs/capabilities.html))
 - **Jupyter notebooks** — `%vibeview` renders structures, volume captures, tables, SCF histories, and bands inline (requires the `[jupyter]` extra)
-- **Import** — QVF, vibe-qc Python inputs (`.py`), XYZ, CIF, Cube, PDB, Mol2, Gaussian input, GRO, SDF/Mol; TREXIO geometry and Gaussian orbitals through the optional `[trexio]` extra ([format guide](docs/formats.md#trexio-wavefunctions))
+- **Import** — QVF, vibe-qc Python inputs (`.py`), XYZ, CIF, Cube, PDB, Mol2, Gaussian input, GRO, SDF/Mol; ORCA calculations with structure, property spectra, MCD sticks and supported orbitals together ([ORCA tutorial](docs/orca.md)); TREXIO geometry and Gaussian orbitals through the optional `[trexio]` extra ([TREXIO guide](docs/formats.md#trexio-wavefunctions))
 - **Export** — XYZ, CIF, OBJ, glTF, HTML (standalone 3D viewer), JSON
 
 ## Quickstart
@@ -212,6 +218,7 @@ Already have data? Choose the shortest route:
 | Goal | Command |
 |---|---|
 | Open a QVF or supported loose file in a browser | `vibe-view open INPUT` |
+| Inspect an ORCA calculation with its companions | `vibe-view open calculation.property.json` — [step-by-step tutorial](docs/orca.md) |
 | Work over SSH without a display | `vibe-view show FILE.qvf` or `vibe-view tui FILE.qvf` |
 | Use a native window from the source checkout | `vibe-view desktop INPUT` |
 | See which loose formats this installation supports | `vibe-view formats` |
@@ -230,7 +237,7 @@ tui              Interactive terminal viewer (needs the [tui] extra)
 show             Render one frame as terminal text and exit
 compare          Side-by-side with auto compare-mode
 serve            Web-based QVF file browser
-dashboard        Multi-QVF web dashboard
+dashboard        Grid preview of several QVF files
 desktop          Launch the native Electron window (source checkout)
 table            Dump tabular data (table/csv/json)
 batch            Offscreen PNG gallery (+ --volumes)
@@ -240,7 +247,7 @@ export           XYZ/CIF/CML/JSON/PY structure, OBJ/glTF meshes,
                  POV-Ray/Blender scenes, HTML/SVG/PDF pages (12 formats)
 animate          Render animated sections (trajectory, NEB, vibrations) to MP4/GIF
 diff             Compare two QVFs (--json)
-validate         SHA-256 integrity check
+validate         Strict QVF reference validation (requires [validation])
 import           Convert loose inputs into persistent QVF archives
 formats          List built-in and plugin importers (--json for scripts)
 capture          Render any section to PNG
@@ -266,7 +273,8 @@ from vibeview import info, diff, validate, get_structure, capture_structure, ren
 
 data = info("calculation.qvf")
 comparison = diff("hf.qvf", "pbe.qvf")
-is_valid = validate("result.qvf")
+validation = validate("result.qvf")  # requires the optional reference validator
+print(validation["valid"])
 capture_structure("h2o.qvf", "structure.png")
 
 # Same renderers, text instead of a PNG — and no OpenGL context needed,
@@ -274,6 +282,11 @@ capture_structure("h2o.qvf", "structure.png")
 print(render_terminal("h2o.qvf", size=(80, 24)))
 print(render_terminal("h2o.qvf", "vol_mo_3", isovalue=0.03))
 ```
+
+Strict validation needs qvf’s reference package in addition to the core
+viewer; follow [the validation setup](docs/qvf.md#strict-validation). The
+returned value is a report dictionary: inspect its `valid` field rather than
+testing the dictionary itself for truth.
 
 `render_terminal` draws stored `volume.*` sections in one shot. To browse
 every orbital embedded in `wavefunction.gto`, including localized and natural
@@ -309,9 +322,9 @@ CLI, the Python SDK and troubleshooting.
 Build it from a checkout:
 
 ```sh
-pip install sphinx myst-parser furo sphinx-copybutton sphinx-design linkify-it-py
-cd docs && make html      # renders into docs/_build/html
-cd docs && make strict    # the same build with -W; run this before pushing docs
+pip install -e '.[docs]'  # the Sphinx toolchain, pinned in pyproject.toml
+make -C docs html        # renders into docs/_build/html
+make -C docs strict      # the same build with -W; run this before pushing docs
 ```
 
 > The published site tracks the `release` branch, so it shows the released
@@ -335,8 +348,10 @@ commit identities and record their source revision and per-file checksums in
 publication provenance. A public commit ID is not interchangeable with a
 canonical development commit ID; original release tags remain immutable.
 
-The QVF manifest schemas under `src/vibeview/` are vendored real files. The
-normative copy lives in the [qvf repository](https://github.com/vibe-qc/qvf),
-and `scripts/check_qvf_conformance.py` checks the schema pins and corpus.
+The QVF manifest schema `src/vibeview/schema.json` is a byte-identical copy
+from the release of the [qvf repository](https://github.com/vibe-qc/qvf) that
+`QVF_TAG` pins; qvf is the single master of the format, and vibe-view vendors
+nothing else. `scripts/check_qvf_conformance.py` checks the copy, its pin and
+the conformance corpus.
 
 Copyright (c) 2026 Michael F. Peintinger and vibe-qc contributors.

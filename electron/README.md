@@ -1,7 +1,8 @@
 # vibe-view Desktop App
 
 Electron-based desktop application for vibe-view. Runs on **macOS, Windows, and Linux**
-with the same codebase — no platform-specific code required.
+with a shared codebase. Apple Silicon packages include their own Python, PyVista,
+VTK, Trame and RDKit runtime; other platforms currently use an external Python.
 
 ## Quick Start
 
@@ -46,7 +47,8 @@ vibe-view serve (directory browser + viewer launcher)
   │                          (⬆ Parent / ⌂ Home links, Open Folder…)
   │  GET /open?file=PATH   → spawns `vibe-view open PATH --no-browser`
   │                          on a free port, loading page polls
-  │                          /open-status, then redirects
+  │                          /open-status, then redirects (or shows
+  │                          the exit status and error if it died)
   ▼
 per-file 3D viewer (Trame/PyVista/VTK) on its own port
 ```
@@ -73,11 +75,11 @@ preserved. Close every desktop window and CLI/server launch first.
 `--keep-desktop` also keeps the checkout's Electron runtime and source app for
 a later reinstall.
 
-## Prerequisites
+## Source/development prerequisites
 
 | Requirement | Version | Install |
 |-------------|---------|---------|
-| Python | 3.11+ | https://python.org/ |
+| Python | 3.12+ | https://python.org/ |
 | vibe-view | 2.0.0+ | `python -m pip install -e '.[viewer]'` |
 
 Node.js is **not** required for `vibe-view desktop` — the Electron
@@ -107,7 +109,7 @@ possible. `vibe-view desktop --no-sandbox` is an explicit last-resort option
 for trusted local files and prints a warning because it weakens isolation.
 
 The source installer installs `[viewer,tui]`, records its interpreter for
-reuse by an installed or packaged app, and leaves the Electron download lazy.
+reuse by its source-installed desktop app, and leaves the Electron download lazy.
 Pass `--with-electron` to download and brand the runtime during installation.
 Use `./scripts/update-desktop.sh` from the checkout root to update
 Git, refresh the Python environment, synchronize the reviewed Electron engine,
@@ -192,13 +194,18 @@ cd electron
 
 The `build` section of `package.json` carries the electron-builder
 config (appId, icons, `.qvf` file association, and the `publish` feed).
+The app's version is the `version` in `package.json`, which moves with the
+product version at release time; [`PUBLISHING.md`](PUBLISHING.md) says
+which files change together.
 Notes:
 
-- The packaged app still runs the Python server from the environment it
-  finds via `findPython()` — vibe-view must be pip-installed on the
-  target machine. Full Python bundling (PyInstaller of
-  `vibeview.cli serve` dropped into `Contents/Resources`) is roadmap
-  material, not implemented.
+- Apple Silicon builds include Python and the viewer libraries. The builder
+  always stages the hash-locked runtime and checks it at the installed app path
+  before signing. Build on Apple Silicon with Python 3.12+ and Node.js 22.12+;
+  the resulting app needs only macOS 14+. Intel/universal Mac builds are refused.
+  See [runtime/README.md](runtime/README.md) for the dependency/source inventory,
+  exact included features, cache layout and installed-package acceptance.
+- Linux x86-64 packages bundle their Python runtime; Windows packaging still needs runtime qualification.
 - Distribution outside your own machines needs a Developer ID
   certificate + notarization; ad-hoc signatures do not provide Developer ID
   or Gatekeeper trust for external distribution.
@@ -219,9 +226,9 @@ Notes:
 The packaged app ships electron-updater (bundled in the app.asar) wired to a
 generic update feed at `https://vibe-qc.com/updates/vibe-view/`. The published
 macOS arm64 package's "Check for Updates" menu items (App menu + tray) trigger
-a real check when the feed is reachable. That feed currently advertises the
-older 2.10.0 package, while source installs are at 2.14.1; it is not a way to
-update a source checkout. Local Intel macOS packages are kept off that
+a real check when the feed is reachable. The feed advertises whichever
+package was last published to it, which can lag the source release; it is not
+a way to update a source checkout. Local Intel macOS packages are kept off that
 arm64-only feed. Building + publishing a release, the
 external feed-host configuration, and the macOS Developer-ID signing gate
 (required for self-install; ad-hoc builds can only detect + notify)
@@ -244,7 +251,10 @@ or Windows feed automatically.
 it is not shipped in the wheel.
 
 **"Server did not start" / the setup screen appears**
-→ The app couldn't find a Python with `vibe-view[viewer]`. The setup window
+→ In the bundled Mac app, restart or replace the application if its repair
+screen appears; installing another Python cannot repair its embedded runtime.
+For source launches or other platforms, the app couldn't find a Python with
+`vibe-view[viewer]`. The setup window
 (`setup.html`) names which case applies and lets you install + recheck. To
 debug the server directly, run it in the launching environment:
 `python3 -m vibeview.cli serve --port 8765`.
@@ -261,3 +271,7 @@ Electron tooling itself.
 → Check the terminal: `[vibe-view]`-prefixed lines are the server log.
 The per-file viewer takes a few seconds on first open (VTK cold start);
 the loading page polls until it is up.
+
+Linux self-contained packaging uses Python 3.13+, Node.js 22.12+, `readelf`,
+`ldd` and `zstd` on a native x86-64 desktop builder. The checked lock is separate
+from the Apple Silicon lock. See the Linux section of the desktop manual.

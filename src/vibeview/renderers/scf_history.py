@@ -15,18 +15,20 @@ energy means an iteration-count-only sanity plot.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import plotly.graph_objects as go
 
 from vibeview.renderers import BaseRenderer
+from vibeview.renderers._plotly import chart_layout, figure_to_html
+from vibeview.renderers.palette import ACCENT_BLUE, ACCENT_RED
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader, SCFHistoryData, Section
 
 
 def _extract_xy(
-    iters: list[dict], key: str, *, x_key: str = "iter"
+    iters: list[dict[str, Any]], key: str, *, x_key: str = "iter"
 ) -> tuple[list[float], list[float]]:
     """Return ``(xs, ys)`` for the records that carry a numeric ``key``.
 
@@ -68,7 +70,12 @@ class SCFHistoryRenderer(BaseRenderer):
             self._data = self.reader.read_scf_history(self.section_id)
         return self._data
 
-    def render_to_html(self, skip_first: bool = False, log_energy: bool = False) -> str:
+    def render_to_html(
+        self,
+        skip_first: bool = False,
+        log_energy: bool = False,
+        include_plotlyjs: str | bool = "cdn",
+    ) -> str:
         data = self.load()
         iters = data.iterations
         # The initial-guess energy is often hundreds of Hartree above the
@@ -120,7 +127,7 @@ class SCFHistoryRenderer(BaseRenderer):
                     y=log_de,
                     mode="lines+markers",
                     name="|E − E_final| (Eh)",
-                    line={"color": "#CC3333", "width": 1.5},
+                    line={"color": ACCENT_RED, "width": 1.5},
                     marker={"size": 5},
                     hovertemplate="iter %{x}<br>|ΔE| = %{y:.2e} Eh<extra></extra>",
                     yaxis="y",
@@ -133,7 +140,7 @@ class SCFHistoryRenderer(BaseRenderer):
                     y=energies,
                     mode="lines+markers",
                     name="Energy (Eh)",
-                    line={"color": "#CC3333", "width": 1.5},
+                    line={"color": ACCENT_RED, "width": 1.5},
                     marker={"size": 5},
                     hovertemplate="iter %{x}<br>E = %{y:.10f} Eh<extra></extra>",
                     yaxis="y",
@@ -147,7 +154,7 @@ class SCFHistoryRenderer(BaseRenderer):
                     y=diis,
                     mode="lines+markers",
                     name="DIIS error",
-                    line={"color": "#3366CC", "width": 1.5, "dash": "dot"},
+                    line={"color": ACCENT_BLUE, "width": 1.5, "dash": "dot"},
                     marker={"size": 5},
                     hovertemplate="iter %{x}<br>‖e‖ = %{y:.2e}<extra></extra>",
                     yaxis="y2",
@@ -165,21 +172,13 @@ class SCFHistoryRenderer(BaseRenderer):
                     x=delta_x,
                     y=delta_e,
                     name="|ΔE| per cycle",
-                    marker={"color": "#3366CC", "opacity": 0.45},
+                    marker={"color": ACCENT_BLUE, "opacity": 0.45},
                     hovertemplate="iter %{x}<br>|ΔE| = %{y:.2e} Eh<extra></extra>",
                     yaxis="y2",
                 )
             )
 
-        layout: dict = {
-            "title": "SCF Convergence",
-            "xaxis": {"title": "Iteration"},
-            "template": "plotly_dark",
-            "hovermode": "x unified",
-            "height": 380,
-            "margin": {"l": 70, "r": 70, "t": 50, "b": 50},
-            "showlegend": bool(energies and (diis or delta_e)),
-        }
+        layout: dict[str, Any] = {}
         if log_energy and log_de:
             layout["yaxis"] = {
                 "title": "|E − E_final| (Eh)",
@@ -203,6 +202,15 @@ class SCFHistoryRenderer(BaseRenderer):
                 "side": "right",
                 "type": "log",
             }
-        fig.update_layout(**layout)
-
-        return fig.to_html(full_html=False, include_plotlyjs="cdn")
+        chart_layout(
+            fig,
+            title="SCF Convergence",
+            x_title="Iteration",
+            hovermode="x unified",
+            legend="default" if energies and (diis or delta_e) else "none",
+            # Two labelled y axes: the right one needs room the shared margin
+            # does not give.
+            margin={"l": 70, "r": 70, "t": 50, "b": 50},
+            **layout,
+        )
+        return figure_to_html(fig, include_plotlyjs=include_plotlyjs)

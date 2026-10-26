@@ -197,18 +197,12 @@ class TestBuilderController:
         assert app.state.file_names[-1] == "c1ccccc1O"
         assert len(app.state.file_names) - 1 == app.state.active_file_idx
 
-    def test_atom_count_is_the_real_molecule(self, tmp_path):
-        app = _app(tmp_path)
-        app.state.builder_smiles = "c1ccccc1O"
-        app.controller.build_from_smiles()
+        # These all describe the same successful build; assert them on the
+        # existing app instead of constructing and rendering three more apps.
         assert "13 atoms" in app.state.status_message, app.state.status_message
-
-    def test_dialog_is_reset_so_the_next_build_starts_clean(self, tmp_path):
-        app = _app(tmp_path)
-        app.state.builder_smiles = "CCO"
-        app.controller.build_from_smiles()
         assert app.state.builder_smiles == ""
         assert app.state.builder_dialog is False
+        assert app.state.smiles_available is True
 
     def test_relax_is_handed_to_vibe_qc(self, tmp_path, monkeypatch):
         """Decision 2: RDKit supplies the starting geometry, vibe-qc makes it
@@ -258,9 +252,6 @@ class TestBuilderController:
         app.controller.build_from_smiles()
         assert len(app.state.file_names) == before
         assert "could not parse SMILES" in app.state.status_message
-
-    def test_availability_flag_is_true_with_the_extra(self, tmp_path):
-        assert _app(tmp_path).state.smiles_available is True
 
 
 class TestBuilderWithoutTheExtra:

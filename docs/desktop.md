@@ -28,18 +28,28 @@ is the window, the menus and the file association.
 | Route | Status |
 |---|---|
 | `vibe-view desktop` from a **source checkout** | The supported route, on macOS, Linux and Windows. |
-| A packaged `.app`, `.dmg`, AppImage or NSIS installer | Buildable locally from `electron/`; **no signed, published artifact exists**. An older ad-hoc-signed macOS arm64 package on the update feed can detect a newer version and offer a manual download, but cannot self-install. |
+| Apple Silicon `.app`, `.dmg` and ZIP | Buildable locally with Python, PyVista, VTK, Trame and RDKit included. Requires macOS 14+. Developer ID signing and notarization remain release work. |
+| Linux x86-64 AppImage | Self-contained runtime; see [Linux desktop](#self-contained-linux-desktop) for host requirements. |
+| Windows NSIS installer | Buildable shell requiring an external Python environment; Windows qualification remains incomplete. |
 
 The Python wheel carries the browser, terminal and headless surfaces but not
-the Electron source, so desktop mode needs the checkout. A locally built
-package is not a self-contained Python bundle either: it still needs a
-Python with the `vibeview` distribution and its `[viewer]` extra on the
-machine, and its first-run [setup screen](#first-run-the-setup-screen)
-says so when that is missing. Bundling a full Python and VTK runtime into
-the installer was evaluated and deferred; the reasoning is in
-[Desktop packaging design](desktop_packaging_design.md).
+the Electron source, so the CLI's desktop command needs the checkout. The
+self-contained Apple Silicon and Linux x86-64 packages instead run their
+included interpreter, including for each per-file viewer; they ignore external
+Python environments. On macOS, copy the app from the DMG to Applications
+and open it. No Python, pip, Homebrew or Node.js installation is needed for normal viewing, editing or image capture.
+
+External calculation engines and companion applications remain separate.
+The bundled profile includes common format readers and SMILES conversion;
+ASE's additional formats, TREXIO and notebook widgets remain optional source
+extras. See [Desktop packaging design](desktop_packaging_design.md) for the
+runtime scope and build instructions. Locally built ad-hoc previews do not
+provide Gatekeeper trust or establish Mac App Store readiness.
 
 ## Installing
+
+The following commands install from source. They are unnecessary for the
+self-contained Apple Silicon app.
 
 Clone the public source repository:
 
@@ -70,7 +80,7 @@ profiles.
 environment by hand from PowerShell in the checkout root:
 
 ```powershell
-py -3.11 -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[viewer]"
 .venv\Scripts\vibe-view.exe --version
 .venv\Scripts\vibe-view.exe desktop
@@ -122,14 +132,46 @@ app and the Dock tile or command link; `--keep-desktop` keeps the Electron
 download for a later reinstall. Settings, recents, logs, window state, your
 archives and the app-managed environment described next are preserved.
 
+## Opening files and quitting
+
+Use **File → Open QVF, TREXIO or ORCA File…** (Ctrl/⌘ O) for a QVF or
+supported loose file, **Open Recent** to return to a previous path, or drag
+a file into the window. **File → Open
+Folder…** (Ctrl/⌘ Shift O) browses an ordinary directory; a TREXIO text
+directory is treated as one dataset and needs the TREXIO reader. **Browse
+Directory** (Ctrl/⌘ B) returns to the server's directory browser.
+
+These native dialogs select files on the desktop application's machine.
+Inside the viewer, **Browse chemistry file…** follows the browser upload
+workflow described in [opening files](browser.md#opening-files-from-inside-the-viewer).
+Opening a loose file converts it for inspection; use the import command or
+a geometry save action when you want a persistent output archive.
+
+Closing the last window does **not** quit the application. It remains
+running in the tray/menu bar and keeps its server alive. Use **Quit** from
+the tray menu, **vibe-view → Quit** / ⌘Q on macOS, or **File → Quit** on
+Linux and Windows. Quitting stops the desktop-managed server and console;
+queue jobs submitted separately have their own lifecycle.
+
+Before updating or repairing, save edited geometry and any views you want
+to retain, then quit the app explicitly. A session file saves the view;
+it is not a substitute for saving edited coordinates.
+
 ## First run: the setup screen
+
+Self-contained macOS and Linux packages validate their embedded runtime.
+If it cannot start, the repair screen suggests restarting or replacing the
+application, keeping your documents and settings. It never asks you to install Python or tries a
+different interpreter from your machine. The discovery and setup instructions
+below apply to source launches and shells without a bundled runtime, including
+the Windows target.
 
 When the app starts it looks for a Python that can run the server, in this
 order: the interpreter recorded by an earlier `vibe-view desktop` launch,
-then `python3`, `python`, `python3.13`, `python3.12`, `python3.11` and
-`python3.14` on `PATH` (`py` and `python` on Windows), then the app-managed
-environment at `$XDG_DATA_HOME/vibe-view/venv` (by default
-`~/.local/share/vibe-view/venv`), then a development checkout's `.venv`.
+then `python3`, `python`, `python3.13`, `python3.12` and `python3.14` on
+`PATH` (`py` and `python` on Windows), then the app-managed environment at
+`$XDG_DATA_HOME/vibe-view/venv` (by default `~/.local/share/vibe-view/venv`),
+then a development checkout's `.venv`.
 
 If none of those can import `vibeview` with the `[viewer]` extra, the app
 does not fail. It shows a **setup screen** naming which of three cases
@@ -237,7 +279,8 @@ scans the fixed interpreter list above plus the one recorded by a previous
 `vibe-view desktop` launch. An environment that is on neither list is
 invisible to a bare double-click. Run `vibe-view desktop` **once** from that
 environment; it records the interpreter under the cache directory, and later
-launches and double-clicks reuse it. Confirm the environment is capable
+source launches and double-clicks reuse it. This does not change a packaged
+app’s embedded interpreter. Confirm the environment is capable
 with:
 
 ```sh
@@ -248,13 +291,85 @@ python -c "import vibeview, trame, uvicorn; print('ok')"
 quit; current builds route the same conditions to the setup screen, which
 names what is missing.
 
-**Check for Updates** in the Help menu queries the macOS arm64 feed, which
-currently advertises only an older ad-hoc package. It can offer a manual
-download but cannot self-install, and it never updates a source checkout.
-For the supported route, quit the app and run `./scripts/update-desktop.sh`.
-Linux and Windows feeds are not published.
+**"Could not open" instead of the viewer.** The viewer process for that file
+stopped before it was ready, most often because the file is not a valid
+archive. The page shows the exit status and the viewer's error message.
+Choosing the file again from the browse page or Open Recent starts a new
+attempt, so fix the file first.
+
+**Check for Updates** depends on how the app was installed. Source launches
+show checkout-update instructions; they do not query the packaged updater or
+change Git. Quit and run `./scripts/update-desktop.sh` from the owning
+checkout. A packaged macOS arm64 build uses its configured update feed when
+the updater is available. An ad-hoc-signed macOS build can offer a manual
+download but cannot self-install; self-installation requires a Developer ID
+signature. Feed contents determine whether an update is offered.
+Linux and Windows builds show replacement-package guidance rather than
+querying the macOS feed.
 
 **The window is blank or unresponsive.** The shell is showing the browser
 viewer, so the [browser troubleshooting](troubleshooting.md#the-browser-viewer)
 applies: most often a port that something else holds. `--port` moves the
 server.
+
+## Self-contained Linux desktop
+
+Linux x86-64 AppImages include Python and the application libraries. No external
+Python, pip, Node.js or source checkout is needed. Download the package and its
+SHA-256 checksum from [the downloads page](https://vibe-qc.com/download/).
+Linux desktop downloads are public and require no supporter membership.
+macOS and Windows Store editions are planned paid purchases; their availability
+is separate from Linux downloads.
+
+The initial Linux target is Debian 12 or Ubuntu 24.04 on x86-64 with a graphical
+desktop and standard GTK3, NSS, ALSA, OpenGL and X11/Wayland compatibility libraries.
+Make the AppImage executable and launch it as a regular user. If FUSE is not
+available, extract with `--appimage-extract` and launch `squashfs-root/AppRun`.
+The application and Python runtime remain inside that directory. Offline local
+work is supported; remote services and external calculation engines remain optional.
+Linux updates currently use replacement AppImages from the website.
+
+Build natively on Linux x86-64 using `electron/build-desktop.sh --linux`. The
+Linux runtime lock pins interpreter and wheel hashes; the builder checks native
+library resolution and the installed runtime before packaging.
+
+## Python console
+
+Choose **View → Python Console** (Ctrl/⌘ Shift P). Write Python in the editor and
+press **Run** or Ctrl/⌘ Enter. The last expression's value, printed output and
+tracebacks appear above the editor. Variables persist between executions; `_`
+holds the last expression value. **Stop and reset** terminates the console
+process and starts the next execution with fresh variables. Closing the console
+also clears its process. It does not stop calculations submitted separately to a
+queue.
+
+The console uses the desktop application's selected Python interpreter and
+working directory, including the packaged interpreter in a bundled app. It
+preloads `api` (`vibeview.api`), `np` (NumPy), `ModelScene`, `SceneCommands` and an
+empty `scene`. For example:
+
+```python
+api.info("water.qvf")
+coordinates = np.array([atom["position"] for atom in api.get_structure("water.qvf")["atoms"]])
+coordinates.mean(axis=0)
+```
+
+The console is a local Python environment with your account's permissions, not
+a sandbox. Its execution bridge is available only to the dedicated desktop
+console window; ordinary browser pages do not receive it. The console's scene
+is independent of the live browser scene. Exchange working models using saved
+scene JSON:
+
+```python
+import json
+from pathlib import Path
+scene = ModelScene.from_dict(json.loads(Path("scene.json").read_text(encoding="utf-8")))
+scene.select("element O")
+Path("modified-scene.json").write_text(
+    json.dumps(scene.to_dict(), allow_nan=False), encoding="utf-8"
+)
+```
+
+Paste the saved JSON into the browser's **Working model scene** restore field.
+See [model scenes](model_scenes.md) for scene commands and replay. Output is
+bounded in the console display; save large arrays or reports explicitly to files.
