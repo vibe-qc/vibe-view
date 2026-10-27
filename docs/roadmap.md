@@ -593,6 +593,59 @@ and public desktop downloads exist. Remaining publication obligations are
 tracked separately on #110. Corrections ship in 3.0.x; accepted packages and
 artifacts are reused.
 
+### Carbon nanotubes and large carbon nanostructures
+
+Proposed 2026-10-28 for a prospective theory-support collaboration with the
+Alvarez group (University of Cincinnati). Their published work covers
+vertically aligned nanotube growth from premade metal-oxide nanoparticle
+films, covalent Cu–C and Au–C bonds at open ends and sidewalls of aligned
+tubes, nanotube microelectrodes and supercapacitor electrodes, and
+molecular linkers on Au. The theory we would supply is periodic and
+cluster DFT of those interfaces. The papers are filed in the paper library
+(`maintenance/survey-alvarez-lab-2026-10.txt`). Not a release commitment;
+none of it is measured yet.
+
+**Today:** the viewer draws periodic structures, supercells, atom and bond
+glyphs batched per element, slabs, trajectories, charge and bond-order
+tables, DOS and band charts, and difference-density isosurfaces. There is
+no measured atom budget for a long tube, and no tube builder.
+
+**Proposed, in the order the collaboration would need them:**
+
+- **Large-system rendering.** Fix the budget first: generate (n,m) tubes of
+  10³ to 10⁶ atoms, record load, orbit and capture times in the browser,
+  the terminal and headless, and publish the ceiling in the client
+  performance page. Then lift it with impostor or instanced spheres and
+  cylinders, level of detail while the camera moves, and bonds built from
+  the periodic cell rather than from all pairs. A single tube, a bundle and
+  an aligned forest are the three test scenes.
+- **Nanotube and interface builder.** Build a single- or multi-wall tube
+  from (n,m), length and cap or open end; show diameter, chiral angle and
+  wall spacing; place a metal slab, nanoparticle or linker at an open end or
+  on a sidewall at a chosen distance and registry. Reuses the slab and
+  fragment builders and the edit overlay, so geometry stays an edit-overlay
+  concern.
+- **Cut-aways and axial views.** Clip plane or half-tube cut to see the
+  inside wall and an encapsulated or bonded species; orthographic axial and
+  side views with depth cueing for figures. Extends the Publication preset.
+- **Per-atom property colouring.** Colour by coordination number, Mulliken
+  or IAO charge, bond order to the interface metal, local strain or distance
+  from the axis, so interface bonds and defects stand out among thousands of
+  C atoms. Highlight open-end and defect atoms, and sidewall adducts.
+- **Interface analysis.** Metal–C bond lists with lengths and orders,
+  projected DOS onto a chosen atom group (interface layer, open end), and
+  planar-averaged charge difference or electrostatic potential along the
+  tube axis. Reads existing QVF tables and sections; no schema change is
+  expected, and anything missing goes to qvf first.
+- **Growth and reaction paths.** Large trajectories and NEB profiles on
+  catalyst–tube models (nucleation, carbide formation, bond formation at an
+  open end) with streaming and thumbnails that scale past the current frame
+  sizes; bonds in the live playback frames, which is already open above.
+
+**Constraint:** keep the work client-side where vtk.js allows. Impostors
+and level of detail must live in the vtk.js client, because server render
+passes never reach it (see Materials and lighting above).
+
 ### Not yet placed
 
 No registered codename covers these:
