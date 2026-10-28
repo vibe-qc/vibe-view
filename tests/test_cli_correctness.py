@@ -621,10 +621,7 @@ def test_first_real_mode() -> None:
     assert first_real_mode([]) == 0
 
 
-@pytest.mark.parametrize(
-    ("args", "mode"),
-    [([], 6), (["--mode", "7"], 6), (["--mode", "9"], 8), (["--mode", "1"], 0)],
-)
+@pytest.mark.parametrize(("args", "mode"), [([], 6), (["--mode", "8"], 8), (["--mode", "0"], 0)])
 def test_animate_vibration_mode_default_is_the_first_real_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: list[str], mode: int
 ) -> None:
@@ -646,7 +643,7 @@ def test_animate_vibration_mode_default_is_the_first_real_mode(
     assert seen == [mode]
 
 
-@pytest.mark.parametrize("mode", ["10", "0", "-1"])
+@pytest.mark.parametrize("mode", ["9", "-1"])
 def test_animate_refuses_an_out_of_range_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
@@ -659,6 +656,6 @@ def test_animate_refuses_an_out_of_range_mode(
                "-o", str(tmp_path / "m.mp4")],
     )
     assert result.exit_code == 2
-    assert f"--mode {mode} is out of range: orca_vibrations has 9 modes, numbered 1 to 9" in (
+    assert f"--mode {mode} is out of range: orca_vibrations has 9 modes, numbered 0 to 8" in (
         result.output
     )

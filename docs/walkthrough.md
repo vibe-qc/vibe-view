@@ -218,7 +218,7 @@ Modes 1 to 6 are the translations and rotations. Raman activities, VCD
 rotatory strengths, reduced masses, force constants and symmetry labels get
 their own columns when the file has them; `--format csv` writes the table for
 a spreadsheet. `vibe-view animate` starts on the first real mode, here mode
-7 (`--mode 7`, counted from 1).
+7 (`--mode 6`, counted from 0).
 
 ```{figure} images/anim-vibration.gif
 :alt: Animation of a formaldehyde normal mode, with the atoms moving along their displacement vectors.

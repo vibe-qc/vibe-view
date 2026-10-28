@@ -208,24 +208,6 @@
   },
   {
     "changed": false,
-    "export_sha256": "c5874c6641ed4c7df79b4aacd35d2d281ad61e1dd138819d409dbe6fe74af78d",
-    "mode": "100644",
-    "path": "changelog.d/155-animate-mode.changed.md",
-    "reasons": [],
-    "source_blob": "0f8e8d31324a6c1a3ea2c0983a04ad4ed5f7c6b7",
-    "source_sha256": "c5874c6641ed4c7df79b4aacd35d2d281ad61e1dd138819d409dbe6fe74af78d"
-  },
-  {
-    "changed": false,
-    "export_sha256": "29dcf8db756fe1221f374c7290e2a584cb8b0563a7276462eafd07d0bd23fda3",
-    "mode": "100644",
-    "path": "changelog.d/163-chemical-space.added.md",
-    "reasons": [],
-    "source_blob": "863814259c5950c5e327f1d5b6e6c7a2c45cbb35",
-    "source_sha256": "29dcf8db756fe1221f374c7290e2a584cb8b0563a7276462eafd07d0bd23fda3"
-  },
-  {
-    "changed": false,
     "export_sha256": "4c758837f0b4969e5b5818026deb7025cf11657ea86a944feb81f971942a670e",
     "mode": "100644",
     "path": "changelog.d/165-render-recipe.added.md",
@@ -541,21 +523,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "c43e54e82ec5f60a15df5609424264db673a77154ca0e703dc767c953d6fbd06",
-    "mode": "100644",
-    "path": "docs/chemical_space.md",
-    "reasons": [],
-    "source_blob": "4cb00454b28b17725185dcd85554762a8cb97be8",
-    "source_sha256": "c43e54e82ec5f60a15df5609424264db673a77154ca0e703dc767c953d6fbd06"
-  },
-  {
-    "changed": false,
-    "export_sha256": "9f9069b241cf22ee93c3c6d297836bd55069544d9f437dbdb677342f1a027c5f",
+    "export_sha256": "4e63b8d656b88ec9caeb21594eef8f5dbf596007b77b8fa1894307e3346baa5b",
     "mode": "100644",
     "path": "docs/cli.md",
     "reasons": [],
-    "source_blob": "f90e560623b7212bf8ff1607572ca7865d2600b9",
-    "source_sha256": "9f9069b241cf22ee93c3c6d297836bd55069544d9f437dbdb677342f1a027c5f"
+    "source_blob": "968fb784e72f5b95f9291692319b5a3c48210bd0",
+    "source_sha256": "4e63b8d656b88ec9caeb21594eef8f5dbf596007b77b8fa1894307e3346baa5b"
   },
   {
     "changed": false,
@@ -946,12 +919,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "10006521ee1cf6c86b73d9b66121e6492230cc8b96a20f1a8ceb8a3a671309fb",
+    "export_sha256": "a8e825a2f384234853cc35c2bf2f9bad01d431b0b4c8012be11644f0bde48405",
     "mode": "100644",
     "path": "docs/headless.md",
     "reasons": [],
-    "source_blob": "93ffe9b40c8529315cbca5db56e96bfa101961c3",
-    "source_sha256": "10006521ee1cf6c86b73d9b66121e6492230cc8b96a20f1a8ceb8a3a671309fb"
+    "source_blob": "37db0ab55cc5f1616cd2413581f543762444e778",
+    "source_sha256": "a8e825a2f384234853cc35c2bf2f9bad01d431b0b4c8012be11644f0bde48405"
   },
   {
     "changed": false,
@@ -1765,12 +1738,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "4d95772afa0ef03a7f2cd1fe8e6b13dd25bf32a5950f9f926760b7da400eb03b",
+    "export_sha256": "ddcf325cd125da2a704ed498b54010001d10899067344e7ee24b17e6b725de2f",
     "mode": "100644",
     "path": "docs/walkthrough.md",
     "reasons": [],
-    "source_blob": "2449667da02aaa6e2948543d5f511b756d88525a",
-    "source_sha256": "4d95772afa0ef03a7f2cd1fe8e6b13dd25bf32a5950f9f926760b7da400eb03b"
+    "source_blob": "5e630466eafd0f6bac02ef704a116a38a60d2f57",
+    "source_sha256": "ddcf325cd125da2a704ed498b54010001d10899067344e7ee24b17e6b725de2f"
   },
   {
     "changed": false,
@@ -2332,12 +2305,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "4ddf988e7c2a9039a50c8fac32d53ba8f3107f604d9743f609d2b5f75f592745",
+    "export_sha256": "948d305b74074af5abca2c2bb6616cd6c1319904e539f737bb033a20a833e485",
     "mode": "100644",
     "path": "src/vibeview/app/bindings.py",
     "reasons": [],
-    "source_blob": "10b708bb4056bb62f8e73f505efa88abf0a99054",
-    "source_sha256": "4ddf988e7c2a9039a50c8fac32d53ba8f3107f604d9743f609d2b5f75f592745"
+    "source_blob": "02d3dd17729ebc3c2bc707c1096532c44349a94c",
+    "source_sha256": "948d305b74074af5abca2c2bb6616cd6c1319904e539f737bb033a20a833e485"
   },
   {
     "changed": false,
@@ -2359,12 +2332,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "de68b4db97069acac85bbdaf449f33868028998703cf6de4543af4bf57eb6a8a",
+    "export_sha256": "7d40d0ceb1a84da3e3a562a6407e5a73576ff48edcdd8defabaacdd3506aab54",
     "mode": "100644",
     "path": "src/vibeview/app/controls.py",
     "reasons": [],
-    "source_blob": "e7cec076d228852122986624df52a101ad233a3d",
-    "source_sha256": "de68b4db97069acac85bbdaf449f33868028998703cf6de4543af4bf57eb6a8a"
+    "source_blob": "49b6f739a6a3313ca096998a3b18826b49489b3b",
+    "source_sha256": "7d40d0ceb1a84da3e3a562a6407e5a73576ff48edcdd8defabaacdd3506aab54"
   },
   {
     "changed": false,
@@ -2674,30 +2647,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "3249f4daabdd95f2bbf32f6851a71bbdec81f5a8e97ab9d90158314097a5cd78",
-    "mode": "100644",
-    "path": "src/vibeview/chemical_space.py",
-    "reasons": [],
-    "source_blob": "6df454b702ab5ba97e318b47a6855bd21d4836fc",
-    "source_sha256": "3249f4daabdd95f2bbf32f6851a71bbdec81f5a8e97ab9d90158314097a5cd78"
-  },
-  {
-    "changed": false,
-    "export_sha256": "c5590efb3ac2ee975cad8266c1670a7bdd2c2659d13c1bf8a304761c75bbffb0",
-    "mode": "100644",
-    "path": "src/vibeview/chemical_space_panel.py",
-    "reasons": [],
-    "source_blob": "217c5400f973889bd8d237d2d7f07fcfbdfe9f0d",
-    "source_sha256": "c5590efb3ac2ee975cad8266c1670a7bdd2c2659d13c1bf8a304761c75bbffb0"
-  },
-  {
-    "changed": false,
-    "export_sha256": "c4c9813619cd1f0fade4ca9c6a52ac6da66210d2f795217033dd49e134fbbe2b",
+    "export_sha256": "1e92e6f3a8b6ba87b143cbd8311fdef33b3f69af849e794289bb0d62b5d4fcf4",
     "mode": "100644",
     "path": "src/vibeview/cli.py",
     "reasons": [],
-    "source_blob": "fec3a584c3ec6f3a815956a809e3d03be63fd60f",
-    "source_sha256": "c4c9813619cd1f0fade4ca9c6a52ac6da66210d2f795217033dd49e134fbbe2b"
+    "source_blob": "741d45f80635d6ec1ceedfcd5e06db48607b87da",
+    "source_sha256": "1e92e6f3a8b6ba87b143cbd8311fdef33b3f69af849e794289bb0d62b5d4fcf4"
   },
   {
     "changed": false,
@@ -4420,24 +4375,6 @@
   },
   {
     "changed": false,
-    "export_sha256": "174b4b2f144cb0623c361e7560e453041e341113ab8bf2f1e8781ac15626fe4a",
-    "mode": "100644",
-    "path": "tests/fixtures/chemical_space/expected.json",
-    "reasons": [],
-    "source_blob": "2e55c4ed0749f6fdf3b1c460fd7a5cdd4765d4c9",
-    "source_sha256": "174b4b2f144cb0623c361e7560e453041e341113ab8bf2f1e8781ac15626fe4a"
-  },
-  {
-    "changed": false,
-    "export_sha256": "995c9fd974046939a8c49716b03ac0b516ca0c127196d1c00d25123c6747a254",
-    "mode": "100644",
-    "path": "tests/fixtures/chemical_space/producer.json",
-    "reasons": [],
-    "source_blob": "7f8f98ac55f9bd7f45722b11dc9da8d8612df4b2",
-    "source_sha256": "995c9fd974046939a8c49716b03ac0b516ca0c127196d1c00d25123c6747a254"
-  },
-  {
-    "changed": false,
     "export_sha256": "0a6cfecd0b958a3b222f4c5029719d00b5d5a2f0c3bc0c64f6eb3900eb4722e9",
     "mode": "100644",
     "path": "tests/fixtures/input_writers/README.md",
@@ -5275,15 +5212,6 @@
   },
   {
     "changed": false,
-    "export_sha256": "87c2f9c8309cb1f83fb464177f141e263d0e9c29ad0cd0ef383f36567cd609cd",
-    "mode": "100644",
-    "path": "tests/test_chemical_space.py",
-    "reasons": [],
-    "source_blob": "463654ffbae30cd2bd12a70267eb7b3371351dd3",
-    "source_sha256": "87c2f9c8309cb1f83fb464177f141e263d0e9c29ad0cd0ef383f36567cd609cd"
-  },
-  {
-    "changed": false,
     "export_sha256": "07891c613304d89a8325aa06d80a957076f41f1010b33277025ba0b44be546c4",
     "mode": "100644",
     "path": "tests/test_ci_rules.py",
@@ -5329,12 +5257,12 @@
   },
   {
     "changed": false,
-    "export_sha256": "81e54cf13f61e9e21c36dab60d00d750c0bc419142fedeef896a778fcce9f5c9",
+    "export_sha256": "990a6cfa442fcffc84867a96c09c0fcadcf6868914ed9ef9863534caf5bc27ce",
     "mode": "100644",
     "path": "tests/test_cli_correctness.py",
     "reasons": [],
-    "source_blob": "dd2cf13a682cbd56de16cdf9154969a4004eea6f",
-    "source_sha256": "81e54cf13f61e9e21c36dab60d00d750c0bc419142fedeef896a778fcce9f5c9"
+    "source_blob": "ca1a844551db3de0be0c5f5d88be40b945727359",
+    "source_sha256": "990a6cfa442fcffc84867a96c09c0fcadcf6868914ed9ef9863534caf5bc27ce"
   },
   {
     "changed": false,

@@ -175,7 +175,7 @@ background and an isometric camera fitted to the scene. Only
 vibe-view animate opt.qvf                              # auto-detect: trajectory, reaction path, vibrations or orbitals
 vibe-view animate neb.qvf --kind reaction              # reactant → transition state → product
 vibe-view animate vib.qvf --kind vibration            # the first real (positive-frequency) mode
-vibe-view animate vib.qvf --kind vibration --mode 7    # one normal mode, 1-based
+vibe-view animate vib.qvf --kind vibration --mode 7    # one normal mode, 0-based
 vibe-view animate opt.qvf -k trajectory --fps 8 --format gif
 vibe-view animate si.qvf  --kind turntable -o rotation.mp4
 ```

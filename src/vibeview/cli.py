@@ -2467,7 +2467,7 @@ def quickstart_cmd(port: int) -> None:
 @size_option()
 @click.option(
     "--mode", default=None, type=int,
-    help="Vibrational mode number (1-based; default: the first real mode).",
+    help="Vibrational mode index (0-based; default: the first real mode).",
 )
 @isovalue_option(default=0.04, help="Isovalue for orbital animation.")
 @click.option("--frames-per-cycle", default=60, type=click.IntRange(2, 600))
@@ -2569,30 +2569,32 @@ def animate_cmd(
 
 
 def _vibration_mode(reader: QVFReader, mode: int | None) -> int:
-    """Convert the one-based CLI number to a zero-based renderer index (#155).
+    """The mode ``animate`` should show: the first real one by default (#152).
 
-    With no explicit number, retain the first real mode default (#152).
-    A section that cannot be read is left to the render path, which reports it.
+    Mode 0 is usually a zero-frequency translation, so the default movie
+    never moved; an out-of-range ``--mode`` was reported as a missing
+    vibrations section. A section that cannot be read is left to the render
+    path, which reports it.
     """
     from vibeview.qvf import QVFError
     from vibeview.renderers.vibrations import first_real_mode
 
     section = next((s for s in reader.sections if s.kind == "vibrations"), None)
     if section is None:
-        return mode - 1 if mode is not None else 0
+        return mode or 0
     try:
         frequencies = reader.read_vibrations(section.id).frequencies
     except QVFError:
-        return mode - 1 if mode is not None else 0
+        return mode or 0
     if mode is None:
         return first_real_mode(frequencies)
     n_modes = len(frequencies)
-    if not 1 <= mode <= n_modes:
+    if not 0 <= mode < n_modes:
         raise click.UsageError(
             f"--mode {mode} is out of range: {section.id} has {n_modes} modes, "
-            f"numbered 1 to {n_modes}"
+            f"numbered 0 to {n_modes - 1}"
         )
-    return mode - 1
+    return mode
 
 
 def _animation_format(fmt: str | None, output: Path | None) -> str:

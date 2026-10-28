@@ -118,7 +118,7 @@ setting one up, and `show` is the fallback when there is none.
 |---|---|
 | `capture FILE` | Render a section to PNG, by default the archive's first structure. `-s ID`, `-o PATH`, `--isovalue`, `--colormap`, `--size WxH`, `--publication` (the browser's Publication look) and `--part real\|imag\|modulus` for a complex field, `--frame N` for a slab of a volume series (from 0), `--render auto\|isosurface\|volume` for a volume ([details](headless.md)). A band structure draws its axis in the saved Band / DOS energy unit. |
 | `batch PATTERNS...` | A PNG gallery from many archives. `--volumes` includes volume sections; `-o DIR`, `--size`. |
-| `animate FILE` | A trajectory, reaction path, vibration, orbital sweep or turntable as MP4 or GIF. `-k KIND` (`auto` picks the first of trajectory, reaction, vibration, orbital, then a turntable of the structure), `--mode N` (1-based; by default the first positive-frequency mode, and a mode outside the section is refused), `--fps`, `-f mp4\|gif\|frames` (by default from the `-o` suffix, `.gif` or `.mp4`, else MP4), `--size`, `--isovalue`. For a vibration, `--amplitude`, `--frames-per-cycle`, `--arrows` with `--arrow-cutoff` (Å), `--arrow-color` and `--arrow-thickness`, and `--loop`/`--no-loop` for GIFs. |
+| `animate FILE` | A trajectory, reaction path, vibration, orbital sweep or turntable as MP4 or GIF. `-k KIND` (`auto` picks the first of trajectory, reaction, vibration, orbital, then a turntable of the structure), `--mode N` (0-based; by default the first positive-frequency mode, and a mode outside the section is refused), `--fps`, `-f mp4\|gif\|frames` (by default from the `-o` suffix, `.gif` or `.mp4`, else MP4), `--size`, `--isovalue`. For a vibration, `--amplitude`, `--frames-per-cycle`, `--arrows` with `--arrow-cutoff` (Å), `--arrow-color` and `--arrow-thickness`, and `--loop`/`--no-loop` for GIFs. |
 | `export FILE` | The structure as `xyz`, `cif`, `cml`, `json` or a `py` input script; meshes as `obj` or `gltf`; scenes for `pov` (POV-Ray) or `blend` (Blender); pages and figures as `html`, `svg` or `pdf`. `-f FORMAT`, `-o PATH`, `-s ID` for a structure other than the first. |
 | `spectrum FILE` | A display-broadened spectrum as a whitespace-delimited text file, from a QVF or a supported ORCA dataset. `--section ID` (required), `-o PATH` (required), `--lineshape gaussian\|lorentzian`, `--fwhm` with `--unit native\|eV\|cm-1`, `--x-unit`, `--normalize`, and the grid in native energy units: `--grid-min`, `--grid-max`, `--grid-step`. A wrong `--section` lists the file's spectrum sections. The file records its settings and the original sticks; see [Explore electronic spectra](orca.md#5-explore-electronic-spectra-and-mcd). Needs no GL context. |
 | `capture-selftest` | Prove the offscreen pipeline renders a non-blank image, and report the backend. `-o FILE` keeps the test PNG. Run it first on a new host. |
@@ -283,18 +283,14 @@ reported as an error. An explicit exit status is kept.
 
 ### Selected-mode animation
 
-The vibration controls also have CLI equivalents (mode numbers are one-based, as in `show`, `open` and the browser).
-Since 3.1, scripts written for 3.0 must add 1 to each explicit
-`animate --mode` value; for example, `--mode 6` becomes `--mode 7`.
-The default remains the first positive-frequency mode.
-
+The vibration controls also have CLI equivalents (mode indices are zero-based).
 The example uses the ORCA water frequency dataset,
 {download}`water-frequencies.qvf <examples/orca-water/water-frequencies.qvf>`, at
 its source-checkout path:
 
 ```sh
 vibe-view animate docs/examples/orca-water/water-frequencies.qvf -k vibration \
-  --mode 7 --amplitude 1 --arrows --arrow-cutoff 0.01 \
+  --mode 6 --amplitude 1 --arrows --arrow-cutoff 0.01 \
   --arrow-color '#ffb300' --arrow-thickness 0.025 \
   --frames-per-cycle 24 --fps 12 --loop -f gif -o water-bend.gif
 ```

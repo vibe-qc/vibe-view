@@ -1,1 +1,0 @@
-- Add a chemical-space panel consuming QC spectral fingerprints, with asynchronous PCA, property/group colours, structure selection, per-channel comparison and nearest neighbours.
