@@ -227,6 +227,66 @@ def test_registered_queue_exact_staging_and_save_only(water, monkeypatch, tmp_pa
         submit(viewer)
 
 
+def test_xtb_queue_runner_and_optional_dependency(water, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    import vibeview.input_writer_panel as panel_module
+    from vibeview.input_writer_panel import submit
+
+    viewer = panel(water)
+    viewer.server.state.calc_engine = "xtb"
+    viewer.server.state.calc_writer_raw = ""
+    binary = tmp_path / "xtb"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+    config = ModuleType("vq.config")
+    config.load_config = lambda: SimpleNamespace(
+        programs={"xtb": SimpleNamespace(binary=str(binary))}
+    )
+    submission = ModuleType("vq.submit")
+    captured = {}
+
+    def submit_local(**kw):
+        captured.update(kw)
+        captured["request"] = json.loads((Path(kw["directory"]) / "xtb-job.json").read_text())
+        return "abc123"
+
+    submission.submit_local = submit_local
+    monkeypatch.setitem(sys.modules, "vq", ModuleType("vq"))
+    monkeypatch.setitem(sys.modules, "vq.config", config)
+    monkeypatch.setitem(sys.modules, "vq.submit", submission)
+    monkeypatch.setattr(
+        panel_module.importlib, "import_module", lambda name: SimpleNamespace(run_xtb=lambda: None)
+    )
+    submit(viewer)
+    assert captured["command"] == [
+        sys.executable, "-m", "qvf", "run-xtb", "xtb-job.json", "--binary", str(binary)
+    ]
+    assert captured["program"] == "xtb" and captured["cpus"] == 1
+    assert captured["request"]["outputs"] == dict(orbitals=True, bond_orders=True, density=False)
+    assert not Path(captured["directory"]).exists()
+    def absent(name):
+        raise ImportError("absent adapter")
+    monkeypatch.setattr(panel_module.importlib, "import_module", absent)
+    captured.clear()
+    with pytest.raises(ValueError, match="qvf-writer"):
+        submit(viewer)
+    assert not captured
+
+
+def test_xtb_output_selection_and_gfnff_native_route(water):
+    bundle = write_input(
+        water, settings("xtb", xtb_orbitals=False, xtb_bond_orders=False, xtb_density=True)
+    )
+    assert "json=true" in bundle.files["xcontrol"] and "density=true" in bundle.files["xcontrol"]
+    assert "--molden" not in bundle.command and "--wbo" not in bundle.command
+    assert json.loads(bundle.files["xtb-job.json"])["outputs"] == dict(
+        orbitals=False, bond_orders=False, density=True
+    )
+    ff = write_input(water, settings("xtb", method="GFN-FF"))
+    assert "xtb-job.json" not in ff.files and "--gfnff" in ff.command
+
+
 @pytest.mark.parametrize("program", PROGRAMS)
 def test_reviewed_manual_reference_inputs(water, program):
     from pathlib import Path

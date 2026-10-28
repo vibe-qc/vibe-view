@@ -205,3 +205,25 @@ def test_row_runs_compress_constant_style():
     assert runs[0][1] == (10, 20, 30)
 
 
+def test_large_subpixel_cloud_keeps_nearest_colour_in_both_orders():
+    centers = np.tile([0., 0., 100.], (10_000, 1))
+    centers[-1, 2] = 90
+    colors = np.tile([0., 0., 255.], (len(centers), 1))
+    colors[-1] = [255., 0., 0.]
+    results = []
+    for order in (np.arange(len(centers)), np.arange(len(centers))[::-1]):
+        canvas = Canvas(80, 40)
+        canvas.draw_spheres(centers[order], np.full(len(centers), 0.1), colors[order])
+        assert canvas.covered.sum() == 1
+        results.append(canvas.pixels.copy())
+    np.testing.assert_array_equal(*results)
+    assert results[0][20, 40, 0] > results[0][20, 40, 2]
+
+
+def test_large_cloud_still_draws_resolved_spheres_when_zoomed_in():
+    centers = np.tile([0., 0., 10.], (10_000, 1))
+    canvas = Canvas(80, 40)
+    canvas.draw_spheres(centers, np.full(len(centers), 1.),
+                        np.tile([255., 0., 0.], (len(centers), 1)))
+    assert canvas.covered.sum() > 4
+    assert len(np.unique(canvas.pixels[canvas.covered], axis=0)) > 1

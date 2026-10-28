@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibeview"
-version = "3.0.0"
+version = "3.0.1"
 description = "GPU-accelerated interactive 3D viewer for quantum-chemistry structures and results"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -129,6 +129,10 @@ sysinfo = ["psutil>=5.9"]
 # vq requires Python >= 3.12, the same floor as vibe-view since 3.0.
 surfaces = ["scipy>=1.11"]
 queue = ["vibe-queue>=0.26.10"]
+# The xTB producer runner lives in qvf-writer, not a native viewer reader.
+# Install the current qvf/python source first until a release includes it.
+# Like queue, excluded from all while the required producer is unreleased.
+xtb = ["qvf-writer>=0.7.0rc1"]
 # Sketch a molecule in vibe-sketch, the family's 2D structure sketcher (#77).
 # The viewer starts it as a child process and opens what it sends back
 # (vibeview.sketch documents the hand-off). The distribution and import
@@ -220,6 +224,8 @@ plugins = ["pydantic.mypy"]
 # follow_imports="silent" suppresses their own diagnostics. Tests are not gated.
 follow_imports = "silent"
 files = [
+  "src/vibeview/reaction_analysis.py",
+  "src/vibeview/reaction_cli.py",
   "src/vibeview/sequence_handoff.py",
   "src/vibeview/sketch_return.py",
   "src/vibeview/experimental_map_panel.py",
@@ -251,6 +257,11 @@ files = [
     "src/vibeview/fragment_catalog.py",
     "src/vibeview/builder_panel.py",
     "src/vibeview/builder_relaxation.py",
+    "src/vibeview/nanotube.py",
+    "src/vibeview/interface_builder.py",
+    "src/vibeview/interface_analysis.py",
+    "src/vibeview/structure_views.py",
+    "src/vibeview/nanotube_panel.py",
     "src/vibeview/coordinate_tables.py",
     "src/vibeview/coordinate_panel.py",
     "src/vibeview/biomolecule.py",
@@ -276,6 +287,9 @@ files = [
     "src/vibeview/app/__init__.py",
     "src/vibeview/app/helpers.py",
     "src/vibeview/app/label_followers.py",
+    "src/vibeview/app/instanced_glyphs.py",
+    "src/vibeview/app/glyph_lod.py",
+    "src/vibeview/app/depth_cue.py",
     "src/vibeview/app/runtime.py",
     "src/vibeview/app/bootstrap.py",
     "src/vibeview/app/bindings.py",
@@ -361,6 +375,7 @@ files = [
     "src/vibeview/renderers/_html.py",
     "src/vibeview/renderers/_coerce.py",
     "src/vibeview/renderers/_frames.py",
+    "src/vibeview/renderers/moving_structure.py",
     "src/vibeview/renderers/_mpl.py",
     "src/vibeview/renderers/_plotly.py",
     "src/vibeview/renderers/atom_properties.py",

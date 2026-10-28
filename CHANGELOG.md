@@ -15,6 +15,212 @@ no tag in this standalone repository.
 
 ## [Unreleased]
 
+## [v3.0.1] - 2026-10-28 - *Levinthal's Lynx*
+
+This compatible 3.0 maintenance release adds result inspection and reaction
+analysis, molecular workflow integration, and large-structure rendering
+improvements. Explicit `animate --mode` indices remain zero-based as in 3.0.0;
+the planned one-based change is reserved for the 3.1 development line.
+Reaction analysis requires explicit correlated endpoint energies and refuses
+incomplete inputs; software replay does not establish scientific acceptance.
+
+
+### Added
+
+- Return edited geometry to vibe-sketch with `open --return-dir` and the edit
+  panel’s Send back action. Geometry saves preserve the opaque sketch origin
+  and graph metadata; returns publish a complete QVF before their ready record
+  and include viewer and actual relaxation provenance. Missing peers refuse
+  safely and offer Save geometry instead. The existing hand-off record also
+  accepts additive result-view, one-based mode and orbital selectors, matching
+  direct CLI opens.
+- Turbomole and xtb `coord` files open and import directly: a file named
+  `coord`, `.coord` (such as xtb's `xtbopt.coord`) and `.tmol`, in bohr,
+  ångström or fractional coordinates, with a 3D cell and the stated charge and
+  multiplicity.
+- xtb's optimisation and scan logs (`xtbopt.log`, `xtbscan.log`) open directly
+  as trajectories with each step's energy, without the `[results]` extra;
+  previously every `.log` went to the cclib importer, which does not read XYZ
+  frames.
+- `vibe-view table --kind vibrations` adds the per-mode IR intensity, Raman
+  activity, VCD rotatory strength, reduced mass, force constant and symmetry
+  when the archive has them, from the vibrations section or its companion
+  spectra, each column named with its unit (#150).
+- `volume.laplacian` sections (∇²ρ, qvf 0.6) render as a signed isosurface in
+  the browser, `vibe-view capture` and `vibe-view show`, opening at ±0.1 with
+  the e/bohr⁵ unit on the isovalue slider (#154).
+- `volume.vector` sections (a vector per grid point, such as a density
+  gradient) are drawn as arrows coloured by magnitude in the browser, with a
+  Vector Field card for arrow spacing, length, cutoff and colour map that
+  bookmarks keep; `vibe-view capture` and `batch --volumes` draw the same
+  arrows and the terminal a magnitude surface. `QVFReader.read_volume_vector`
+  reads them (#156).
+- `volume.complex` sections (a complex scalar per grid point, such as a
+  complex orbital) are drawn as their real or imaginary part, or as |ψ|
+  coloured by phase on a cyclic colour map, chosen in the browser's Complex
+  Field card, which bookmarks keep. A field below the default isovalue opens
+  at half its largest |ψ|. `vibe-view capture --part real|imag|modulus` and
+  `batch --volumes` draw them, the terminal draws the real part, and
+  `QVFReader.read_volume_complex` reads them (#157).
+- `volume.series` sections (several fields on one grid, such as the density
+  along a trajectory) are stepped and played slab by slab in the browser's
+  Volume Series card, on each slab's own trajectory frame. `vibe-view capture
+  --frame N`, `show --frame N`, `batch --volumes` and the TUI's frame keys
+  draw them, and `QVFReader.read_volume_series` reads them (#158).
+- `forces` sections are drawn as arrows along F = −∇E (the file stores the
+  gradient) with a Forces card and per-atom table, and `hessian` sections show
+  their harmonic frequencies; `vibe-view table --kind forces|hessian` print
+  both and `vibe-view capture` draws the arrows. `QVFReader.read_forces` and
+  `read_hessian` read them (#159).
+- `properties.electric`, `properties.elastic` and `properties.dielectric`
+  sections open as tables: multipoles and polarizabilities, the elastic
+  constants with a mechanical-stability check, and the dielectric tensors,
+  Born charges (with their sum) and piezoelectric tensor. An electric dipole
+  is drawn as an arrow from its origin, standing in for the root dipole arrow
+  while the section is open. `vibe-view table --kind properties.*` prints
+  them, `vibe-view capture` draws the dipole, and `QVFReader.read_properties`
+  reads them (#161).
+- `wavefunction.bloch` sections (a crystal's orbitals at several k-points) are
+  evaluated on demand with the lattice phase of each k-point and drawn as real
+  or imaginary lobes or as |ψ| coloured by phase, chosen in the browser's
+  Bloch Orbitals card, which bookmarks keep. `vibe-view table --kind
+  wavefunction.bloch` lists the orbitals, `vibe-view capture` draws one, and
+  `QVFReader.read_wavefunction_bloch` reads them. Every QVF kind now has a
+  renderer (#162).
+- Add explicit correlated electronic endpoint analysis from accepted QVF
+  results, with signed balanced stoichiometry, method/settings and reference
+  checks, self-contained replayable QVF analyses, CSV/SVG exports and a
+  reaction result panel. Historical SCF-only archives remain refused as
+  correlated inputs; endpoint figures imply no barrier or trajectory. (#164)
+- The manual adds a *Build, inspect and present* tutorial with a runnable
+  Python tour, puts the builder, coordinate, inspection, selection, map,
+  figure and model-scene chapters in its navigation, and brings the
+  capabilities page, the browser's spectrum controls, the CLI reference
+  (`spectrum`, vibration arrows, spectrum broadening in `show`) and the SDK's
+  list of specialised modules up to date.
+- The manual ships example vq configuration files for a workstation without a
+  batch system, a laptop client, a SLURM and PBS/Torque driver and a cluster
+  login node, and `vibe-view examples` lists the `--view` launch option and
+  the vq submission commands.
+- *Interface analysis* reports a tube–metal contact from an archive's existing
+  sections: metal–C pairs with lengths and bond orders, the projected DOS of
+  the interface atoms (from `dos.projected` channels with `atom` indices), and
+  a density difference integrated over planes along the tube axis with the
+  charge transferred across each plane, or a potential averaged over them.
+  `vibeview.interface_analysis` exposes the same functions.
+- A nanotube builder in the browser's new *Nanotube builder and views* card
+  opens single- and multi-wall (n,m) tubes of a chosen length, periodic, open,
+  hydrogen-terminated or capped with a C60 half, and reads out each wall's
+  diameter, chiral angle, metallicity and the spacing between walls. *Add
+  partner* places a fcc metal slab ((111), (100) or (110)), a nanoparticle or
+  an aminophenyl-amide linker, optionally with a slab on it, at the tube's
+  open end or sidewall at a chosen M–C distance and top, bridge or hollow
+  registry, as one undoable edit. `vibeview.nanotube` and
+  `vibeview.interface_builder` offer the same in Python, plus bundles and
+  aligned forests.
+- Add C–C bond-stretch colouring, heuristic
+  open-rim/coordination-defect/adduct highlights, and client-only depth cueing
+  for browser figures. Cut-aways and property colours now reach headless and
+  CLI structure capture. Coarse glyphs activate at 10,000 instances during
+  motion; at-rest quality remains unchanged.
+- Atoms can be coloured by coordination number, distance from the structure's
+  axis, partial charge or bond order to a metal, read from the archive's
+  `atom_properties` and `bond_orders` sections. A structure cut-away (half
+  wall, cross-section slice or cut along the axis) shows the inside of a tube
+  and keeps atoms near the axis, and *Down the axis* and *Side view* set an
+  orthographic camera for figures; screenshots and figure exports draw the
+  same cut.
+- Build sequence 3D accepts plain peptide and DNA/RNA hints from vibe-sketch
+  through the existing builders, checking InChIKey and exact atom mapping
+  before applying coordinates. Unsupported modified or linked sequences keep
+  their original graph and geometry with an explicit refusal.
+- Connect molecular GFN0/1/2-xTB queue jobs to the optional qvf-writer runner:
+  request JSON and selected orbitals, bond orders and density, validate the
+  run, and open its combined QVF from Job Manager. Frozen-atom jobs select
+  FIRE and check their saved coordinates. Add setup guidance and display
+  custom QVF charge tables with their actual definitions, including GFN0
+  partial charges.
+
+### Changed
+
+- Reconcile the roadmap with the released 3.0.0 baseline and its public
+  desktop downloads. Keep publication closeout separate from accepted work
+  packages and prioritize focused regressions for 3.0.x, preserving Python
+  3.12, the 3.x section-renderer contract and documented platform limitations
+  (#110).
+- Clarify calculation resource requests, local queue versus scheduler routes,
+  fetched result locations and live-checkpoint limits. Correct cluster opening
+  examples and provide complete watcher scripts.
+- Clarify optional strict-validation setup in the quickstart, installation and
+  worked workflows; refresh QVF version and excited-state guidance,
+  input-format limits, troubleshooting and contributor build instructions.
+- Expand the Python SDK, batch rendering and scene examples with current table
+  kinds, validation error handling, comparison semantics, output naming and
+  partial-success behavior. Clarify typed volume data and TREXIO directory
+  input.
+- Refresh browser, desktop and terminal guides with remote file and session
+  locations, desktop runtime and quit behavior, terminal focus and frame
+  exports, spectrum options and surface-specific rendering limits.
+- Structures of 500 atoms or more are drawn with instanced spheres and bond
+  cylinders, in the browser as in headless capture, instead of a merged mesh
+  of every sphere's triangles. A 10 000-atom nanotube that took about two
+  minutes to open now opens in seconds; see the client performance page for
+  the measured ceiling. From 100 000 atoms the browser draws coarse glyphs
+  while the camera moves and the full ones when it stops. Mesh exports and
+  figure outlines expand the instances, so they are unchanged.
+- Trajectory and reaction-path playback reuse glyph inputs and draw inferred
+  bonds at every displayed frame. Slow automatic playback strides frames;
+  manual stepping remains exact. Large molecular filmstrips reuse glyphs and
+  sample four frames at 100,000 atoms. The coordinate editor pages its rows to
+  avoid browser stalls on large structures. Archive arrays are still read in
+  full. Returning from volume-series frames clears their intermediate atoms.
+- Large scenes build replicated atom arrays and bond partitions with NumPy,
+  and bond inference evaluates cell-list neighbourhoods in bounded batches.
+  Existing periodic-image rules, bond multiplicity and search limits are
+  preserved.
+- Large terminal scenes use depth-tested point sprites for subpixel atoms and
+  cull off-screen atoms. Bonds covered by endpoint sprites are omitted while
+  sticks-only views and zoomed-in shaded geometry retain their existing paths.
+- Document the standalone qvf-writer xTB exporter for opening combined
+  molecular GFN0/1/2-xTB results as QVF, including its explicit-file workflow
+  and current source-install requirement.
+
+### Fixed
+
+- Reserve the built-in Turbomole importer name against plugins and document the
+  optional xTB producer extra without adding its unreleased dependency to all (#166).
+
+- - `vibe-view spectrum` names the file's spectrum sections when `--section`
+  is missing from the file or is not a spectrum, instead of a bare *section
+  not found* or a reader-internal *member 'spectrum' not found* message.
+- `vibe-view animate -o movie.gif` writes a GIF instead of failing in ffmpeg:
+  without `--format`, the format follows a `.gif` or `.mp4` output name, and a
+  `--format` that contradicts the name is refused before any frame renders
+  (#148).
+- A wrong `-s`/`--section` on `show`, `capture`, `export` and the other
+  commands that take one now lists the file's section ids and kinds instead of
+  saying only "not found" (#149).
+- The browser's mode picker labels an imaginary mode `893.0i cm⁻¹ (imaginary)`
+  instead of `(trans/rot)`, and takes IR intensities from the vibrations
+  section itself or a shorter companion spectrum, as the vibrations table does
+  (#151).
+- `vibe-view animate` without `--mode` shows the first positive-frequency mode
+  instead of mode 0, which is usually a translation that does not move. An
+  out-of-range `--mode` is refused with the valid range instead of being
+  reported as a missing vibrations section (#152).
+- `vibe-view info` and the open banner report the qvf 0.6 kinds `forces`,
+  `hessian`, `properties.*`, `volume.complex`, `volume.laplacian`,
+  `volume.series`, `volume.vector` and `wavefunction.bloch` as `skipped, not
+  yet rendered` instead of `unsupported` (#153).
+- Apply table now sends the current Cartesian or Z-matrix browser rows with
+  the request, so nested field edits reach the geometry instead of silently
+  saving the old server coordinates. Validation and the single undo step are
+  preserved.
+- The browser's keyboard shortcut list names Backspace beside Delete for
+  deleting the selected atoms, which both keys already did.
+- Fix the distribution guide’s Electron build-instructions link so it resolves
+  from the published manual and passes the strict documentation build.
+
 ## [v3.0.0] - 2026-10-23 - *Levinthal's Lynx*
 
 Python 3.12 or newer is now required; Python 3.11 users must upgrade their
@@ -2198,3 +2404,5 @@ tests, 9 versioned feature releases, 24 CLI commands, 7 export formats.
 [v2.20.20]: https://github.com/vibe-qc/vibe-view/releases/tag/v2.20.20
 
 [v3.0.0]: https://github.com/vibe-qc/vibe-view/releases/tag/v3.0.0
+
+[v3.0.1]: https://github.com/vibe-qc/vibe-view/releases/tag/v3.0.1

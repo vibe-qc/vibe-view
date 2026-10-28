@@ -151,6 +151,7 @@ and therefore works anywhere a shell does.
 installation
 quickstart
 workflows
+reaction_analysis
 orca
 orca_water
 orca_raman_vcd
@@ -185,6 +186,7 @@ headless
 :caption: Building, inspecting and presenting
 
 molecular_builder
+nanotubes
 internal_coordinates
 molecular_inspection
 selection_language

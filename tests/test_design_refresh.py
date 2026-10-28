@@ -32,6 +32,7 @@ _DIALOG_MODELS_AND_LABELS = {
 _SLIDER_MODELS_AND_NAMES = {
     "expmap_opacity": "Experimental map opacity",
     "mb_angle": "Bond rotation angle",
+    "cutaway_position": "Cut-away position",
     "complex_isovalue": "Complex field isovalue",
     "series_slab": "Volume series slab",
     "force_arrow_length": "Force arrow length",
@@ -3194,7 +3195,7 @@ child.on("exit", (code) => {
                 chrome,
                 f"http://127.0.0.1:{port}/",
                 str(profile_dir),
-                str(6 if slider_scenario else len(dialog_models)),
+                str(7 if slider_scenario else len(dialog_models)),
                 str(edit_mode).lower(),
                 str(presentation_scenario).lower(),
                 str(slider_scenario).lower(),
@@ -3563,12 +3564,17 @@ child.on("exit", (code) => {
     sliders = initial_slider_state["sliders"]
     expected_slider_names = {
         _SLIDER_MODELS_AND_NAMES[model]
-        for model in ("mb_angle", "isovalue", "opacity", "clip_x", "clip_y", "clip_z")
+        for model in ("mb_angle", "cutaway_position", "isovalue", "opacity",
+                      "clip_x", "clip_y", "clip_z")
     }
     assert {slider["ariaLabel"] for slider in sliders} == expected_slider_names
     assert len(sliders) == len(expected_slider_names)
     assert all(slider["role"] == "slider" for slider in sliders)
-    assert all(slider["tabIndex"] == 0 for slider in sliders)
+    # The nanotube card's cut position is disabled until a cut that uses it
+    # is chosen, so it is out of the tab order; every other slider is in it.
+    cut = _SLIDER_MODELS_AND_NAMES["cutaway_position"]
+    assert all(slider["tabIndex"] == (-1 if slider["ariaLabel"] == cut else 0)
+               for slider in sliders)
 
     def panel_separator(snapshot, separator_id):
         return next(

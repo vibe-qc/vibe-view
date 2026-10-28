@@ -898,6 +898,7 @@ def render(scene: Scene, canvas: Canvas, camera: Camera) -> None:
             scene.bond_colors_a,
             scene.bond_colors_b,
             camera.fov,
+            endpoint_sprites=len(scene.positions) >= 10_000,
         )
     if len(scene.positions):
         canvas.draw_spheres(

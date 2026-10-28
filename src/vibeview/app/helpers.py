@@ -160,6 +160,7 @@ from vibeview.qvf import clamp_replication as clamp_replication
 from vibeview.renderers import palette as _palette
 from vibeview.renderers.cell import supercell_offsets as supercell_offsets
 from vibeview.renderers.nci import RDG_ISOVALUE as RDG_ISOVALUE
+from vibeview.renderers.structure import actor_geometry
 from vibeview.units import ANGSTROM_TO_BOHR as _ANGSTROM_TO_BOHR
 from vibeview.units import energy_from_ev as energy_from_ev
 from vibeview.units import energy_label as energy_label
@@ -717,11 +718,14 @@ def _pick_residue(
 
 
 def _structure_display_options(state: _ViewerUIState) -> dict[str, Any]:
-    """Persistent biomolecule controls shared by all scene rebuild paths."""
+    """Persistent structure display controls shared by all scene rebuild paths."""
     return {
         "atom_color_mode": str(getattr(state, "atom_color_mode", "element") or "element"),
         "residue_visibility": str(getattr(state, "residue_visibility", "all") or "all"),
         "show_hydrogen_bonds": bool(getattr(state, "show_hydrogen_bonds", False)),
+        # Structure cut-away of the nanotube views card.
+        "cutaway": str(getattr(state, "cutaway", "off") or "off"),
+        "cutaway_position": float(getattr(state, "cutaway_position", 0.5) or 0.0),
     }
 
 
@@ -1250,8 +1254,7 @@ def _scene_surface_mesh(plotter: Any) -> Any:
         try:
             if not actor.GetVisibility():
                 continue
-            mapper = actor.GetMapper()
-            data = mapper.GetInput() if mapper is not None else None
+            data = actor_geometry(actor)
         except AttributeError:
             continue  # text/scalar-bar actors carry no mesh
         if data is None or data.GetNumberOfPoints() == 0:
@@ -4726,11 +4729,13 @@ def _rebuild_crossfade(
     _push_view(plotter)
 
 
+_moving_frames: weakref.WeakKeyDictionary[Any, tuple[Any, Any]] = weakref.WeakKeyDictionary()
+
+
 def _render_trajectory_atoms(reader: QVFReader, plotter: pv.Plotter, state: _ViewerUIState) -> None:
     """Render atoms for the current trajectory / reaction-path frame."""
 
     from vibeview.renderers.reaction import ReactionPathRenderer
-    from vibeview.renderers.trajectory import TrajectoryRenderer
 
     section_id = state.selected_section
     if not section_id:
@@ -4739,10 +4744,7 @@ def _render_trajectory_atoms(reader: QVFReader, plotter: pv.Plotter, state: _Vie
     if section is None or section.kind not in ("trajectory", "reaction.path"):
         return
 
-    if section.kind == "reaction.path":
-        renderer: TrajectoryRenderer | ReactionPathRenderer = ReactionPathRenderer(section, reader)
-    else:
-        renderer = TrajectoryRenderer(section, reader)
+    renderer = _frame_plot_renderer(reader, section)
     try:
         renderer.load()
     except QVFError:
@@ -4752,19 +4754,30 @@ def _render_trajectory_atoms(reader: QVFReader, plotter: pv.Plotter, state: _Vie
     if frame < 0 or frame >= renderer.n_frames:
         return
 
-    atoms = renderer.get_frame(frame)
-    if not atoms:
+    positions = renderer.frame_positions(frame)
+    if not len(positions):
         return
 
     # Hide the static equilibrium structure so it doesn't ghost behind the
     # animated frame (A5-03); remove previous trajectory atoms + cell + iso.
     _remove_static_structure(plotter)
     state.structure_hidden = True
-    _remove_actors_by_prefix(plotter, _Actors.TRAJ_ATOM)
     _remove_actors_by_prefix(plotter, _Actors.TRAJ_CELL)
     _remove_actors_by_prefix(plotter, _Actors.TRAJ_VOLUME)
 
-    _add_frame_atoms(plotter, atoms, [a.atomic_number for a in renderer.load().atoms])
+    from vibeview.renderers.moving_structure import MovingStructure
+
+    cached = _moving_frames.get(plotter)
+    if cached is None or cached[0] is not renderer:
+        _remove_actors_by_prefix(plotter, _Actors.TRAJ_ATOM)
+        moving = MovingStructure([a.atomic_number for a in renderer.load().atoms])
+        _moving_frames[plotter] = (renderer, moving)
+    else:
+        moving = cached[1]
+    lattice = renderer.cell_for_frame(frame) if isinstance(renderer, ReactionPathRenderer) else None
+    dim = int(renderer.dim_for_frame(frame) or 3) if lattice is not None else 0
+    moving.update(plotter, positions, lattice=lattice.T if lattice is not None else None,
+                  pbc=tuple(i < dim for i in range(3)))
 
     # Cell wireframe for periodic reaction.path (QVF v2). The
     # ReactionPathRenderer exposes cell_edges_for_frame; the

@@ -37,6 +37,7 @@ from vibeview.renderers.palette import (
     GUIDE_GREY,
     SS,
 )
+from vibeview.structure_views import PROPERTY_COLOR_MODES
 
 if TYPE_CHECKING:
     from vibeview.bonds import Bond
@@ -60,6 +61,175 @@ _BATCH_ATOM_THRESHOLD = 100
 
 # Threshold above which bonds are merged into a single mesh
 _BATCH_BOND_THRESHOLD = 50
+
+# At or above these counts atoms and bonds are drawn as instanced glyphs
+# (one prototype mesh plus per-instance colour, scale and direction) rather
+# than one merged mesh of every sphere's and cylinder's triangles. VTK and
+# vtk.js both instance them on the GPU; the browser receives the instance
+# arrays through ``vibeview.app.instanced_glyphs``.
+INSTANCED_ATOM_THRESHOLD = 500
+INSTANCED_BOND_THRESHOLD = 500
+# Prototype resolution of an instanced sphere: instancing makes the
+# triangle count per atom cheap enough to keep spheres round.
+_INSTANCED_SPHERE_RESOLUTION = (12, 8)
+_INSTANCED_CYLINDER_RESOLUTION = 8
+
+#: Point-data arrays of an instanced glyph actor's instance points.
+GLYPH_RGB_ARRAY = "vv_glyph_rgb"
+GLYPH_SCALE_ARRAY = "vv_glyph_scale"
+GLYPH_DIRECTION_ARRAY = "vv_glyph_direction"
+
+
+def instanced_glyph_actor(
+    centers: np.ndarray,
+    rgb: np.ndarray,
+    source: pv.PolyData,
+    scales: np.ndarray,
+    directions: np.ndarray | None = None,
+) -> Any:
+    """One actor drawing ``source`` once per centre, GPU-instanced.
+
+    ``rgb`` is (n, 3) uint8 colours. ``scales`` is (n,) for a uniform scale
+    or (n, 3) per local axis; ``directions`` (n, 3) turns each instance's x
+    axis onto that vector, which is how a cylinder prototype along x becomes
+    a bond. The same actor renders in VTK and, through
+    ``vibeview.app.instanced_glyphs``, in vtk.js.
+    """
+    from vtkmodules.vtkRenderingCore import vtkActor, vtkGlyph3DMapper
+
+    points = pv.PolyData(np.ascontiguousarray(centers, dtype=np.float32))
+    points.point_data[GLYPH_RGB_ARRAY] = np.ascontiguousarray(rgb, dtype=np.uint8)
+    points.point_data[GLYPH_SCALE_ARRAY] = np.ascontiguousarray(scales, dtype=np.float32)
+    mapper = vtkGlyph3DMapper()
+    mapper.SetInputData(points)
+    mapper.SetSourceData(source)
+    mapper.SetScaleArray(GLYPH_SCALE_ARRAY)
+    mapper.SetScaling(True)
+    if np.ndim(scales) == 2:
+        mapper.SetScaleModeToScaleByVectorComponents()
+    else:
+        mapper.SetScaleModeToScaleByMagnitude()
+    if directions is not None:
+        points.point_data[GLYPH_DIRECTION_ARRAY] = np.ascontiguousarray(
+            directions, dtype=np.float32)
+        mapper.SetOrientationArray(GLYPH_DIRECTION_ARRAY)
+        mapper.SetOrientationModeToDirection()
+        mapper.OrientOn()
+    else:
+        mapper.OrientOff()
+    mapper.SetScalarModeToUsePointFieldData()
+    mapper.SelectColorArray(GLYPH_RGB_ARRAY)
+    mapper.SetColorModeToDirectScalars()
+    mapper.ScalarVisibilityOn()
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    actor.GetProperty().SetInterpolationToPhong()
+    return actor
+
+
+def is_glyph_mapper(mapper: Any) -> bool:
+    """Whether *mapper* instances a prototype (``vtkGlyph3DMapper``)."""
+    return mapper is not None and bool(mapper.IsA("vtkGlyph3DMapper"))
+
+
+def actor_geometry(actor: Any) -> Any:
+    """The polydata an actor draws, glyph instances expanded into triangles.
+
+    For an ordinary actor this is its mapper's input. An instanced actor's
+    input is only its instance points, so exports, outline hulls and
+    bounds consumers ask here for the drawn geometry instead.
+    """
+    mapper = actor.GetMapper() if hasattr(actor, "GetMapper") else None
+    if mapper is None:
+        return None
+    if not is_glyph_mapper(mapper):
+        return mapper.GetInput()
+    points = pv.wrap(mapper.GetInputDataObject(0, 0))
+    source = pv.wrap(mapper.GetInputDataObject(1, 0)).triangulate()
+    centers = np.asarray(points.points, dtype=float)
+    n = len(centers)
+    scales = np.asarray(points.point_data[GLYPH_SCALE_ARRAY], dtype=float)
+    scales = np.repeat(scales.reshape(n, -1), 3 // scales.reshape(n, -1).shape[1], axis=1)
+    if mapper.GetOrient():
+        x = np.asarray(points.point_data[GLYPH_DIRECTION_ARRAY], dtype=float)
+        x = x / np.linalg.norm(x, axis=1)[:, None]
+        ref = np.tile(np.array([0.0, 0.0, 1.0]), (n, 1))
+        ref[np.abs(x[:, 2]) > 0.9] = (0.0, 1.0, 0.0)
+        y = np.cross(ref, x)
+        y /= np.linalg.norm(y, axis=1)[:, None]
+        basis = np.stack((x, y, np.cross(x, y)), axis=1)  # rows: local x, y, z
+    else:
+        basis = np.tile(np.eye(3), (n, 1, 1))
+    local = np.asarray(source.points, dtype=float)
+    # instance i, prototype point k: centre + sum_a scale_a * p_a * basis_a
+    world = centers[:, None, :] + np.einsum("ka,ia,iab->ikb", local, scales, basis)
+    faces = source.regular_faces
+    k = len(local)
+    tris = (faces[None, :, :] + (np.arange(n) * k)[:, None, None]).reshape(-1, 3)
+    mesh = pv.PolyData.from_regular_faces(world.reshape(-1, 3), tris)
+    rgb = np.asarray(points.point_data[GLYPH_RGB_ARRAY], dtype=np.uint8)
+    mesh.point_data[GLYPH_RGB_ARRAY] = np.repeat(rgb, k, axis=0)
+    return mesh
+
+
+def _rgb_table(colors: Sequence[Color]) -> np.ndarray:
+    """(n, 3) uint8 for display colours, converting each distinct one once."""
+    cache: dict[Any, np.ndarray] = {}
+    out = np.empty((len(colors), 3), dtype=np.uint8)
+    for k, color in enumerate(colors):
+        key = color if isinstance(color, str) else tuple(color)
+        rgb = cache.get(key)
+        if rgb is None:
+            rgb = np.asarray(pv.Color(color).int_rgb, dtype=np.uint8)
+            cache[key] = rgb
+        out[k] = rgb
+    return out
+
+
+def _add_instanced_bonds(
+    plotter: pv.Plotter,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    rgb: np.ndarray,
+    orders: np.ndarray,
+    radius: float,
+    name: str,
+) -> None:
+    """Bonds as instanced cylinders, the multiplicity of each kept."""
+    direction = ends - starts
+    length = np.linalg.norm(direction, axis=1)
+    keep = length >= 1e-6
+    starts, direction, length = starts[keep], direction[keep], length[keep]
+    rgb, orders = rgb[keep], orders[keep]
+    if not len(length):
+        return
+    unit = direction / length[:, None]
+    center = starts + 0.5 * direction
+    n_cyl = np.clip(np.rint(orders).astype(int), 1, 3)
+    # A stable perpendicular per bond, as _add_bond_cylinders picks it.
+    ref = np.tile(np.array([0.0, 0.0, 1.0]), (len(unit), 1))
+    ref[np.abs(unit[:, 2]) > 0.9] = (0.0, 1.0, 0.0)
+    perp = np.cross(unit, ref)
+    norm = np.linalg.norm(perp, axis=1)
+    perp = np.where(norm[:, None] > 0, perp / np.where(norm > 0, norm, 1.0)[:, None],
+                    np.array([1.0, 0.0, 0.0]))
+    centers, dirs, scales, colors = [], [], [], []
+    for count in (1, 2, 3):
+        sel = n_cyl == count
+        if not sel.any():
+            continue
+        cyl_radius = radius if count == 1 else 0.05
+        for off in (np.arange(count) - (count - 1) / 2.0) * 0.13:
+            centers.append(center[sel] + off * perp[sel])
+            dirs.append(unit[sel])
+            scales.append(np.column_stack((length[sel], np.full(sel.sum(), cyl_radius),
+                                           np.full(sel.sum(), cyl_radius))))
+            colors.append(rgb[sel])
+    prototype = pv.Cylinder(center=(0.0, 0.0, 0.0), direction=(1.0, 0.0, 0.0), radius=1.0,
+                            height=1.0, resolution=_INSTANCED_CYLINDER_RESOLUTION)
+    actor = instanced_glyph_actor(np.vstack(centers), np.vstack(colors), prototype,
+                                  np.vstack(scales), np.vstack(dirs))
+    plotter.add_actor(actor, name=name, reset_camera=False)
 
 
 def _lod_resolution(n_atoms: int) -> tuple[int, int]:
@@ -397,6 +567,8 @@ class StructureRenderer(BaseRenderer):
         atom_color_mode: str = "element",
         residue_visibility: str = "all",
         show_hydrogen_bonds: bool = False,
+        cutaway: str = "off",
+        cutaway_position: float = 0.5,
     ) -> None:
         """Add atoms, bonds, and unit cell to a PyVista plotter.
 
@@ -442,6 +614,8 @@ class StructureRenderer(BaseRenderer):
                 atom_color_mode=atom_color_mode,
                 residue_visibility=residue_visibility,
                 show_hydrogen_bonds=show_hydrogen_bonds,
+                cutaway=cutaway,
+                cutaway_position=cutaway_position,
             )
 
     def _add_structure_inner(
@@ -458,6 +632,8 @@ class StructureRenderer(BaseRenderer):
         atom_color_mode: str = "element",
         residue_visibility: str = "all",
         show_hydrogen_bonds: bool = False,
+        cutaway: str = "off",
+        cutaway_position: float = 0.5,
     ) -> None:
         """Internal implementation of add_to_plotter (profiled)."""
         if atom_radii and any(not np.isfinite(r) or r <= 0 for r in atom_radii.values()):
@@ -495,7 +671,22 @@ class StructureRenderer(BaseRenderer):
         selection_terms, _rejected = parse_residue_selection(residue_selection)
         selected_atoms = _selected_atom_indices(structure, selection_terms)
         visible_atoms = _visible_atom_indices(structure, selected_atoms, residue_visibility)
-        residue_colors = _biomolecule_atom_colors(structure, atom_color_mode)
+        if cutaway != "off":
+            from vibeview.structure_views import cutaway_keep
+
+            visible_atoms &= cutaway_keep(structure, cutaway, cutaway_position)
+        if atom_color_mode in PROPERTY_COLOR_MODES:
+            # Property colours ride the residue-colour path: atoms and their
+            # bonds (averaged) in every representation, batched or not.
+            from vibeview.structure_views import property_colors, property_values
+
+            bonds_for = self._bonds if show_bonds else self.reader.connectivity(
+                structure, self._structure_id)
+            residue_colors, _range = property_colors(
+                property_values(structure, bonds_for, atom_color_mode, self.reader),
+                atom_color_mode)
+        else:
+            residue_colors = _biomolecule_atom_colors(structure, atom_color_mode)
 
         # Share the exact displayed sphere radius with mode annotations.
         def _atom_radius(z: int) -> float:
@@ -524,15 +715,15 @@ class StructureRenderer(BaseRenderer):
         rx, ry, rz = clamp_replication(replication, structure.pbc)
         image_offsets = supercell_offsets(lattice, structure.pbc, (rx, ry, rz))
 
-        for atom_idx, atom in enumerate(structure.atoms):
-            if atom_idx not in visible_atoms:
-                continue
-            pos = atom.position.copy()
-            # Prefer the parsed atomic number; symbol-only atoms use the
-            # same H–Cm identity table as the importers.
-            z = atom.atomic_number or symbol_to_z(atom.symbol)
-            for offset in image_offsets:
-                all_atoms.append((atom_idx, atom.symbol, z, pos + offset))
+        n_total_atoms = len(visible_atoms) * len(image_offsets)
+        fast_atoms = n_total_atoms >= INSTANCED_ATOM_THRESHOLD
+        if not fast_atoms:
+            for atom_idx, atom in enumerate(structure.atoms):
+                if atom_idx not in visible_atoms:
+                    continue
+                z = atom.atomic_number or symbol_to_z(atom.symbol)
+                for offset in image_offsets:
+                    all_atoms.append((atom_idx, atom.symbol, z, atom.position + offset))
 
         # ── Atom spheres ──────────────────────────────────────────────
         # For replicated periodic cells (rx*ry*rz > 1) or large systems
@@ -547,7 +738,6 @@ class StructureRenderer(BaseRenderer):
         # can target individual spheres by name without reconstructing
         # the full scene.
         n_replicated = rx * ry * rz
-        n_total_atoms = len(all_atoms)
         use_glyphs = n_replicated > 1 or n_total_atoms > _BATCH_ATOM_THRESHOLD
 
         # Resolve sphere display resolution for this system size.
@@ -556,7 +746,35 @@ class StructureRenderer(BaseRenderer):
         label_points: list[np.ndarray] = []
         label_strings: list[str] = []
 
-        if show_atoms and use_glyphs:
+        if show_atoms and n_total_atoms >= INSTANCED_ATOM_THRESHOLD:
+            # One instanced actor for every atom: colour and radius travel
+            # per instance, so the scene is one draw call whatever the size.
+            ids = np.asarray(sorted(visible_atoms), dtype=np.int64)
+            base = np.asarray([a.position for a in structure.atoms], dtype=float)
+            numbers = np.asarray([a.atomic_number or symbol_to_z(a.symbol)
+                                  for a in structure.atoms], dtype=np.int64)
+            centers = (base[ids, None, :] + np.asarray(image_offsets)[None, :, :]).reshape(-1, 3)
+            unique, inverse = np.unique(numbers[ids], return_inverse=True)
+            base_radii = np.asarray([_atom_radius(int(z)) for z in unique])[inverse]
+            if atom_radii:
+                base_radii = np.asarray([atom_radii.get(int(i), r)
+                                        for i, r in zip(ids, base_radii, strict=True)])
+            if selected_atoms or atom_colors or residue_colors:
+                base_rgb = _rgb_table([_atom_color(int(i), int(numbers[i])) for i in ids])
+            else:
+                base_rgb = _rgb_table([cpk_color(int(z)) for z in unique])[inverse]
+            radii = np.repeat(base_radii, len(image_offsets))
+            rgb = np.repeat(base_rgb, len(image_offsets), axis=0)
+            if show_labels:
+                label_points.extend(centers)
+                label_strings.extend(f"{structure.atoms[i].symbol}{i + 1}"
+                                     for i in ids for _ in image_offsets)
+            theta, phi = _INSTANCED_SPHERE_RESOLUTION
+            actor = instanced_glyph_actor(
+                centers, rgb,
+                pv.Sphere(radius=1.0, theta_resolution=theta, phi_resolution=phi), radii)
+            plotter.add_actor(actor, name="atom_group_0", reset_camera=False)
+        elif show_atoms and use_glyphs:
             # Group atoms by (color, radius) — one glyph call per unique
             # (display colour, radius) pair.
             from collections import defaultdict
@@ -679,6 +897,34 @@ class StructureRenderer(BaseRenderer):
                         bond_starts, bond_ends = bond_far_endpoints(
                             cell_positions, bonds, lattice, structure.pbc
                         )
+                        if len(bonds) >= INSTANCED_BOND_THRESHOLD:
+                            pairs = np.asarray([(b[0], b[1]) for b in bonds], dtype=np.int64)
+                            order_array = np.asarray([b[2] for b in bonds], dtype=float)
+                            keep = np.linalg.norm(bond_ends - bond_starts, axis=1) >= 0.001
+                            selected_mask = np.zeros(n_atoms, dtype=bool)
+                            if selected_atoms:
+                                selected_mask[list(selected_atoms)] = True
+                            chosen = selected_mask[pairs[:, 0]] & selected_mask[pairs[:, 1]]
+                            for selected, part in ((False, keep & ~chosen), (True, keep & chosen)):
+                                if not part.any():
+                                    continue
+                                if selected:
+                                    rgb_bonds = np.tile(_rgb_table([_RESIDUE_SELECTION_COLOR]),
+                                                        (int(part.sum()), 1))
+                                elif residue_colors:
+                                    rgb_bonds = _rgb_table([
+                                        _residue_bond_color(residue_colors, int(i), int(j))
+                                        for i, j in pairs[part]])
+                                else:
+                                    unique_orders, inverse_orders = np.unique(
+                                        order_array[part], return_inverse=True)
+                                    rgb_bonds = _rgb_table([_bond_order_color(float(o))
+                                                            for o in unique_orders])[inverse_orders]
+                                _add_instanced_bonds(
+                                    plotter, bond_starts[part], bond_ends[part], rgb_bonds,
+                                    order_array[part], 0.08,
+                                    f"bonds_{'selected' if selected else 'batched'}_{cell_idx}")
+                            continue
                         for k, bond in enumerate(bonds):
                             i, j = int(bond[0]), int(bond[1])
                             order = float(bond[2]) if len(bond) > 2 else 1.0
@@ -834,6 +1080,22 @@ def _add_batched_bonds(
         segments = None  # inconsistent input: fall back rather than mispair
     if orders is None or len(orders) != n_bonds:
         orders = [1.0] * n_bonds
+
+    if n_bonds >= INSTANCED_BOND_THRESHOLD:
+        if segments is not None:
+            seg = np.asarray(segments, dtype=float).reshape(n_bonds, 2, 3)
+            starts, ends = seg[:, 0], seg[:, 1]
+        else:
+            pairs = np.asarray(bond_pairs, dtype=int).reshape(n_bonds, 2)
+            starts, ends = positions[pairs[:, 0]], positions[pairs[:, 1]]
+        if colors and len(colors) == n_bonds:
+            bond_colors: Sequence[Color] = colors
+        else:
+            by_order = {o: _bond_order_color(o) for o in set(orders)}
+            bond_colors = [by_order[o] for o in orders]
+        _add_instanced_bonds(plotter, starts, ends, _rgb_table(bond_colors),
+                             np.asarray(orders, dtype=float), radius, name)
+        return
 
     all_cylinders: list[pv.PolyData] = []
     cylinder_colors: list[np.ndarray] = []

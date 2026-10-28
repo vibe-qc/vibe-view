@@ -220,9 +220,15 @@ def bind_controllers(viewer: ViewerRuntime) -> None:
     from vibeview.builder_panel import bind as bind_builder
 
     bind_builder(viewer)
+    from vibeview.nanotube_panel import bind as bind_nanotube
+
+    bind_nanotube(viewer)
     from vibeview.experimental_map_panel import bind as bind_maps
 
     bind_maps(viewer)
+    from vibeview.chemical_space_panel import bind as bind_chemical_space
+
+    bind_chemical_space(viewer)
     from vibeview.model_scene_panel import bind as bind_model_scene
 
     bind_model_scene(viewer)

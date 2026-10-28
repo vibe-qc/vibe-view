@@ -48,6 +48,7 @@ from vibeview.cli_common import (
 )
 from vibeview.netutil import announce_when_bound, port_open
 from vibeview.paths import interpreter_record_path, log_path
+from vibeview.reaction_cli import reaction
 
 if TYPE_CHECKING:
     from vibeview.qvf import QVFReader
@@ -1440,6 +1441,12 @@ def capture_selftest_cmd(output: Path | None, size: Size) -> None:
     type=click.IntRange(min=0),
     help="For a volume.series section: the slab to draw, counted from 0.",
 )
+@click.option("--cutaway", type=click.Choice(["off", "half", "section", "end"]), default="off")
+@click.option("--cutaway-position", type=click.FloatRange(0, 1), default=0.5)
+@click.option("--atom-color-mode", type=click.Choice([
+    "element", "coordination", "axis_distance", "charge", "metal_bond_order",
+    "local_strain", "carbon_sites",
+]), default="element", help="Structure atom and bond colours.")
 def capture_cmd(
     qvf_file: Path,
     section: str | None,
@@ -1451,6 +1458,9 @@ def capture_cmd(
     render: str,
     part: str,
     frame: int,
+    cutaway: str,
+    cutaway_position: float,
+    atom_color_mode: str,
 ) -> None:
     """Render a section to PNG via the headless capture API."""
     from vibeview.capture import capture_bands, capture_structure, capture_volume
@@ -1463,7 +1473,8 @@ def capture_cmd(
         if section is None:
             out = output or default_output(qvf_file, ".png", tag="structure")
             ok = capture_structure(
-                reader, out, size=(w, h), representation=representation, publication=publication
+                reader, out, size=(w, h), representation=representation, publication=publication,
+                cutaway=cutaway, cutaway_position=cutaway_position, atom_color_mode=atom_color_mode
             )
         elif reader.has_section(section):
             sec = reader.get_section(section)
@@ -1581,6 +1592,8 @@ def capture_cmd(
                     size=(w, h),
                     representation=representation,
                     publication=publication,
+                    cutaway=cutaway, cutaway_position=cutaway_position,
+                    atom_color_mode=atom_color_mode,
                 )
             elif sec.kind == "hessian":
                 click.echo(
@@ -3094,6 +3107,9 @@ def desktop_cmd(file: str | None, port: int, no_sandbox: bool) -> None:
                 err=True,
             )
         raise SystemExit(exit_status or 1)
+
+
+main.add_command(reaction)
 
 
 if __name__ == "__main__":

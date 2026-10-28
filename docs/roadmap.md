@@ -602,45 +602,75 @@ films, covalent Cu–C and Au–C bonds at open ends and sidewalls of aligned
 tubes, nanotube microelectrodes and supercapacitor electrodes, and
 molecular linkers on Au. The theory we would supply is periodic and
 cluster DFT of those interfaces. The papers are filed in the paper library
-(`maintenance/survey-alvarez-lab-2026-10.txt`). Not a release commitment;
-none of it is measured yet.
+(`maintenance/survey-alvarez-lab-2026-10.md`). Not a release commitment.
 
-**Today:** the viewer draws periodic structures, supercells, atom and bond
-glyphs batched per element, slabs, trajectories, charge and bond-order
-tables, DOS and band charts, and difference-density isosurfaces. There is
-no measured atom budget for a long tube, and no tube builder.
+**Today:** measured on 2026-10-28 with four nanotube scenes (a tube, a
+five-wall tube, a 19-tube bundle and an aligned forest) from 10³ to 10⁶
+atoms on an Apple M5 Max ([client performance](client_performance.md)).
+Before instanced glyphs the ceiling was about 10⁴ atoms, which took two to
+three and a half minutes to open in the browser. Now the browser opens
+10⁶ atoms in 1.5 to 2.2 minutes and turns them at a median drag step under
+30 ms; headless capture handles 10⁶ atoms in about a minute; the terminal's
+CPU rasterizer stays interactive to about 10⁴ atoms (10⁵ for a single
+tube) and takes about a second a step at 10⁶.
 
-**Proposed, in the order the collaboration would need them:**
+**Shipped on main (2026-10-28), in the order the collaboration needs them:**
 
-- **Large-system rendering.** Fix the budget first: generate (n,m) tubes of
-  10³ to 10⁶ atoms, record load, orbit and capture times in the browser,
-  the terminal and headless, and publish the ceiling in the client
-  performance page. Then lift it with impostor or instanced spheres and
-  cylinders, level of detail while the camera moves, and bonds built from
-  the periodic cell rather than from all pairs. A single tube, a bundle and
-  an aligned forest are the three test scenes.
-- **Nanotube and interface builder.** Build a single- or multi-wall tube
-  from (n,m), length and cap or open end; show diameter, chiral angle and
-  wall spacing; place a metal slab, nanoparticle or linker at an open end or
-  on a sidewall at a chosen distance and registry. Reuses the slab and
-  fragment builders and the edit overlay, so geometry stays an edit-overlay
-  concern.
-- **Cut-aways and axial views.** Clip plane or half-tube cut to see the
-  inside wall and an encapsulated or bonded species; orthographic axial and
-  side views with depth cueing for figures. Extends the Publication preset.
-- **Per-atom property colouring.** Colour by coordination number, Mulliken
-  or IAO charge, bond order to the interface metal, local strain or distance
-  from the axis, so interface bonds and defects stand out among thousands of
-  C atoms. Highlight open-end and defect atoms, and sidewall adducts.
-- **Interface analysis.** Metal–C bond lists with lengths and orders,
-  projected DOS onto a chosen atom group (interface layer, open end), and
-  planar-averaged charge difference or electrostatic potential along the
-  tube axis. Reads existing QVF tables and sections; no schema change is
-  expected, and anything missing goes to qvf first.
-- **Growth and reaction paths.** Large trajectories and NEB profiles on
-  catalyst–tube models (nucleation, carbide formation, bond formation at an
-  open end) with streaming and thumbnails that scale past the current frame
-  sizes; bonds in the live playback frames, which is already open above.
+- **Large-system rendering.** The budget above, measured by
+  `docs/bench_nanotube_scale.py`. Atoms and bonds from 500 atoms are
+  instanced glyphs (vtk.js `vtkGlyph3DMapper`, sent by a serializer
+  trame-vtk lacked), bonds are built vectorised from the cell's bond list,
+  and from 10⁴ instances the browser swaps in coarse glyphs while the
+  camera moves. At-rest sphere quality is retained after an inconclusive
+  lower-resolution experiment. All of it runs in the vtk.js client.
+- **Nanotube and interface builder.** Single- and multi-wall (n,m) tubes,
+  periodic, open, hydrogen-terminated or capped with a C60 half ((5,5) and
+  (9,0)), with diameter, chiral angle, metallicity and wall spacing read
+  out; bundles and forests in Python. A fcc slab ((111), (100), (110)), a
+  nanoparticle or an aminophenyl-amide linker (with an optional slab) goes
+  at an open end or the sidewall at a chosen M–C distance and top, bridge
+  or hollow registry, as one edit-overlay step
+  ([nanotubes](nanotubes.md)).
+- **Cut-aways and axial views.** Half-wall, cross-section and axial cuts
+  that keep atoms near the axis, and orthographic down-the-axis and side
+  views. Browser-only depth cueing now runs in the vtk.js fragment shader;
+  cut-aways and property colours also reach headless and CLI capture.
+- **Per-atom property colouring.** Coordination, distance from the axis,
+  partial charge (IAO, Hirshfeld, Mulliken, Löwdin) and bond order to a
+  metal, plus a C–C bond-stretch proxy and categorical open-end,
+  coordination-defect and heavy-adduct highlights. These are geometry
+  heuristics, not a strain tensor or complete ring-defect identification.
+- **Interface analysis.** Metal–C contacts with lengths and bond orders,
+  PDOS summed over the interface atoms, and a density difference integrated
+  over planes along the axis with the cumulative charge transfer, or a
+  potential averaged over them. No QVF change was needed.
+
+- **Growth and reaction-path playback.** Live trajectory/reaction frames
+  reuse instanced glyph inputs and draw inferred bonds; automatic playback
+  strides slow frames, manual seeking keeps every frame, and large
+  filmstrips sample four frames. The coordinate editor shows 100 rows per
+  page. A synthetic 100,200-atom trajectory was exercised in Chrome;
+  diagnostic frame updates took 2.8 s under concurrent load.
+- **Large-scene loading.** Replicated atom arrays, large bond partitions and
+  neighbourhood distances are vectorised. Frozen million-atom forest browser
+  diagnostics measured 91.2 / 84.4 s before/after under concurrent workloads.
+  Schema validation remains the dominant profiled cost; no schema or
+  validation contract was changed.
+- **Terminal large scenes.** Subpixel atoms use depth-tested point sprites
+  from 10⁴ atoms, with off-screen culling and covered subpixel bonds omitted.
+  Frozen forest diagnostics improved median orbit steps from 74 to 50 ms at
+  108,000 atoms and from 1.11 to 0.64 s at 1,008,000 atoms. These are not
+  controlled performance guarantees ([measurements](client_performance.md)).
+
+**Still proposed:**
+
+- True archive streaming instead of decoding the complete coordinate array,
+  and faster connectivity for real-time growth/NEB playback. Current strides
+  reduce rendering work, not archive memory.
+- Further million-atom loading work, particularly the profiled schema
+  validation cost, and smooth terminal interaction at that scale.
+- Full local strain tensors and ring-topology defect classification beyond
+  the shipped bond-stretch and coordination heuristics.
 
 **Constraint:** keep the work client-side where vtk.js allows. Impostors
 and level of detail must live in the vtk.js client, because server render
@@ -676,8 +706,8 @@ No registered codename covers these:
   rendered off-screen in the background and seekable by click or by a drag
   across the strip; a click on the energy profile seeks too, and the
   terminal's playback keys (Space, `[` `]`, `<` `>`) work in the browser.
-  Still open: bonds in the live playback frames, which the thumbnails draw
-  and the playback does not.
+  Live playback bonds shipped on main on 2026-10-28; they follow each
+  displayed frame using the shared covalent-radius inference.
 - Rendering QVF `excited_states` tables. **Shipped in v2.20.19 (#109):**
   the states are tabulated by `vibe-view table --kind excited_states`, the
   terminal and the browser details panel, with energies in eV and nm,

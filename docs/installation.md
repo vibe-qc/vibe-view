@@ -147,6 +147,7 @@ is deliberately lean so a capture-only host does not drag in a web server.
 | `blender` | nothing | The Blender script export is core; Blender itself is a separate program |
 | `validation` | qvf-writer reference validator | Strict QVF validation; install the pinned qvf release package first (see [QVF validation](qvf.md#strict-validation)) |
 | `queue` | vibe-queue (imports as `vq`) | The vq job panel and `vibe-view from-vq` — see [Queue integration](queue.md) |
+| `xtb` | Optional molecular xTB producer via `qvf-writer>=0.7.0rc1`; install the current qvf/python producer source first. Excluded from `all` until the required producer is released. The external xTB executable is separate. |
 | `sketch` | vibesketch | Sketch a molecule in vibe-sketch from the Build molecule dialog — see [Building and editing](editing.md) |
 | `all` | viewer + tui + ase + results + biomolecule + trexio + smiles + jupyter + sysinfo + surfaces | Everything **except** `queue`, `sketch` and `validation` |
 

@@ -101,6 +101,9 @@ def add_structure(
     representation: str = "ball_and_stick",
     show_labels: bool = False,
     replication: tuple[int, int, int] = (1, 1, 1),
+    atom_color_mode: str = "element",
+    cutaway: str = "off",
+    cutaway_position: float = 0.5,
     positions: Sequence[Sequence[float] | np.ndarray] | np.ndarray | None = None,
 ) -> bool:
     """Draw the archive's structure, optionally at displaced ``positions``.
@@ -129,6 +132,7 @@ def add_structure(
         representation=representation,
         show_labels=show_labels,
         replication=replication,
+        atom_color_mode=atom_color_mode, cutaway=cutaway, cutaway_position=cutaway_position,
     )
     return True
 
@@ -187,11 +191,28 @@ def _frame_scene(
     renderer._structure = copy.deepcopy(renderer.load_structure())
     with headless_plotter(size) as plotter:
         framed = False
+        from vibeview.renderers.moving_structure import MovingStructure
+        from vibeview.renderers.structure import INSTANCED_ATOM_THRESHOLD
+
+        reference = renderer.load_structure()
+        moving = (MovingStructure([a.atomic_number for a in reference.atoms], representation)
+                  if (len(reference.atoms) >= INSTANCED_ATOM_THRESHOLD
+                      and reference.bonds is None and not any(reference.pbc)
+                      and not any(s.kind == "bond_orders" for s in reader.sections)
+                      and representation != "wireframe") else None)
 
         def draw(positions: Any = None) -> None:
             nonlocal framed
             import numpy as np
 
+            if moving is not None:
+                coords = (np.asarray([a.position for a in reference.atoms])
+                          if positions is None else np.asarray(positions))
+                moving.update(plotter, coords, lattice=reference.lattice_vectors, pbc=reference.pbc)
+                if not framed:
+                    frame(plotter)
+                    framed = True
+                return
             plotter.clear_actors()
             data = renderer.load()
             if positions is not None:
@@ -277,6 +298,9 @@ def render_structure_frame(
     replication: tuple[int, int, int] = (1, 1, 1),
     positions: Sequence[Sequence[float] | np.ndarray] | np.ndarray | None = None,
     publication: bool = False,
+    atom_color_mode: str = "element",
+    cutaway: str = "off",
+    cutaway_position: float = 0.5,
 ) -> np.ndarray | bool | None:
     """One structure PNG: to ``path`` (returns True/False), or as an array.
 
@@ -292,6 +316,7 @@ def render_structure_frame(
             show_labels=show_labels,
             replication=replication,
             positions=positions,
+            atom_color_mode=atom_color_mode, cutaway=cutaway, cutaway_position=cutaway_position,
         ):
             return False
         if publication:

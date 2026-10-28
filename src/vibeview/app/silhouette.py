@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import Any
 
 from vibeview.app.scene import _Actors
+from vibeview.renderers.structure import actor_geometry
 
 #: The trame state key holding the signatures of the actors to outline.
 STATE_KEY = "silhouette_targets"
@@ -70,7 +71,7 @@ def silhouette_targets(plotter: Any) -> list[list[float]]:
         try:
             if not actor.GetVisibility() or actor.GetProperty().GetOpacity() <= 0.0:
                 continue
-            data = actor.GetMapper().GetInput()
+            data = actor_geometry(actor)
         except AttributeError:  # a volume or an assembly: not a surface actor
             continue
         if data is None or not data.IsA("vtkPolyData") or data.GetNumberOfPoints() == 0:

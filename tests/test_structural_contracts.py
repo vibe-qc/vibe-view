@@ -219,7 +219,8 @@ def test_every_slider_forwards_a_unique_accessible_name():
 
 
     source = app_source() + "\n" + "\n".join(
-        (SRC / name).read_text() for name in ("builder_panel.py", "experimental_map_panel.py")
+        (SRC / name).read_text()
+        for name in ("builder_panel.py", "experimental_map_panel.py", "nanotube_panel.py")
     )
     tree = ast.parse(source)
     sliders = [

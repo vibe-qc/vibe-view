@@ -50,10 +50,14 @@ class FrameSequenceMixin:
     def n_atoms(self) -> int:
         return len(self.load().atoms)
 
+    def frame_positions(self, index: int) -> np.ndarray:
+        """Array view of one frame, without allocating one tuple per atom."""
+        return np.asarray(self.load().coords[index])
+
     def get_frame(self, index: int) -> list[tuple[str, np.ndarray]]:
         """Atom symbols and positions for frame ``index``."""
         data = self.load()
-        coords = data.coords[index]  # [n_atoms, 3]
+        coords = self.frame_positions(index)  # [n_atoms, 3]
         return [(data.atoms[i].symbol, coords[i].copy()) for i in range(len(data.atoms))]
 
     def has_energies(self) -> bool:

@@ -12,6 +12,9 @@ import pyvista as pv
 from vibeview.app.atom_drag import ATOM_DRAG_JS, CAMERA_CONTROLS, DRAG_CONTROLS
 from vibeview.app.browser_capture import BROWSER_CAPTURE_JS, CLIENT_CAMERA_ARG
 from vibeview.app.controls import _DIALOG_FOCUS_JS, _build_controls, _dialog_focus_restore
+from vibeview.app.depth_cue import DEPTH_CUE_JS, DEPTH_CUE_SCENE_HANDLER
+from vibeview.app.glyph_lod import GLYPH_LOD_JS, GLYPH_LOD_SCENE_HANDLER
+from vibeview.app.instanced_glyphs import install_glyph_mapper_serializer
 from vibeview.app.label_followers import (
     LABEL_FOLLOWER_EVENTS,
     LABEL_FOLLOWER_HANDLER,
@@ -91,6 +94,7 @@ def _retaining_view_updater(
         # trame-vtk rebuilds its serializer registry when its protocol
         # starts; make sure the label arrays go out with every push (#111).
         install_label_array_serializer()
+        install_glyph_mapper_serializer()
         result = update(*args, **kwargs)
         previous_actors = current_actors
         return result
@@ -1877,6 +1881,8 @@ def build_layout(server: Any, ctrl: Any, plotter: pv.Plotter) -> None:
                     server.state.atom_drag_controls = DRAG_CONTROLS
                     client.Script(ATOM_DRAG_JS)
                     client.Script(LABEL_FOLLOWER_JS)
+                    client.Script(GLYPH_LOD_JS)
+                    client.Script(DEPTH_CUE_JS)
                     client.Script(SILHOUETTE_JS)
                     client.Script(BROWSER_CAPTURE_JS)
                     client.Script(FIGURE_OVERLAY_JS)
@@ -1888,7 +1894,8 @@ def build_layout(server: Any, ctrl: Any, plotter: pv.Plotter) -> None:
                     # right after the vtk module filled it, before the first
                     # client asks for the scene.
                     server.add_protocol_to_configure(
-                        lambda _protocol: install_label_array_serializer()
+                        lambda _protocol: (install_label_array_serializer(),
+                                           install_glyph_mapper_serializer())
                     )
                     local_view = VtkLocalView(
                         plotter.ren_win,
@@ -1932,9 +1939,11 @@ def build_layout(server: Any, ctrl: Any, plotter: pv.Plotter) -> None:
                         ),
                         **LABEL_FOLLOWER_HANDLERS,
                         # Each scene load: new label meshes onto the shader
-                        # (#111), and the outline pass installed (#112).
+                        # (#111), the outline pass installed (#112), and
+                        # coarse glyphs armed for camera motion.
                         after_scene_loaded=(
                             LABEL_FOLLOWER_SCENE_HANDLER + "; " + SILHOUETTE_SCENE_HANDLER
+                            + "; " + GLYPH_LOD_SCENE_HANDLER + "; " + DEPTH_CUE_SCENE_HANDLER
                         ),
                         LeftButtonRelease="window.vvAtomDrag && window.vvAtomDrag('end', $event)",
                         MouseLeave="window.vvAtomDrag && window.vvAtomDrag('end', null)",

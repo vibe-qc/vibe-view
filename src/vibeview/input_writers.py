@@ -50,6 +50,9 @@ class InputSettings:
     # electron-count-dependent GTH-q value is guessed from nuclear charge.
     potentials: dict[str, str] = field(default_factory=dict)
     cutoff: float = 400.0
+    xtb_orbitals: bool = True
+    xtb_bond_orders: bool = True
+    xtb_density: bool = False
 
 
 @dataclass(frozen=True)
@@ -472,6 +475,25 @@ def write_input(structure: StructureData, settings: InputSettings) -> InputBundl
         control = (
             ("$fix\n atoms: " + ",".join(str(i + 1) for i in frozen) + "\n$end\n") if frozen else ""
         )
+        molecular_export = not periodic and method != "GFN-FF"
+        if molecular_export:
+            if frozen:
+                # xTB's Cartesian FIRE optimiser retains fixed coordinates;
+                # ANC transformations can move them even with zero gradients.
+                # https://xtb-docs.readthedocs.io/en/latest/optimization.html
+                control += "$opt\n engine=fire\n$end\n"
+            outputs = {"orbitals": s.xtb_orbitals, "bond_orders": s.xtb_bond_orders,
+                       "density": s.xtb_density}
+            if any(type(value) is not bool for value in outputs.values()):
+                raise ValueError("xTB output selections must be booleans")
+            control += "$write\n json=true\n"
+            if s.xtb_density:
+                control += " density=true\n"
+            control += "$end\n"
+            files["xtb-job.json"] = json.dumps({
+                "version": 1, "method": method, "task": s.task, "charge": charge,
+                "multiplicity": mult, "outputs": outputs, "frozen_atoms": frozen,
+            }, indent=2) + "\n"
         files["xcontrol"] = control + raw + "\n"
         command = (
             "xtb",
@@ -486,6 +508,11 @@ def write_input(structure: StructureData, settings: InputSettings) -> InputBundl
         )
         if s.task != "single_point":
             command += ("--opt" if s.task == "optimization" else "--hess",)
+        if molecular_export:
+            if s.xtb_orbitals:
+                command += ("--molden",)
+            if s.xtb_bond_orders:
+                command += ("--wbo",)
         files["command.json"] = json.dumps(list(command), indent=2) + "\n"
         primary = "coord"
     else:

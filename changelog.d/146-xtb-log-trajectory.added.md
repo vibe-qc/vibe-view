@@ -1,1 +1,0 @@
-xtb's optimisation and scan logs (`xtbopt.log`, `xtbscan.log`) open directly as trajectories with each step's energy, without the `[results]` extra; previously every `.log` went to the cclib importer, which does not read XYZ frames.

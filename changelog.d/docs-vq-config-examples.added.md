@@ -1,1 +1,0 @@
-The manual ships example vq configuration files for a workstation without a batch system, a laptop client, a SLURM and PBS/Torque driver and a cluster login node, and `vibe-view examples` lists the `--view` launch option and the vq submission commands.

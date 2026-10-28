@@ -2535,3 +2535,174 @@ def test_orca_input_controls_export_current_geometry(water_qvf):
         text = base64.b64decode(data.split(",", 1)[1]).decode()
         assert text == server.state.calc_orca_preview
         assert "* xyz 0 1" in text
+
+
+# ── Nanotube and interface builder (roadmap: carbon nanotubes) ─────────────
+
+
+def _tube_qvf(tmp_path: Path, end: str = "open") -> Path:
+    from vibeview.nanotube import single_wall
+    from vibeview.qvf_writer import structure_archive
+
+    tube = single_wall(6, 6, 15.0, end=end)
+    return Path(structure_archive(tube.atoms(), tube.pbc, tube.lattice)
+                .write(tmp_path / f"tube-{end}.qvf"))
+
+
+def test_nanotube_build_adopts_a_new_periodic_structure(water_qvf, monkeypatch):
+    from vibeview.app import create_app
+    from vibeview.app.files import FilesControllers
+    from vibeview.qvf import QVFReader
+
+    adopted: list[QVFReader] = []
+    original = FilesControllers._adopt_reader
+
+    def adopt(self, reader):
+        adopted.append(reader)
+        return original(self, reader)
+
+    monkeypatch.setattr(FilesControllers, "_adopt_reader", adopt)
+    reader = QVFReader(water_qvf)
+    try:
+        server = create_app(reader)
+        server.controller.view_update = lambda *a, **k: None
+        state = server.state
+        state.nt_n, state.nt_m, state.nt_walls = 9, 0, 1
+        # A headless server is never "ready", so run the watchers as a client edit would.
+        for func, _translator in list(state._change_callbacks.get("nt_m", [])):
+            func(nt_m=0)
+        assert len(state._change_callbacks.get("nt_m", [])) == 1
+        assert state.nt_readout.startswith("(9,0) zigzag: d = 7.05 Å, θ = 0.0°, metallic")
+        state.nt_length, state.nt_end = 12.0, "periodic"
+        server.controller.nt_build()
+        assert len(adopted) == 1
+        built = adopted[0].read_structure()
+        assert built.pbc == (False, False, True)
+        assert {a.symbol for a in built.atoms} == {"C"}
+        assert "(9,0) tube" in state.status_message
+        # A refused build reports and leaves the session as it was.
+        state.nt_n, state.nt_m, state.nt_end = 10, 10, "cap"
+        server.controller.nt_build()
+        assert "no C60 cap" in state.status_message
+        assert len(adopted) == 1
+    finally:
+        reader.close()
+
+
+def test_nanotube_partner_is_one_undoable_edit_overlay_step(tmp_path):
+    from vibeview.app import create_app
+    from vibeview.qvf import QVFReader
+
+    reader = QVFReader(_tube_qvf(tmp_path))
+    try:
+        server = create_app(reader)
+        server.controller.view_update = lambda *a, **k: None
+        state = server.state
+        n_tube = len(reader.read_structure().atoms)
+        state.edit_history, state.edit_future = [], []
+        state.nt_partner, state.nt_metal, state.nt_facet = "slab", "Au", "111"
+        state.nt_site, state.nt_registry, state.nt_distance = "end", "top", ""
+        server.controller.nt_add_partner()
+        edited = reader.read_structure()
+        metals = [a for a in edited.atoms if a.symbol == "Au"]
+        assert metals and len(edited.atoms) == n_tube + len(metals)
+        assert reader.has_edit_overlay
+        assert len(state.edit_history) == 1
+        assert "Au(111) slab" in state.status_message
+        server.controller.edit_undo()
+        assert len(reader.read_structure().atoms) == n_tube
+    finally:
+        reader.close()
+
+
+def test_nanotube_partner_refuses_a_periodic_tube(tmp_path):
+    from vibeview.app import create_app
+    from vibeview.qvf import QVFReader
+
+    reader = QVFReader(_tube_qvf(tmp_path, end="periodic"))
+    try:
+        server = create_app(reader)
+        server.controller.view_update = lambda *a, **k: None
+        server.state.edit_history = []
+        server.controller.nt_add_partner()
+        assert "finite cluster" in server.state.status_message
+        assert not reader.has_edit_overlay
+        assert server.state.edit_history == []
+    finally:
+        reader.close()
+
+
+def test_nanotube_views_cut_colour_and_point_the_camera(tmp_path):
+    from vibeview.app import create_app
+    from vibeview.nanotube import single_wall
+    from vibeview.qvf import QVFReader
+    from vibeview.qvf_writer import structure_archive
+    from vibeview.renderers.structure import GLYPH_RGB_ARRAY
+
+    tube = single_wall(10, 10, 80.0, end="open")  # past the instancing threshold, cut or not
+    path = structure_archive(tube.atoms(), tube.pbc, tube.lattice).write(tmp_path / "t.qvf")
+    reader = QVFReader(path)
+    try:
+        server = create_app(reader)
+        server.controller.view_update = lambda *a, **k: None
+        state = server.state
+        plotter = _live_plotter(server)
+
+        def drawn_atoms():
+            return plotter.actors["atom_group_0"].GetMapper().GetInputDataObject(0, 0)
+
+        n = tube.n_atoms
+        assert drawn_atoms().GetNumberOfPoints() == n
+        server.controller.nt_cutaway("half")
+        assert 0.4 * n < drawn_atoms().GetNumberOfPoints() < 0.6 * n
+        assert "half" in state.status_message
+        server.controller.nt_cutaway("off")
+        assert drawn_atoms().GetNumberOfPoints() == n
+
+        server.controller.nt_color("axis_distance")
+        assert state.atom_color_mode == "axis_distance"
+        assert "distance from the axis" in state.status_message
+        server.controller.nt_color("charge")  # no charges in this archive
+        assert "atom_properties" in state.status_message
+        assert state.atom_color_mode == "axis_distance"
+        assert drawn_atoms().GetPointData().GetArray(GLYPH_RGB_ARRAY) is not None
+
+        server.controller.nt_view("down")
+        camera = plotter.camera
+        assert camera.parallel_projection and state.orthographic_projection
+        direction = np.subtract(camera.position, camera.focal_point)
+        assert abs(direction[2]) / np.linalg.norm(direction) == pytest.approx(1.0, abs=1e-6)
+    finally:
+        reader.close()
+
+
+def _live_plotter(server):
+    """The plotter of the most recent create_app, through its scene hooks."""
+    import gc
+
+    import pyvista as pv
+
+    from vibeview.app.helpers import _scene_hooks
+
+    plotters = [o for o in gc.get_objects()
+                if isinstance(o, pv.Plotter) and _scene_hooks(o).state is server.state]
+    return plotters[-1]
+
+
+def test_nanotube_interface_analysis_reports_contacts(tmp_path):
+    from vibeview.app import create_app
+    from vibeview.qvf import QVFReader
+
+    reader = QVFReader(_tube_qvf(tmp_path))
+    try:
+        server = create_app(reader)
+        server.controller.view_update = lambda *a, **k: None
+        state = server.state
+        state.nt_partner, state.nt_metal, state.nt_distance = "slab", "Cu", 1.95
+        server.controller.nt_add_partner()
+        server.controller.nt_analyse()
+        assert state.status_message.startswith("Interface analysis: ")
+        assert "metal–C contacts" in state.nt_interface_html
+        assert "No dos.projected section" in state.nt_interface_html
+    finally:
+        reader.close()

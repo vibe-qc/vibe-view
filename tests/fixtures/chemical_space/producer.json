@@ -1,0 +1,417 @@
+{
+  "schema": "vibeview.chemical-space/1",
+  "producer_source": "d6b3d9d583c4c527b82591476a07a0107f8eac0c",
+  "records": [
+    {
+      "id": "h2",
+      "symbols": [
+        "H",
+        "H"
+      ],
+      "coordinates_angstrom": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.74
+        ]
+      ],
+      "fingerprint": {
+        "schema": "vibeqc.spectral-fingerprint/1",
+        "variant": "quantile-scale",
+        "parameters": {
+          "n_eigs": 16,
+          "size_weight": 0.0,
+          "scale_weight": 1.0,
+          "table_sha256": "613548649dd035428df9d2b572a51227ec719be0417691ed37703bca8775835c",
+          "graph": "complete",
+          "singleton": "property-first-zero-padded",
+          "similarity": "1/(1+euclidean)"
+        },
+        "channel_order": [
+          "electrostatic",
+          "bonding",
+          "steric",
+          "dispersion"
+        ],
+        "channels": [
+          [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            -1.0001999228853038e-12
+          ],
+          [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            0.0
+          ],
+          [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            -0.36865113498586494
+          ],
+          [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            4.928234911961038
+          ]
+        ],
+        "size_component": 0.0,
+        "atom_count": 2,
+        "geometry_sha256": "5340b61bab6321ab29d737b583f8172545ce979648b087f20dcd94d62d60f7b2",
+        "periodic_as_cluster": false,
+        "citations": [
+          {
+            "key": "toney2026physics",
+            "doi": "10.1039/d6sc06309h"
+          }
+        ],
+        "limitations": [
+          "Finite cluster; no periodic images",
+          "Not an energy or identity",
+          "Same-element bonding weight does not decay with distance"
+        ]
+      },
+      "group": "diatomic",
+      "properties": {
+        "index": 0
+      }
+    },
+    {
+      "id": "hf",
+      "symbols": [
+        "H",
+        "F"
+      ],
+      "coordinates_angstrom": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.92
+        ]
+      ],
+      "fingerprint": {
+        "schema": "vibeqc.spectral-fingerprint/1",
+        "variant": "quantile-scale",
+        "parameters": {
+          "n_eigs": 16,
+          "size_weight": 0.0,
+          "scale_weight": 1.0,
+          "table_sha256": "613548649dd035428df9d2b572a51227ec719be0417691ed37703bca8775835c",
+          "graph": "complete",
+          "singleton": "property-first-zero-padded",
+          "similarity": "1/(1+euclidean)"
+        },
+        "channel_order": [
+          "electrostatic",
+          "bonding",
+          "steric",
+          "dispersion"
+        ],
+        "channels": [
+          [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.357567227410225
+          ],
+          [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            0.42961385275901703
+          ],
+          [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            -0.42444100956754593
+          ],
+          [
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            5.819854268184976
+          ]
+        ],
+        "size_component": 0.0,
+        "atom_count": 2,
+        "geometry_sha256": "12740ae5a60aeaf4f58679e89206b880509758e9462393d2a4c3918aee7f4048",
+        "periodic_as_cluster": false,
+        "citations": [
+          {
+            "key": "toney2026physics",
+            "doi": "10.1039/d6sc06309h"
+          }
+        ],
+        "limitations": [
+          "Finite cluster; no periodic images",
+          "Not an energy or identity",
+          "Same-element bonding weight does not decay with distance"
+        ]
+      },
+      "group": "diatomic",
+      "properties": {
+        "index": 1
+      }
+    },
+    {
+      "id": "water",
+      "symbols": [
+        "O",
+        "H",
+        "H"
+      ],
+      "coordinates_angstrom": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.758,
+          0.0,
+          0.504
+        ],
+        [
+          -0.758,
+          0.0,
+          0.504
+        ]
+      ],
+      "fingerprint": {
+        "schema": "vibeqc.spectral-fingerprint/1",
+        "variant": "quantile-scale",
+        "parameters": {
+          "n_eigs": 16,
+          "size_weight": 0.0,
+          "scale_weight": 1.0,
+          "table_sha256": "613548649dd035428df9d2b572a51227ec719be0417691ed37703bca8775835c",
+          "graph": "complete",
+          "singleton": "property-first-zero-padded",
+          "similarity": "1/(1+euclidean)"
+        },
+        "channel_order": [
+          "electrostatic",
+          "bonding",
+          "steric",
+          "dispersion"
+        ],
+        "channels": [
+          [
+            0.8488163125767625,
+            0.9356408042331942,
+            1.0224652958896259,
+            1.1092897875460577,
+            1.1961142792024893,
+            1.2829387708589208,
+            1.3697632625153526,
+            1.4565877541717844,
+            1.543412245828216,
+            1.6302367374846476,
+            1.7170612291410792,
+            1.803885720797511,
+            1.8907102124539428,
+            1.9775347041103744,
+            2.064359195766806,
+            2.1511836874232375,
+            2.0666770492910254
+          ],
+          [
+            1.1948133954722782,
+            1.235504942742641,
+            1.2761964900130038,
+            1.316888037283367,
+            1.3575795845537297,
+            1.3982711318240928,
+            1.4389626790944556,
+            1.4796542263648185,
+            1.5203457736351815,
+            1.5610373209055444,
+            1.6017288681759072,
+            1.6424204154462703,
+            1.683111962716633,
+            1.7238035099869962,
+            1.764495057257359,
+            1.8051866045277218,
+            0.6142477376558606
+          ],
+          [
+            1.255507707095244,
+            1.2881066794825449,
+            1.3207056518698457,
+            1.3533046242571465,
+            1.3859035966444473,
+            1.418502569031748,
+            1.451101541419049,
+            1.4837005138063497,
+            1.5162994861936503,
+            1.548898458580951,
+            1.581497430968252,
+            1.6140964033555527,
+            1.6466953757428535,
+            1.6792943481301543,
+            1.7118933205174551,
+            1.744492292904756,
+            -0.5421327250399157
+          ],
+          [
+            0.800760694816595,
+            0.8939926021743823,
+            0.9872245095321697,
+            1.080456416889957,
+            1.1736883242477445,
+            1.266920231605532,
+            1.3601521389633193,
+            1.4533840463211067,
+            1.546615953678894,
+            1.6398478610366813,
+            1.7330797683944685,
+            1.826311675752256,
+            1.9195435831100434,
+            2.0127754904678308,
+            2.106007397825618,
+            2.1992393051834056,
+            6.024277657529792
+          ]
+        ],
+        "size_component": 0.0,
+        "atom_count": 3,
+        "geometry_sha256": "0b3e3486c35ec309a1d12367592355455dff48904c7483f69828d6dac42043f2",
+        "periodic_as_cluster": false,
+        "citations": [
+          {
+            "key": "toney2026physics",
+            "doi": "10.1039/d6sc06309h"
+          }
+        ],
+        "limitations": [
+          "Finite cluster; no periodic images",
+          "Not an energy or identity",
+          "Same-element bonding weight does not decay with distance"
+        ]
+      },
+      "group": "water",
+      "properties": {
+        "index": 2
+      }
+    }
+  ]
+}

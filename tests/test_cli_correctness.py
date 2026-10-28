@@ -263,7 +263,10 @@ def test_capture_reads_display_size_and_representation(
     result = CliRunner().invoke(main, ["capture", str(_water(tmp_path)),
                                        "-o", str(tmp_path / "s.png")])
     assert result.exit_code == 0, result.output
-    assert seen == {"size": (320, 200), "representation": "space_filling", "publication": False}
+    assert seen == {
+        "size": (320, 200), "representation": "space_filling", "publication": False,
+        "atom_color_mode": "element", "cutaway": "off", "cutaway_position": 0.5,
+    }
 
 
 def test_explicit_size_beats_the_config(

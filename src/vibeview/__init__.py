@@ -21,7 +21,7 @@ Blender, crystal builder, and material presets modules.)
 
 from __future__ import annotations
 
-__version__ = "3.0.0"  # Levinthal's Lynx -- see vibeview.codenames,
+__version__ = "3.0.1"  # Levinthal's Lynx -- see vibeview.codenames,
 #                        which is the catalogue every surface reads. This
 #                        comment is a convenience, and the drift test in
 #                        tests/test_release_codenames.py keeps it honest.

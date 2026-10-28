@@ -332,8 +332,9 @@ def add_figure_outlines(plotter: Any, thickness: float = FIGURE_OUTLINE_THICKNES
     count = 0
     for name in outlined_actor_names(plotter):
         actor = plotter.actors[name]
-        mapper = actor.GetMapper() if hasattr(actor, "GetMapper") else None
-        source = mapper.GetInput() if mapper is not None else None
+        from vibeview.renderers.structure import actor_geometry
+
+        source = actor_geometry(actor)
         if source is None:
             continue
         try:

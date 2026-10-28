@@ -45,6 +45,7 @@ RESERVED_FORMAT_NAMES = frozenset(
         "results",
         "sdf",
         "trexio",
+        "turbomole",
         "xyz",
     }
 )

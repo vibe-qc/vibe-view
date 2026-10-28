@@ -360,6 +360,8 @@ Args = list[str]
 def _light(bad: str, good: str, out: Path) -> dict[str, Args]:
     return {
         "spectrum": ["spectrum", bad, "--section", "ir", "-o", str(out / "spectrum.csv")],
+        "reaction-inspect": ["reaction", "inspect", bad],
+        "reaction-export": ["reaction", "export", bad, "--step", "r1"],
         "info": ["info", bad],
         "info-json": ["info", bad, "--json"],
         "info-short": ["info", bad, "--short"],

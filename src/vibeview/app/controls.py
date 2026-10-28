@@ -210,9 +210,15 @@ def _build_controls(server: Any, ctrl: Any) -> None:
     from vibeview.builder_panel import build_controls as build_molecular_builder
 
     build_molecular_builder(v, html, ctrl)
+    from vibeview.nanotube_panel import build_controls as build_nanotube_builder
+
+    build_nanotube_builder(v, html, ctrl)
     from vibeview.experimental_map_panel import build_controls as build_map_controls
 
     build_map_controls(v, html, ctrl)
+    from vibeview.chemical_space_panel import build_controls as build_chemical_space
+
+    build_chemical_space(v, html, ctrl)
     from vibeview.model_scene_panel import build_controls as build_model_scene
 
     build_model_scene(v, html, ctrl)

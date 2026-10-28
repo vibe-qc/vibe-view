@@ -1,1 +1,0 @@
-Turbomole and xtb `coord` files open and import directly: a file named `coord`, `.coord` (such as xtb's `xtbopt.coord`) and `.tmol`, in bohr, ångström or fractional coordinates, with a 3D cell and the stated charge and multiplicity.

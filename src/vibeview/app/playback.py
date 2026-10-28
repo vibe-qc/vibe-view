@@ -13,6 +13,7 @@ import asyncio
 import base64
 import contextlib
 import math
+import time
 from collections.abc import Callable, Generator
 from typing import TYPE_CHECKING, Any
 
@@ -92,8 +93,10 @@ def trajectory_filmstrip(
     with structure_thumbnail_writer(reader) as thumbnail:
         if thumbnail is None:
             return
-        for frame, last in filmstrip_frames(renderer.n_frames, limit):
-            positions = [pos for _symbol, pos in renderer.get_frame(frame)]
+        for frame, last in filmstrip_frames(
+            renderer.n_frames, min(limit, 4) if renderer.n_atoms >= 100_000 else limit
+        ):
+            positions = renderer.frame_positions(frame)
             yield {
                 "frame": frame,
                 "last": last,
@@ -179,6 +182,7 @@ class PlaybackControllers:
             my_epoch = self.viewer._anim_epoch
 
             async def _loop() -> None:
+                stride = 1
                 while self.viewer.server.state.trajectory_playing:
                     await asyncio.sleep(0.2)
                     # A section switch / reset can flip playing off and rebuild
@@ -191,15 +195,21 @@ class PlaybackControllers:
                         or not self.viewer.server.state.trajectory_playing
                     ):
                         return
+                    started = time.monotonic()
                     frame = self.viewer.server.state.trajectory_frame
                     n = self.viewer.server.state.trajectory_n_frames or 1
-                    self.viewer.server.state.trajectory_frame = (frame + 1) % n
+                    self.viewer.server.state.trajectory_frame = (
+                        min(frame + stride, n - 1) if frame < n - 1 else 0
+                    )
                     _helpers._update_trajectory_plot(self.viewer.reader, self.viewer.server.state)
                     _helpers._render_trajectory_atoms(
                         self.viewer.reader, self.viewer.plotter, self.viewer.server.state
                     )
                     _helpers._update_reaction_label(self.viewer.reader, self.viewer.server.state)
                     self.viewer.server.state.flush()
+                    # Skip intervening frames when drawing exceeds the 5 Hz budget.
+                    # Manual steps and scrubbing still visit every stored frame.
+                    stride = max(1, math.ceil((time.monotonic() - started) / 0.2))
 
             self.viewer._anim_task = _helpers._spawn_task(_loop())
         else:

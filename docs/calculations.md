@@ -20,7 +20,8 @@ features are in [vibe-view with vibe-sketch and vibe-qc](ecosystem.md).
 |---|---|---|---|
 | **vibe-qc** | Calculation Parameters, engine *vibe-qc*: a Python input or a [QVF job container](jobs.md#qvf-containers) | **Submit to vq cluster**: a container or a script, with live checkpoints | QVF, natively, including running checkpoints |
 | **ORCA** | Calculation Parameters, engine *ORCA* | **Submit ORCA to vq**, with CPUs, `MaxCore` and wall time | The [ORCA dataset](orca.md): property files, `.gbw`, `.hess`, `.mcd` |
-| **Psi4, NWChem, Q-Chem, CP2K, xtb** | [Input bundle](input_writers.md) | **Submit serial job to local vq**: 1 CPU, 2 GB | Molden or fchk orbitals, cube volumes, XYZ trajectories, xtb `coord` geometries; `.out`/`.log` with the `[results]` extra |
+| **xtb** | [Input bundle](input_writers.md), JSON plus selected orbitals/bond orders/density | **Submit serial job to local vq**: 1 CPU, 2 GB | Molecular GFN0/1/2 jobs export QVF through the optional qvf-writer runner; GFN-FF uses native files |
+| **Psi4, NWChem, Q-Chem, CP2K** | [Input bundle](input_writers.md) | **Submit serial job to local vq**: 1 CPU, 2 GB | Molden or fchk orbitals, cube volumes, XYZ trajectories; `.out`/`.log` with the `[results]` extra |
 | **Gaussian** | Input bundle | Save only | `.fchk`, cube; `.log` with `[results]` |
 | **GAMESS (US)** | Input bundle | Save only | Molden; `.log` with `[results]` |
 | **VASP** | POSCAR structure only | Save only | POSCAR/CONTCAR with the `[ase]` extra |
@@ -142,15 +143,23 @@ and for vibe-qc, [Submitting from the viewer](jobs.md#submitting-from-the-viewer
    and basis blank for the program's default, GFN2-xTB.
 3. **Preview.** **Preview input bundle** shows every file and any warnings:
    the `coord` geometry, the `xcontrol` settings, and `command.json`, which
-   records the argument list. **Save input bundle** downloads the same files
-   as a ZIP.
+   records the native argument list. Molecular GFN0/1/2 bundles also include
+   `xtb-job.json` for the QVF runner and enable JSON output. Choose **Orbitals**,
+   **Bond orders** (both on by default) and **Electron density** (off by
+   default). **Save input bundle** downloads the same files as a ZIP.
 4. **Submit.** With `xtb` registered and the local daemon running, set a wall
    time and click **Submit serial job to local vq**. The Job Manager opens with
    the live monitor on.
 5. **Follow.** The job's row shows its state, and the magnifier shows the log
    tail as it grows.
-6. **Open the result.** The panel's **open** action loads QVF archives and
-   ORCA datasets. For other programs, fetch the job and open the files it
+6. **Open the result.** For molecular GFN0/1/2, the queue payload runs xTB,
+   checks termination/convergence and exports `result.qvf`. The panel's
+   **open** action fetches and opens that archive, including selected outputs.
+   Install the current `qvf/python` source containing `qvf run-xtb` into the
+   viewer's Python environment first, then enable `vibeview[xtb]`; the adapter
+   is still unreleased. Submission refuses a missing adapter with setup
+   instructions. The existing GFN-FF/native-file route remains available.
+   For native-file jobs, fetch the job and open the files it
    wrote in a [format the viewer reads](formats.md):
 
    ```sh
@@ -170,6 +179,31 @@ and for vibe-qc, [Submitting from the viewer](jobs.md#submitting-from-the-viewer
    vibe-view open results/FETCHED_JOB/xtbopt.coord
    vibe-view open results/FETCHED_JOB/xtbopt.log
    ```
+
+   For a combined result archive, the development version of the standalone
+   `qvf-writer` package provides an
+   [xTB exporter](https://github.com/vibe-qc/qvf/blob/main/docs/adapters/xtb.md).
+   Request `json=true` in xTB's `$write` block before running the calculation,
+   then export its matching JSON, final geometry and optional companion files:
+
+   ```sh
+   qvf export-xtb xtbout.json --geometry xtbopt.coord --charge 0 \
+       --trajectory xtbopt.log --wbo wbo -o result.qvf
+   vibe-view open result.qvf
+   ```
+
+   Use `xtbopt.xyz` when the calculation used XYZ input. Add
+   `--molden molden.input --spin restricted` for a closed-shell Molden output,
+   or `--modes g98.out` for a matching Hessian calculation. Only supply files
+   from the same calculation. The exporter supports molecular GFN0/1/2-xTB;
+   it does not infer convergence from output-file presence. It is not part
+   of the released QVF v0.6.0 toolkit; follow its source-install instructions.
+
+   Frozen-atom molecular jobs select xTB's Cartesian FIRE optimiser and check
+   every saved frame against the frozen input coordinates. An engine failure,
+   missing requested output, inconsistent result or moved frozen atom fails
+   the queue job and leaves diagnostics in `xtb-results/xtb.out`; it does not
+   produce an accepted QVF. Molecular jobs cap OMP/BLAS threads at one.
 
 To run the same bundle on a cluster or with more CPUs, submit it with `vq`
 yourself. Build the command from `command.json`, with the absolute path of

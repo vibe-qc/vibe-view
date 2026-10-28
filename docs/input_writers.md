@@ -81,6 +81,22 @@ binary alone is insufficient to invent a valid command for these programs.
 `command.json` in an xtb bundle records an argv array; it is not executed by
 preview or download.
 
+Molecular GFN0/1/2-xTB bundles enable JSON output and include `xtb-job.json`.
+The local queue launch uses the optional `qvf run-xtb` producer adapter,
+which runs the registered xTB binary, checks termination and requested
+outputs, then creates `result.qvf` for Job Manager's **open** action.
+Install the current qvf Python source containing that runner into the
+viewer environment before enabling `vibeview[xtb]`; it is not yet released.
+GFN-FF retains the direct native-binary route and native-file result loading.
+
+**Orbitals** and **Bond orders** are selected by default; **Electron density**
+is opt-in. SDK equivalents are `xtb_orbitals`, `xtb_bond_orders` and
+`xtb_density` in `InputSettings`. Frozen-atom molecular jobs select the FIRE
+optimiser and the runner verifies fixed coordinates in every saved frame.
+Raw blocks can override engine settings; conflicting overrides or missing
+requested outputs cause the export step to fail instead of accepting an
+incomplete result. See [the calculation walkthrough](calculations.md).
+
 ## SDK
 
 ```python

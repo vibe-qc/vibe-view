@@ -1,4 +1,10 @@
 $fix
  atoms: 1,3
 $end
+$opt
+ engine=fire
+$end
+$write
+ json=true
+$end
 

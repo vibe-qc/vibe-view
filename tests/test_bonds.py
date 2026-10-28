@@ -235,3 +235,23 @@ class TestEverySurfaceAgrees:
 
         for module in (blender_export, povray_export, export_cml, export_svg, build_tools):
             assert not hasattr(module, "_detect_bonds")
+
+
+def test_large_binned_search_matches_independent_all_pairs():
+    """The vectorised neighbourhoods must neither omit nor duplicate pairs."""
+    from vibeview.bonds import BOND_TOLERANCE, NON_METALS, covalent_radii, infer_bonds
+
+    rng = np.random.default_rng(731)
+    positions = rng.uniform(-20, 20, (900, 3))
+    numbers = rng.choice([1, 6, 8, 29], len(positions))
+    radii = covalent_radii(numbers)
+    expected = set()
+    for i in range(len(positions)):
+        for j in range(i + 1, len(positions)):
+            if numbers[i] not in NON_METALS and numbers[j] not in NON_METALS:
+                continue
+            if np.linalg.norm(positions[i] - positions[j]) < radii[i] + radii[j] + BOND_TOLERANCE:
+                expected.add((i, j))
+    found = infer_bonds(positions, numbers)
+    assert len(found) == len(expected)
+    assert {(i, j) for i, j, _order, _image in found} == expected

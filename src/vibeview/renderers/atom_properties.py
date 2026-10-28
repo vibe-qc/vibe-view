@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from vibeview.renderers import BaseRenderer
 from vibeview.renderers._html import data_table, empty_panel, panel_document
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from vibeview.qvf import AtomPropertiesData, QVFReader, Section
 
 
@@ -65,6 +65,30 @@ class AtomPropertiesRenderer(BaseRenderer):
             blocks.append(_table("IAO", data.iao_charges))
         if data.spin_populations is not None:
             blocks.append(_table("Spin pop.", data.spin_populations))
+        # QVF custom charges carry their own definition. In particular, GFN0
+        # charges must not be presented as a Mulliken population analysis.
+        if charge_kind is None and "meta" in self.section.members:
+            meta = self.reader.read_json_member(self.section_id, "meta")
+            if not isinstance(meta, dict):
+                raise ValueError("atom property metadata must be an object")
+            reference = self.reader.structure_ref_of(self.section_id)
+            count = (len(self.reader.read_structure(reference, apply_edits=False).atoms)
+                     if reference is not None else None)
+            for role in self.section.members:
+                entry = meta.get(role)
+                if not role.startswith("custom.") or not isinstance(entry, dict):
+                    continue
+                if entry.get("kind") != "scalar" or entry.get("units") != "e":
+                    continue
+                description = entry.get("description")
+                if not isinstance(description, str) or not description.strip():
+                    raise ValueError(f"{role} needs a charge description")
+                values = self.reader.read_binary_member(self.section_id, role)
+                if values.ndim != 1 or not np.isfinite(values).all() or (
+                    count is not None and len(values) != count
+                ):
+                    raise ValueError(f"{role} must contain one finite charge per atom")
+                blocks.append(_table(description + " (e)", values))
         if not blocks:
             return empty_panel("No charge data in this section.")
         # The charge tables sit side by side and wrap when the panel is narrow.

@@ -266,7 +266,10 @@ class Canvas:
         pr = radii * fov / np.where(z > NEAR_PLANE, z, np.nan) * self.scale
         # Sub-pixel spheres would rasterize to nothing; clamp so a distant
         # atom stays a visible dot instead of silently vanishing.
-        visible = np.isfinite(pr) & (z > NEAR_PLANE)
+        extent = np.maximum(pr, 0.6)
+        visible = (np.isfinite(pr) & (z > NEAR_PLANE)
+                   & (xy[:, 0] + extent >= 0) & (xy[:, 0] - extent < self.width)
+                   & (xy[:, 1] + extent >= 0) & (xy[:, 1] - extent < self.height))
         if not visible.any():
             return
         pr = np.clip(pr[visible], 0.6, max(self.width, self.height))
@@ -274,6 +277,18 @@ class Canvas:
         sz = z[visible]
         rw = radii[visible]
         rgb = colors[visible]
+
+        if len(centers) >= 10_000:
+            # Subpixel atoms resolve to a single depth-tested sprite. Keep
+            # every atom in projection; the compositor chooses the nearest
+            # at each pixel rather than taking an arbitrary atom stride.
+            tiny = pr <= 0.75
+            if tiny.any():
+                normals = np.tile([0., 0., -1.], (int(tiny.sum()), 1))
+                self.composite(np.rint(sx[tiny]), np.rint(sy[tiny]),
+                               sz[tiny] - rw[tiny], shade(normals, rgb[tiny]))
+                sx, sy, sz = sx[~tiny], sy[~tiny], sz[~tiny]
+                pr, rw, rgb = pr[~tiny], rw[~tiny], rgb[~tiny]
 
         buckets = np.ceil(pr).astype(np.int64)
         for bucket in np.unique(buckets):
@@ -330,6 +345,8 @@ class Canvas:
         colors_a: np.ndarray,
         colors_b: np.ndarray,
         fov: float = DEFAULT_FOV,
+        *,
+        endpoint_sprites: bool = False,
     ) -> None:
         """Shaded bond cylinders, split half-and-half between two colours.
 
@@ -359,7 +376,9 @@ class Canvas:
 
         delta = xy2 - xy1
         length = np.hypot(delta[:, 0], delta[:, 1])
-        alive = length > 0.5
+        # Adjacent endpoint sprites already cover a subpixel bond. Preserve
+        # the ordinary path for sticks-only scenes and for zoomed-in bonds.
+        alive = length > (1.0 if endpoint_sprites else 0.5)
         if not alive.any():
             return
         xy1, xy2, z1, z2 = xy1[alive], xy2[alive], z1[alive], z2[alive]

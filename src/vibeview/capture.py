@@ -41,6 +41,9 @@ def capture_structure(
     show_labels: bool = False,
     replication: tuple[int, int, int] = (1, 1, 1),
     publication: bool = False,
+    atom_color_mode: str = "element",
+    cutaway: str = "off",
+    cutaway_position: float = 0.5,
 ) -> bool:
     """Render the structure section to a PNG file.
 
@@ -58,6 +61,7 @@ def capture_structure(
             show_labels=show_labels,
             replication=replication,
             publication=publication,
+            atom_color_mode=atom_color_mode, cutaway=cutaway, cutaway_position=cutaway_position,
         )
     )
 

@@ -505,6 +505,7 @@ def infer_bonds(
     )
     bond_budget = MAX_BONDS_PER_ATOM * n_real + MAX_BONDS_PER_ATOM
     bonds: list[tuple[int, int, float]] = []
+    metals = is_metal[ghost_of] if ghost_of is not None else is_metal
     for (bx, by, bz), members in buckets.items():
         neighbours: list[int] = []
         for dx, dy, dz in _OFFSETS:
@@ -512,23 +513,22 @@ def infer_bonds(
         if not neighbours:
             continue
         cand = np.asarray(neighbours, dtype=np.int64)
-        for i in members:
-            if i >= n_real:
-                continue
-            # i < j only, so each pair is emitted exactly once even though
-            # the bin pair is visited from both sides.
-            higher = cand[cand > i]
-            if higher.size == 0:
-                continue
-            d2 = np.sum((positions[higher] - positions[i]) ** 2, axis=1)
-            cutoff = radii[i] + radii[higher] + tolerance
-            for j in higher[d2 < cutoff**2]:
-                if drop_metal_pairs:
-                    a = int(ghost_of[i]) if ghost_of is not None else i
-                    b = int(ghost_of[j]) if ghost_of is not None else int(j)
-                    if is_metal[a] and is_metal[b]:
-                        continue
-                bonds.append((i, int(j), 1.0))
+        real = np.asarray(members, dtype=np.int64)
+        real = real[real < n_real]
+        # Vectorise whole bin neighbourhoods, with bounded scratch arrays.
+        # The candidate and bond caps above/below still apply unchanged.
+        block = max(1, 131_072 // max(1, len(cand)))
+        for start in range(0, len(real), block):
+            left = real[start:start + block]
+            delta = positions[left, None, :] - positions[cand][None, :, :]
+            d2 = np.einsum("ijk,ijk->ij", delta, delta)
+            cutoff = radii[left, None] + radii[cand][None, :] + tolerance
+            hit = (left[:, None] < cand[None, :]) & (d2 < cutoff**2)
+            if drop_metal_pairs:
+                hit &= ~(metals[left, None] & metals[cand][None, :])
+            ii, jj = np.nonzero(hit)
+            bonds.extend((int(i), int(j), 1.0)
+                         for i, j in zip(left[ii], cand[jj], strict=True))
             if len(bonds) > bond_budget:
                 raise BondSearchLimitError(
                     f"more than {bond_budget:,} bonds among {n_real:,} atoms "

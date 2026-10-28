@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "method": "GFN2-xTB",
+  "task": "optimization",
+  "charge": 0,
+  "multiplicity": 1,
+  "outputs": {
+    "orbitals": true,
+    "bond_orders": true,
+    "density": false
+  },
+  "frozen_atoms": [
+    0,
+    2
+  ]
+}

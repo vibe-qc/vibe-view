@@ -16,6 +16,7 @@ def refresh(viewer: Any, **_: Any) -> None:
     try:
         state.coord_rows = table_rows(viewer.reader.read_structure(), state.measure_unit,
                                       list(state.frozen_atoms or []))
+        state.coord_page = 0
         state.coord_unit = state.measure_unit
         state.coord_unit_label = length_label(state.measure_unit)
     except Exception:
@@ -141,6 +142,7 @@ def bind(viewer: Any) -> None:
 
     state, ctrl = viewer.server.state, viewer.ctrl
     state.setdefault("coord_rows", [])
+    state.setdefault("coord_page", 0)
     for key, value in {"coord_unit": "angstrom", "coord_unit_label": "Å", "coord_xyz": "",
                        "coord_ztext": "", "coord_zstyle": "gaussian", "coord_zexport": "",
                        "coord_export_style": "gaussian", "coord_znotice": "",
@@ -163,7 +165,7 @@ def bind(viewer: Any) -> None:
         apply_ztable, rows, definitions))
     ctrl.set("coord_apply_z")(lambda: guarded(apply_zmatrix))
     ctrl.set("coord_export_z")(lambda: guarded(export_zmatrix))
-    state.change("measure_unit", "selected_section", "active_file_index", "frozen_atoms")(
+    viewer.lifecycle._watch_state("measure_unit", "active_file_index", "frozen_atoms")(
         lambda **kw: refresh(viewer))
     helpers._scene_hooks(viewer.plotter).geometry_changed = lambda: refresh(viewer)
     refresh(viewer)
@@ -179,14 +181,22 @@ def build_controls(v: Any, html: Any, ctrl: Any) -> None:
             with html.Tr():
                 for label in ("Element", "x", "y", "z", "Frozen"):
                     html.Th(label)
-            with html.Tr(v_for="(row, i) in coord_rows", key="i"):
+            with html.Tr(v_for="(row, i) in coord_rows.slice(coord_page*100, (coord_page+1)*100)",
+                         key="coord_page*100+i"):
                 for field in ("element", "x", "y", "z"):
                     with html.Td():
                         html.Input(v_model=(f"row.{field}",), style="width:70px",
-                                   aria_label=(f"'{field} atom ' + (i+1)",))
+                                   aria_label=(f"'{field} atom ' + (coord_page*100+i+1)",))
                 with html.Td():
                     html.Input(type="checkbox", v_model=("row.frozen",),
-                               aria_label=("'Freeze atom ' + (i+1)",))
+                               aria_label=("'Freeze atom ' + (coord_page*100+i+1)",))
+        with html.Div(v_if=("coord_rows.length > 100",)):
+            v.VBtn("Previous atoms", disabled=("coord_page === 0",), size="small",
+                   click="coord_page = Math.max(0, coord_page-1)")
+            html.Span(" {{ coord_page*100+1 }}–{{ Math.min((coord_page+1)*100, "
+                      "coord_rows.length) }} / {{ coord_rows.length }} ")
+            v.VBtn("Next atoms", disabled=("(coord_page+1)*100 >= coord_rows.length",),
+                   size="small", click="coord_page++")
         v.VBtn("Apply table", click=(ctrl.coord_apply, "[coord_rows]"), size="small")
         v.VTextarea(v_model=("coord_xyz",), label="Paste one XYZ frame (current length unit)",
                     rows=4)

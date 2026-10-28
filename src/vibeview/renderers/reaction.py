@@ -162,33 +162,14 @@ class ReactionPathRenderer(FrameSequenceMixin, BaseRenderer):
             f"(expected 2 or 3)"
         )
 
-    def get_frame(self, index: int) -> list[tuple[str, np.ndarray]]:
-        """Return the atoms at frame ``index`` as ``(symbol, position)``
-        tuples in Å.
-
-        Periodic reaction paths additionally wrap atom positions into
-        the central cell along the first :attr:`dim` lattice vectors
-        — for a slab (``dim=2``) that wraps a + b and leaves the
-        non-physical column c untouched. Molecular reaction paths
-        return positions verbatim.
-        """
-        data = self.load()
-        coords = data.coords[index]
+    def frame_positions(self, index: int) -> np.ndarray:
+        """Frame positions in Å, wrapped along the path's periodic axes."""
+        coords = np.asarray(self.load().coords[index])
         if not self.has_cell:
-            return [
-                (data.atoms[i].symbol, coords[i].copy())
-                for i in range(self.n_atoms)
-            ]
-
+            return coords
         lattice = self.cell_for_frame(index)
-        assert lattice is not None  # guarded by has_cell
-        wrap_axes = int(self.dim_for_frame(index) or 3)
-        wrap_axes = max(0, min(3, wrap_axes))
-        wrapped = _wrap_positions(coords, lattice, wrap_axes)
-        return [
-            (data.atoms[i].symbol, wrapped[i])
-            for i in range(self.n_atoms)
-        ]
+        assert lattice is not None
+        return _wrap_positions(coords, lattice, max(0, min(3, int(self.dim_for_frame(index) or 3))))
 
     def cell_edges_for_frame(
         self, index: int

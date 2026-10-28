@@ -555,7 +555,11 @@ class TestCommandRegistry:
         source = Path(cli_mod.__file__).read_text()
         total = len(re.findall(r"^@main\.command\(", source, flags=re.MULTILINE))
         names = re.findall(r"^@main\.command\(\s*[\"']([^\"']+)[\"']", source, flags=re.MULTILINE)
-        return total, names
+        # Imported Click groups are registered explicitly rather than decorated
+        # in this module. Count every registration, including duplicates.
+        added = re.findall(r"^main\.add_command\((\w+)\)", source, flags=re.MULTILINE)
+        names.extend(getattr(cli_mod, name).name for name in added)
+        return total + len(added), names
 
     def test_no_shadowed_command_registration(self) -> None:
         import click

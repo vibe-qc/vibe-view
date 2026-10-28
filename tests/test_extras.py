@@ -147,7 +147,7 @@ def test_version_guard_preserves_each_extra_policy(extra, requirements):
 # Extras that are not runtime capabilities, or cannot be in `all`: queue,
 # sketch and validation depend on packages published on no index.
 # The rest are tooling.
-_NOT_IN_ALL = {"all", "queue", "sketch", "validation", "test", "dev", "release", "docs"}
+_NOT_IN_ALL = {"all", "queue", "sketch", "xtb", "validation", "test", "dev", "release", "docs"}
 
 
 def _extras() -> dict[str, list[str]]:

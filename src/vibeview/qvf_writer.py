@@ -95,15 +95,39 @@ class QVFArchiveBuilder:
 
     def add_json_bytes(self, section_id: str, kind: str, member: str, payload: bytes) -> None:
         """Carry an opaque vendor JSON member without changing its bytes."""
+
         def reject_constant(value: str) -> None:
             raise ValueError(f"non-finite JSON constant: {value}")
 
         json.loads(payload, parse_constant=reject_constant)
         path = member_path(section_id, member, binary=False)
         self._section(section_id, kind, None)["members"][member] = {
-            "path": path, "format": "json", "sha256": hashlib.sha256(payload).hexdigest(),
+            "path": path,
+            "format": "json",
+            "sha256": hashlib.sha256(payload).hexdigest(),
         }
         self._members[path] = payload
+
+    def add_bytes(
+        self,
+        section_id: str,
+        kind: str,
+        member: str,
+        payload: bytes,
+        *,
+        media_type: str,
+        section_extra: dict[str, Any] | None = None,
+    ) -> str:
+        """Add an opaque attachment or UTF-8 run input/log without changing its bytes."""
+        path = member_path(section_id, member, binary=True)
+        self._section(section_id, kind, section_extra)["members"][member] = {
+            "path": path,
+            "format": "binary",
+            "media_type": media_type,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        self._members[path] = payload
+        return path
 
     def add_binary(
         self,

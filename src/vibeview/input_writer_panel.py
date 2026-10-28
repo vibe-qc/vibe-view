@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,9 @@ def prepare(viewer: Any) -> InputBundle:
             states=_integer(state.calc_writer_states, "States", minimum=1),
             potentials=potentials,
             cutoff=float(state.calc_writer_cutoff),
+            xtb_orbitals=getattr(state, "calc_xtb_orbitals", True),
+            xtb_bond_orders=getattr(state, "calc_xtb_bond_orders", True),
+            xtb_density=getattr(state, "calc_xtb_density", False),
         ),
     )
 
@@ -88,6 +93,21 @@ def submit(viewer: Any) -> None:
         "CP2K": ["-i", bundle.primary, "-o", "calculation.out"],
         "xtb": list(bundle.command[1:]),
     }[bundle.program]
+    command = [binary, *arguments]
+    if bundle.program == "xtb" and "xtb-job.json" in bundle.files:
+        try:
+            runner = importlib.import_module("qvf.adapters.xtb_run")
+            if not callable(getattr(runner, "run_xtb", None)):
+                raise ImportError("xTB runner unavailable")
+        except ImportError as exc:
+            from vibeview.install_hints import install_hint
+
+            raise ValueError(
+                "xTB result export needs qvf-writer with the run-xtb adapter. "
+                "Install the current qvf/python source into this viewer environment, "
+                f"then enable the extra: {install_hint('xtb')}"
+            ) from exc
+        command = [sys.executable, "-m", "qvf", "run-xtb", "xtb-job.json", "--binary", binary]
     state = viewer.server.state
     minutes = _integer(state.calc_orca_wall_minutes, "Wall time (minutes)", minimum=1)
     # A serial launch: no untested per-program parallel wrapper/OMP assumption.
@@ -97,7 +117,7 @@ def submit(viewer: Any) -> None:
         job_id = submit_local(
             host="localhost",
             directory=directory,
-            command=[binary, *arguments],
+            command=command,
             program=name,
             cpus=1,
             mem_mb=2000,
@@ -161,6 +181,13 @@ def build_controls(v: Any, html: Any, ctrl: Any) -> None:
             label="Raw native keywords / blocks (Gaussian: route keywords)",
             rows=3,
         )
+        with html.Div(v_if=("calc_engine === 'xtb'",)):
+            for key, label in (("orbitals", "Orbitals"), ("bond_orders", "Bond orders"),
+                               ("density", "Electron density")):
+                v.VCheckbox(v_model=(f"calc_xtb_{key}",), label=label, density="compact",
+                            hide_details=True)
+            html.Div("Molecular GFN0/1/2 jobs produce a combined QVF result. "
+                     "GFN-FF uses the native-file workflow.", classes="text-caption")
         v.VBtn("Preview input bundle", click=ctrl.preview_native_input, block=True, size="small")
         v.VTextarea(
             v_model=("calc_writer_preview",),

@@ -11,10 +11,13 @@ scene; the structures themselves open from their own sidebar rows.
 
 from __future__ import annotations
 
+import base64
+import html
+import json
 from typing import TYPE_CHECKING
 
 from vibeview.renderers import BaseRenderer
-from vibeview.renderers._html import data_table, heading, note, panel_document
+from vibeview.renderers._html import banner, data_table, heading, note, panel_document
 
 if TYPE_CHECKING:
     from vibeview.qvf import (
@@ -141,4 +144,64 @@ class ReactionSchemeRenderer(BaseRenderer):
                 caption="Species",
             ),
         ]
+        raw = self.reader.read_json_member(self.section_id, "scheme")
+        for step in raw["steps"]:
+            if any(key in step for key in ("energies", "x_vibeview", "x_vibesketch")):
+                parts.append(self._analysis_html(step["id"]))
         return panel_document("".join(parts))
+
+    def _analysis_html(self, step_id: str) -> str:
+        from vibeview.qvf import QVFError
+        from vibeview.reaction_analysis import endpoint_svg, replay_analysis
+
+        try:
+            result = replay_analysis(self.reader, self.section_id, step_id)
+        except (QVFError, ValueError, KeyError, TypeError) as exc:
+            return banner(f"Reaction analysis unavailable: {exc}", "failed")
+        rows = [
+            [
+                t["structure_ref"],
+                f"{t['coefficient']:+g}",
+                t["energy_eh"],
+                t["coefficient"] * t["energy_eh"],
+                t["source"]["sha256"][:12],
+            ]
+            for t in result["terms"]
+        ]
+        svg = endpoint_svg(result)
+        image = base64.b64encode(svg.encode()).decode()
+        return "".join(
+            [
+                heading("Correlated electronic endpoint analysis"),
+                note(
+                    "Recomputed from embedded QVF sources. Scientific acceptance is the recorded "
+                    "user review, separate from producer convergence. "
+                    "RHF orbitals remain reference "
+                    "properties; this result does not establish a minimum or a barrier."
+                ),
+                data_table(
+                    [
+                        "Species",
+                        "Signed coefficient",
+                        "Total / Eh",
+                        "Contribution / Eh",
+                        "SHA256 prefix",
+                    ],
+                    rows,
+                    numeric_format=".12f",
+                ),
+                heading(
+                    f"ΔE = {result['delta_eh']:+.12f} Eh = {result['delta_kj_mol']:+.6f} kJ/mol"
+                ),
+                f'<img alt="Disconnected reaction endpoint energy levels" '
+                f'style="width:100%;max-width:900px" src="data:image/svg+xml;base64,{image}">',
+                note(
+                    "Export the table and SVG with vibe-view reaction export; "
+                    "expand the recorded selections below to inspect the analysis."
+                ),
+                "<details><summary>Selections, method, acceptance and source provenance"
+                "</summary><pre>",
+                html.escape(json.dumps(result, indent=2)),
+                "</pre></details>",
+            ]
+        )
